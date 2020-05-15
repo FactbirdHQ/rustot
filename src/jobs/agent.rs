@@ -1,4 +1,4 @@
-use super::temp::{vec_to_vec, WriteAdapter};
+use super::temp::vec_to_vec;
 use super::{
     DescribeJobExecutionRequest, DescribeJobExecutionResponse, ErrorResponse,
     GetPendingJobExecutionsRequest, IotJobsData, JobError, JobExecution, JobNotification,
@@ -37,7 +37,7 @@ impl JobAgent {
     ) -> Result<String<MaxClientTokenLen>, JobError> {
         let mut client_token = String::new();
         ufmt::uwrite!(
-            WriteAdapter(&mut client_token),
+            &mut client_token,
             "{}:{}",
             self.request_cnt,
             thing_name
@@ -61,7 +61,7 @@ impl JobAgent {
 
         let mut topic = String::new();
         ufmt::uwrite!(
-            WriteAdapter(&mut topic),
+            &mut topic,
             "$aws/things/{}/jobs/{}/update",
             thing_name,
             job_id
@@ -169,7 +169,7 @@ impl IotJobsData for JobAgent {
 
         let mut topic = String::new();
         ufmt::uwrite!(
-            WriteAdapter(&mut topic),
+            &mut topic,
             "$aws/things/{}/jobs/{}/get",
             thing_name,
             job_id,
@@ -196,7 +196,7 @@ impl IotJobsData for JobAgent {
 
         let mut topic = String::new();
         ufmt::uwrite!(
-            WriteAdapter(&mut topic),
+            &mut topic,
             "$aws/things/{}/jobs/get",
             thing_name,
         )
@@ -222,7 +222,7 @@ impl IotJobsData for JobAgent {
 
         let mut topic = String::new();
         ufmt::uwrite!(
-            WriteAdapter(&mut topic),
+            &mut topic,
             "$aws/things/{}/jobs/start-next",
             thing_name,
         )

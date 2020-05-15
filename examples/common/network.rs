@@ -1,7 +1,8 @@
-use embedded_nal::{Mode, SocketAddr, TcpStack};
+use embedded_nal::{AddrType, Dns, IpAddr, Ipv4Addr, Ipv6Addr, Mode, SocketAddr, TcpStack};
+use heapless::{consts, String};
 use native_tls::{Certificate, Identity, TlsConnector, TlsStream};
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 
 pub struct Network;
 
@@ -13,6 +14,33 @@ pub struct TcpSocket {
 impl TcpSocket {
     pub fn new(mode: Mode) -> Self {
         TcpSocket { stream: None, mode }
+    }
+}
+
+impl Dns for Network {
+    type Error = ();
+
+    fn gethostbyname(&self, hostname: &str, _addr_type: AddrType) -> Result<IpAddr, Self::Error> {
+        match hostname.to_socket_addrs().map_err(|_| ())?.next() {
+            Some(socketaddr) => match socketaddr {
+                std::net::SocketAddr::V4(socketv4) => {
+                    let ipv4 = socketv4.ip().octets();
+                    Ok(IpAddr::V4(Ipv4Addr::new(
+                        ipv4[0], ipv4[1], ipv4[2], ipv4[3],
+                    )))
+                }
+                std::net::SocketAddr::V6(socketv6) => {
+                    let ipv6 = socketv6.ip().segments();
+                    Ok(IpAddr::V6(Ipv6Addr::new(
+                        ipv6[0], ipv6[1], ipv6[2], ipv6[3], ipv6[4], ipv6[5], ipv6[6], ipv6[7],
+                    )))
+                }
+            },
+            None => Err(()),
+        }
+    }
+    fn gethostbyaddr(&self, _addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
+        unimplemented!()
     }
 }
 
@@ -65,11 +93,8 @@ impl TcpStack for Network {
     ) -> Result<<Self as TcpStack>::TcpSocket, <Self as TcpStack>::Error> {
         let connector = TlsConnector::builder()
             .identity(
-                Identity::from_pkcs12(
-                    include_bytes!("../secrets_mini_2/identity.pfx"),
-                    "",
-                )
-                .unwrap(),
+                Identity::from_pkcs12(include_bytes!("../secrets_mini_2/identity.pfx"), "")
+                    .unwrap(),
             )
             .add_root_certificate(
                 Certificate::from_pem(include_bytes!("../secrets_mini_2/certificate.pem.crt"))

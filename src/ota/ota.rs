@@ -40,7 +40,7 @@ use alloc::string::ToString;
 use super::cbor::{Bitmap, StreamRequest, StreamResponse};
 use super::pal::{OtaPal, OtaPalError};
 use crate::consts::MaxStreamIdLen;
-use crate::jobs::{vec_to_vec, FileDescription, OtaJob, WriteAdapter};
+use crate::jobs::{vec_to_vec, FileDescription, OtaJob};
 use heapless::{consts, String, Vec};
 use mqttrust::{Mqtt, MqttClientError, Publish, QoS, SubscribeTopic};
 
@@ -130,7 +130,7 @@ impl OtaTopicType {
 }
 
 #[derive(Debug)]
-pub enum OtaError {
+pub enum OtaError<PalError> {
     Mqtt(MqttClientError),
     BadData,
     Memory,
@@ -138,25 +138,25 @@ pub enum OtaError {
     InvalidTopic,
     NoOtaActive,
     BlockOutOfRange,
-    PalError(OtaPalError),
+    PalError(OtaPalError<PalError>),
     BadFileHandle,
     RequestRejected,
     MaxMomentumAbort(u8),
 }
 
-impl From<core::fmt::Error> for OtaError {
+impl<PE> From<core::fmt::Error> for OtaError<PE> {
     fn from(_e: core::fmt::Error) -> Self {
         OtaError::Formatting
     }
 }
 
-impl From<OtaPalError> for OtaError {
-    fn from(e: OtaPalError) -> Self {
+impl<PE> From<OtaPalError<PE>> for OtaError<PE> {
+    fn from(e: OtaPalError<PE>) -> Self {
         OtaError::PalError(e)
     }
 }
 
-impl From<MqttClientError> for OtaError {
+impl<PE> From<MqttClientError> for OtaError<PE> {
     fn from(e: MqttClientError) -> Self {
         OtaError::Mqtt(e)
     }
@@ -174,7 +174,7 @@ impl Default for OtaConfig {
         OtaConfig {
             block_size: 1024,
             max_request_momentum: 3,
-            request_wait_ms: 3000,
+            request_wait_ms: 4500,
             max_blocks_per_request: 128,
         }
     }
@@ -251,10 +251,12 @@ where
 
     // Call this from timer timeout IRQ
     pub fn request_timer_irq(&mut self, client: &impl Mqtt) {
-        if let AgentState::Active(ref mut state) = self.agent_state {
-            if self.request_timer.wait().is_ok() && state.total_blocks_remaining > 0 {
-                state.request_block_remaining = self.config.max_blocks_per_request;
-                self.publish_get_stream_message(client).ok();
+        if self.request_timer.wait().is_ok() {
+            if let AgentState::Active(ref mut state) = self.agent_state {
+                if state.total_blocks_remaining > 0 {
+                    state.request_block_remaining = self.config.max_blocks_per_request;
+                    self.publish_get_stream_message(client).ok();
+                }
             }
         }
     }
@@ -263,7 +265,7 @@ where
         &mut self,
         client: &impl Mqtt,
         publish: &Publish,
-    ) -> Result<u8, OtaError> {
+    ) -> Result<u8, OtaError<P::Error>> {
         match self.agent_state {
             AgentState::Active(ref mut state) => {
                 match OtaTopicType::check(client.client_id(), &publish.topic_name) {
@@ -298,7 +300,13 @@ where
                                     == (state.file.filesize
                                         - total_blocks * self.config.block_size))
                         {
-                            log::info!("Received file block {}, size {}", block_id, block_size);
+                            // log::info!("Received file block {}, size {}", block_id, block_size);
+
+                            // We're actively receiving a file so update the
+                            // job status as needed. First reset the
+                            // momentum counter since we received a good
+                            // block.
+                            state.request_momentum = 0;
 
                             if !state.bitmap.to_inner().get(block_id) {
                                 log::warn!(
@@ -308,7 +316,9 @@ where
                                 );
 
                                 // Just return same progress as before
-                                return Ok((state.total_blocks_remaining / total_blocks) as u8);
+                                return Ok((((total_blocks - state.total_blocks_remaining) * 100)
+                                    / total_blocks)
+                                    as u8);
                             } else {
                                 self.ota_pal.write_block(
                                     &state.file,
@@ -318,12 +328,6 @@ where
                                 state.bitmap.to_inner_mut().set(block_id, false);
                                 state.total_blocks_remaining -= 1;
                             }
-
-                            // We're actively receiving a file so update the
-                            // job status as needed. First reset the
-                            // momentum counter since we received a good
-                            // block.
-                            state.request_momentum = 0;
                         } else {
                             log::error!(
                                 "Error! Block {} out of expected range! Size {}",
@@ -339,7 +343,7 @@ where
 
                             self.ota_pal.close_file(&state.file)?;
                         } else {
-                            log::info!("Remaining: {}", state.total_blocks_remaining);
+                            // log::info!("Remaining: {}", state.total_blocks_remaining);
 
                             if state.request_block_remaining > 1 {
                                 state.request_block_remaining -= 1;
@@ -362,16 +366,21 @@ where
         }
     }
 
-    pub fn process_ota_job(&mut self, client: &impl Mqtt, job: OtaJob) -> Result<(), OtaError> {
+    pub fn process_ota_job(
+        &mut self,
+        client: &impl Mqtt,
+        job: OtaJob,
+    ) -> Result<(), OtaError<P::Error>> {
         // Subscribe to `$aws/things/{thingName}/streams/{streamId}/data/cbor`
 
         let mut topic_path = String::<consts::U256>::new();
         ufmt::uwrite!(
-            WriteAdapter(&mut topic_path),
+            &mut topic_path,
             "$aws/things/{}/streams/{}/data/cbor",
             client.client_id(),
             job.streamname.as_str(),
-        )?;
+        )
+        .map_err(|_| OtaError::Formatting)?;
 
         let mut topics = Vec::<SubscribeTopic, consts::U1>::new();
         topics
@@ -415,7 +424,7 @@ where
         }
     }
 
-    fn publish_get_stream_message(&mut self, client: &impl Mqtt) -> Result<(), OtaError> {
+    fn publish_get_stream_message(&mut self, client: &impl Mqtt) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(ref mut state) = self.agent_state {
             if state.request_momentum >= self.config.max_request_momentum {
                 return Err(OtaError::MaxMomentumAbort(self.config.max_request_momentum));
@@ -434,11 +443,12 @@ where
 
             let mut topic: String<consts::U256> = String::new();
             ufmt::uwrite!(
-                WriteAdapter(&mut topic),
+                &mut topic,
                 "$aws/things/{}/streams/{}/get/cbor",
                 client.client_id(),
                 state.stream_name.as_str(),
-            )?;
+            )
+            .map_err(|_| OtaError::Formatting)?;
 
             // Each Get Stream Request increases the momentum until a response
             // is received to ANY request. Too much momentum is interpreted as a

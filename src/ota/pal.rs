@@ -3,12 +3,13 @@
 use crate::{jobs::FileDescription, ota::ota::ImageState};
 
 #[derive(Debug)]
-pub enum OtaPalError {
+pub enum OtaPalError<E> {
     SignatureCheckFailed,
     FileWriteFailed,
     FileCloseFailed,
     BadFileHandle,
     Unsupported,
+    Custom(E)
 }
 
 pub enum PalImageState {
@@ -40,7 +41,7 @@ pub trait OtaPal {
     /// aborted.
     ///
     /// - `file`: [`FileDescription`] File description of the job being aborted
-    fn abort(&mut self, file: &FileDescription) -> Result<(), OtaPalError>;
+    fn abort(&mut self, file: &FileDescription) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Activate the newest MCU image received via OTA.
     ///
@@ -52,7 +53,7 @@ pub trait OtaPal {
     ///
     /// **return**: The OTA PAL layer error code combined with the MCU specific
     /// error code.
-    fn activate_new_image(&mut self) -> Result<(), OtaPalError> {
+    fn activate_new_image(&mut self) -> Result<(), OtaPalError<Self::Error>> {
         Err(OtaPalError::Unsupported)
     }
 
@@ -63,7 +64,7 @@ pub trait OtaPal {
     /// is created.
     ///
     /// - `file`: [`FileDescription`] File description of the job being aborted
-    fn create_file_for_rx(&mut self, file: &FileDescription) -> Result<(), OtaPalError>;
+    fn create_file_for_rx(&mut self, file: &FileDescription) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Get the state of the OTA update image.
     ///
@@ -80,7 +81,7 @@ pub trait OtaPal {
     /// timer is not started.
     ///
     /// **return** An [`PalImageState`].
-    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError>;
+    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError<Self::Error>>;
 
     /// Attempt to set the state of the OTA update image.
     ///
@@ -92,7 +93,7 @@ pub trait OtaPal {
     ///
     /// **return** The [`OtaPalError`] error code combined with the MCU specific
     /// error code.
-    fn set_platform_image_state(&mut self, image_state: ImageState) -> Result<(), OtaPalError>;
+    fn set_platform_image_state(&mut self, image_state: ImageState) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Reset the device.
     ///
@@ -103,7 +104,7 @@ pub trait OtaPal {
     ///
     /// **return** The OTA PAL layer error code combined with the MCU specific
     /// error code.
-    fn reset_device(&mut self) -> Result<(), OtaPalError>;
+    fn reset_device(&mut self) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Authenticate and close the underlying receive file in the specified OTA
     /// context.
@@ -115,7 +116,7 @@ pub trait OtaPal {
     ///
     /// **return** The OTA PAL layer error code combined with the MCU specific
     /// error code.
-    fn close_file(&mut self, file: &FileDescription) -> Result<(), OtaPalError>;
+    fn close_file(&mut self, file: &FileDescription) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Write a block of data to the specified file at the given offset.
     ///
@@ -131,7 +132,7 @@ pub trait OtaPal {
         file: &FileDescription,
         block_offset: usize,
         block_payload: &[u8],
-    ) -> Result<usize, OtaPalError>;
+    ) -> Result<usize, OtaPalError<Self::Error>>;
 
     /// OTA update complete.
     ///
@@ -162,7 +163,7 @@ pub trait OtaPal {
     /// OTA update job has failed in some way and should be rejected.
     ///
     /// - `event` [`OtaEvent`] An OTA update event from the OtaEvent enum.
-    fn complete_callback(&mut self, event: OtaEvent) -> Result<(), OtaPalError> {
+    fn complete_callback(&mut self, event: OtaEvent) -> Result<(), OtaPalError<Self::Error>> {
         match event {
             OtaEvent::Activate => self.activate_new_image(),
             OtaEvent::Fail => {

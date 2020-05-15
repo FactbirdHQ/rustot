@@ -105,8 +105,8 @@ dependencies = [
 [[package]]
 name = "embedded-nal"
 version = "0.1.0"
-source = "git+https://github.com/thejpster/embedded-nal#f8bb7d76695488b4838211c5e7037e0379e422aa"
 dependencies = [
+ "heapless",
  "nb",
  "no-std-net",
 ]
@@ -197,15 +197,16 @@ dependencies = [
 
 [[package]]
 name = "heapless"
-version = "0.5.4"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ffa511365b12346c5fbe759d82f80d3aa70d9f1ba01955594f84a1a6bbab985"
+checksum = "73a8a2391a3bc70b31f60e7a90daa5755a360559c0b6b9c5cfc0fee482362dc0"
 dependencies = [
  "as-slice",
  "generic-array 0.13.2",
  "hash32",
  "serde",
  "stable_deref_trait",
+ "ufmt-write",
 ]
 
 [[package]]

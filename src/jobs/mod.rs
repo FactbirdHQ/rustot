@@ -101,8 +101,8 @@
 mod agent;
 mod temp;
 
-pub use agent::{JobAgent, is_job_message};
-pub use temp::{vec_to_vec, WriteAdapter};
+pub use agent::{is_job_message, JobAgent};
+pub use temp::vec_to_vec;
 
 #[allow(unused_imports)]
 use serde::{Deserialize, Serialize};
