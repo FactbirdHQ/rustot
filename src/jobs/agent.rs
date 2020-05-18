@@ -394,19 +394,16 @@ impl IotJobsData for JobAgent {
                         };
 
                         match state.status {
-                            JobStatus::Queued | JobStatus::InProgress => {
+                            JobStatus::Canceled | JobStatus::Removed => {
+                                self.active_job = None;
+                            }
+                            _ => {
                                 self.active_job = Some(JobNotification {
                                     job_id,
                                     version_number,
                                     status: state.status,
                                     details: job_document.unwrap(),
                                 });
-                            }
-                            JobStatus::Failed | JobStatus::Rejected | JobStatus::Succeeded => {
-                                self.active_job = None;
-                            }
-                            JobStatus::Canceled | JobStatus::Removed => {
-                                self.active_job = None;
                             }
                         }
                         Ok(self.active_job.clone())

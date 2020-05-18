@@ -257,8 +257,28 @@ where
         self.agent_state != AgentState::Ready
     }
 
-    pub fn abort(&mut self) {
-        self.agent_state = AgentState::Ready;
+    pub fn close(&mut self, client: &impl Mqtt) -> Result<(), OtaError<P::Error>> {
+        match self.agent_state {
+            AgentState::Ready => Ok(()),
+            AgentState::Active(ref state) => {
+                // Unsubscribe from stream topic
+                let topic_path = alloc::format!(
+                    "$aws/things/{}/streams/{}/data/cbor",
+                    client.client_id(),
+                    state.stream_name.as_str(),
+                );
+
+                let mut topics = Vec::<alloc::string::String, consts::U1>::new();
+                topics.push(topic_path).map_err(|_| OtaError::Memory)?;
+                client.unsubscribe(topics)?;
+
+                self.ota_pal.abort(&state.file)?;
+
+                // Reset agent state
+                self.agent_state = AgentState::Ready;
+                Ok(())
+            }
+        }
     }
 
     // Call this from timer timeout IRQ or poll it regularly
@@ -355,29 +375,23 @@ where
                         if blocks_remaining == 0 {
                             log::info!("Received final expected block of file.");
 
-                            let event = match self.ota_pal.close_file(&state.file) {
+                            match self.ota_pal.close_file(&state.file) {
                                 Ok(()) => {
                                     log::info!("File receive complete and signature is valid.");
                                     // Update job status to success with 100% progress
                                     job_agent.update_job_execution(client, JobStatus::Succeeded)?;
-                                    OtaEvent::Activate
                                 }
                                 Err(_e) => {
                                     // Update job status to failed with reason `e`
                                     job_agent.update_job_execution(client, JobStatus::Failed)?;
-
-                                    OtaEvent::Fail
                                 }
                             };
-
-                            // Cleanup, unsubscribe and cleanup file contexts
-                            // self.close().ok();
-
-                            self.ota_pal.complete_callback(event)?;
                         } else {
                             // log::info!("Remaining: {}", state.total_blocks_remaining);
 
                             if progress == self.next_update_percentage {
+                                log::info!("OTA Progress: {}%", progress);
+
                                 // TODO: Include progress here
                                 job_agent.update_job_execution(client, JobStatus::InProgress)?;
                                 self.next_update_percentage +=
@@ -402,6 +416,19 @@ where
             }
             AgentState::Ready => Err(OtaError::NoOtaActive),
         }
+    }
+
+    pub fn finalize_ota_job(
+        &mut self,
+        client: &impl Mqtt,
+        status: JobStatus,
+    ) -> Result<(), OtaError<P::Error>> {
+        let event = match status {
+            JobStatus::Succeeded => OtaEvent::Activate,
+            _ => OtaEvent::Fail,
+        };
+        self.close(client)?;
+        Ok(self.ota_pal.complete_callback(event)?)
     }
 
     pub fn process_ota_job(
