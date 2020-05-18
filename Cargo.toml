@@ -45,3 +45,6 @@ embedded-nal = { path = "../embedded-nal" }
 
 [patch.'https://github.com/BlackbirdHQ/mqttrust']
 mqttrust = { path = "../mqttrust" }
+
+[patch.crates-io]
+mqttrs = { path = "../mqttrs" }
