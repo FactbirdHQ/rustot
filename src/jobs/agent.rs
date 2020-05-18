@@ -36,13 +36,8 @@ impl JobAgent {
         thing_name: &str,
     ) -> Result<String<MaxClientTokenLen>, JobError> {
         let mut client_token = String::new();
-        ufmt::uwrite!(
-            &mut client_token,
-            "{}:{}",
-            self.request_cnt,
-            thing_name
-        )
-        .map_err(|_| JobError::Formatting)?;
+        ufmt::uwrite!(&mut client_token, "{}:{}", self.request_cnt, thing_name)
+            .map_err(|_| JobError::Formatting)?;
         self.request_cnt += 1;
         Ok(client_token)
     }
@@ -168,13 +163,8 @@ impl IotJobsData for JobAgent {
         let thing_name = client.client_id();
 
         let mut topic = String::new();
-        ufmt::uwrite!(
-            &mut topic,
-            "$aws/things/{}/jobs/{}/get",
-            thing_name,
-            job_id,
-        )
-        .map_err(|_| JobError::Formatting)?;
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/{}/get", thing_name, job_id,)
+            .map_err(|_| JobError::Formatting)?;
 
         let p = serde_json::to_vec(&DescribeJobExecutionRequest {
             execution_number,
@@ -195,12 +185,8 @@ impl IotJobsData for JobAgent {
         let thing_name = client.client_id();
 
         let mut topic = String::new();
-        ufmt::uwrite!(
-            &mut topic,
-            "$aws/things/{}/jobs/get",
-            thing_name,
-        )
-        .map_err(|_| JobError::Formatting)?;
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/get", thing_name,)
+            .map_err(|_| JobError::Formatting)?;
 
         client.publish::<MaxTopicLen, consts::U128>(
             topic,
@@ -221,12 +207,8 @@ impl IotJobsData for JobAgent {
         let thing_name = client.client_id();
 
         let mut topic = String::new();
-        ufmt::uwrite!(
-            &mut topic,
-            "$aws/things/{}/jobs/start-next",
-            thing_name,
-        )
-        .map_err(|_| JobError::Formatting)?;
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/start-next", thing_name,)
+            .map_err(|_| JobError::Formatting)?;
 
         client.publish::<MaxTopicLen, consts::U128>(
             topic,
@@ -421,7 +403,6 @@ impl IotJobsData for JobAgent {
                                     status: state.status,
                                     details: job_document.unwrap(),
                                 });
-
                             }
                             JobStatus::Failed | JobStatus::Rejected | JobStatus::Succeeded => {
                                 self.active_job = None;

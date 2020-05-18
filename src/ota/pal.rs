@@ -9,7 +9,7 @@ pub enum OtaPalError<E> {
     FileCloseFailed,
     BadFileHandle,
     Unsupported,
-    Custom(E)
+    Custom(E),
 }
 
 pub enum PalImageState {
@@ -64,7 +64,10 @@ pub trait OtaPal {
     /// is created.
     ///
     /// - `file`: [`FileDescription`] File description of the job being aborted
-    fn create_file_for_rx(&mut self, file: &FileDescription) -> Result<(), OtaPalError<Self::Error>>;
+    fn create_file_for_rx(
+        &mut self,
+        file: &FileDescription,
+    ) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Get the state of the OTA update image.
     ///
@@ -93,7 +96,10 @@ pub trait OtaPal {
     ///
     /// **return** The [`OtaPalError`] error code combined with the MCU specific
     /// error code.
-    fn set_platform_image_state(&mut self, image_state: ImageState) -> Result<(), OtaPalError<Self::Error>>;
+    fn set_platform_image_state(
+        &mut self,
+        image_state: ImageState,
+    ) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Reset the device.
     ///

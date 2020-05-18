@@ -5,8 +5,6 @@ extern crate alloc;
 pub mod jobs;
 pub mod ota;
 
-
-
 mod consts {
 
     use heapless::consts;

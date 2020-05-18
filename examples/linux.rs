@@ -34,7 +34,11 @@ fn main() {
     let mut mqtt_eventloop = MqttEvent::new(
         c,
         SysTimer::new(),
-        MqttOptions::new(thing_name.as_str(), Ipv4Addr::new(52, 208, 158, 107).into(), 8883),
+        MqttOptions::new(
+            thing_name.as_str(),
+            Ipv4Addr::new(52, 208, 158, 107).into(),
+            8883,
+        ),
     );
 
     let mqtt_client = MqttClient::new(p, thing_name);
