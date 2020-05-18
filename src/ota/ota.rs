@@ -114,13 +114,13 @@ impl OtaTopicType {
         Some(match topic_tokens.get(4) {
             Some(stream_id) => match topic_tokens.get(5) {
                 Some(&"data") if topic_tokens.get(6) == Some(&"cbor") => {
-                    OtaTopicType::CborData(String::from(stream_id.clone()))
+                    OtaTopicType::CborData(String::from(*stream_id))
                 }
                 Some(&"get")
                     if topic_tokens.get(6) == Some(&"cbor")
                         && topic_tokens.get(7) == Some(&"rejected") =>
                 {
-                    OtaTopicType::CborGetRejected(String::from(stream_id.clone()))
+                    OtaTopicType::CborGetRejected(String::from(*stream_id))
                 }
                 Some(_) | None => OtaTopicType::Invalid,
             },
@@ -269,9 +269,7 @@ where
         match self.agent_state {
             AgentState::Active(ref mut state) => {
                 match OtaTopicType::check(client.client_id(), &publish.topic_name) {
-                    None | Some(OtaTopicType::Invalid) => {
-                        return Err(OtaError::InvalidTopic);
-                    }
+                    None | Some(OtaTopicType::Invalid) => Err(OtaError::InvalidTopic),
                     Some(OtaTopicType::CborData(_)) => {
                         // Reset or start the firmware request timer.
                         self.request_timer.start(self.config.request_wait_ms);

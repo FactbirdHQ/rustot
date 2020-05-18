@@ -686,16 +686,16 @@ impl JobTopicType {
             Some(&"notify") => JobTopicType::Notify,
             Some(job_id) => match topic_tokens.get(5) {
                 Some(&"update") if topic_tokens.get(6) == Some(&"accepted") => {
-                    JobTopicType::UpdateAccepted(String::from(job_id.clone()))
+                    JobTopicType::UpdateAccepted(String::from(*job_id))
                 }
                 Some(&"update") if topic_tokens.get(6) == Some(&"rejected") => {
-                    JobTopicType::UpdateRejected(String::from(job_id.clone()))
+                    JobTopicType::UpdateRejected(String::from(*job_id))
                 }
                 Some(&"get") if topic_tokens.get(6) == Some(&"accepted") => {
-                    JobTopicType::GetAccepted(String::from(job_id.clone()))
+                    JobTopicType::GetAccepted(String::from(*job_id))
                 }
                 Some(&"get") if topic_tokens.get(6) == Some(&"rejected") => {
-                    JobTopicType::GetRejected(String::from(job_id.clone()))
+                    JobTopicType::GetRejected(String::from(*job_id))
                 }
                 Some(_) | None => JobTopicType::Invalid,
             },

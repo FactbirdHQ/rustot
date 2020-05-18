@@ -8,6 +8,7 @@ use super::{
 use crate::consts::{MaxClientTokenLen, MaxTopicLen};
 use heapless::{consts, String, Vec};
 
+#[derive(Default)]
 pub struct JobAgent {
     request_cnt: u32,
     active_job: Option<JobNotification>,
@@ -390,8 +391,7 @@ impl IotJobsData for JobAgent {
                     Ok(UpdateJobExecutionResponse {
                         execution_state,
                         job_document,
-                        timestamp: _,
-                        client_token: _,
+                        ..
                     }) if execution_state.is_some() && job_document.is_some() => {
                         let state = execution_state.unwrap();
 
