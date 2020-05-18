@@ -54,7 +54,7 @@ pub trait OtaPal {
     /// **return**: The OTA PAL layer error code combined with the MCU specific
     /// error code.
     fn activate_new_image(&mut self) -> Result<(), OtaPalError<Self::Error>> {
-        Err(OtaPalError::Unsupported)
+        self.reset_device()
     }
 
     /// OTA create file to store received data.

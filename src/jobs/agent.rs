@@ -44,42 +44,45 @@ impl JobAgent {
     }
 
     fn update_job_execution_internal(
-        &self,
+        &mut self,
         client: &impl mqttrust::Mqtt,
-        job_id: &str,
-        status: JobStatus,
-        expected_version: i64,
-        client_token: String<MaxClientTokenLen>,
         execution_number: Option<i64>,
         step_timeout_in_minutes: Option<i64>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
+        let client_token = self.get_client_token(thing_name)?;
 
-        let mut topic = String::new();
-        ufmt::uwrite!(
-            &mut topic,
-            "$aws/things/{}/jobs/{}/update",
-            thing_name,
-            job_id
-        )
-        .map_err(|_| JobError::Formatting)?;
+        if let Some(ref mut active_job) = self.active_job {
+            let mut topic = String::new();
+            ufmt::uwrite!(
+                &mut topic,
+                "$aws/things/{}/jobs/{}/update",
+                thing_name,
+                active_job.job_id.as_str()
+            )
+            .map_err(|_| JobError::Formatting)?;
 
-        // Always include job_document, and job_execution_state!
-        client.publish::<MaxTopicLen, consts::U512>(
-            topic,
-            vec_to_vec(serde_json::to_vec(&UpdateJobExecutionRequest {
-                execution_number,
-                expected_version,
-                include_job_document: Some(true),
-                include_job_execution_state: Some(true),
-                status,
-                step_timeout_in_minutes,
-                client_token,
-            })?),
-            mqttrust::QoS::AtLeastOnce,
-        )?;
+            // Always include job_document, and job_execution_state!
+            client.publish::<MaxTopicLen, consts::U512>(
+                topic,
+                vec_to_vec(serde_json::to_vec(&UpdateJobExecutionRequest {
+                    execution_number,
+                    expected_version: active_job.version_number,
+                    include_job_document: Some(true),
+                    include_job_execution_state: Some(true),
+                    status: active_job.status.clone(),
+                    step_timeout_in_minutes,
+                    client_token,
+                })?),
+                mqttrust::QoS::AtLeastOnce,
+            )?;
 
-        Ok(())
+            active_job.version_number += 1;
+
+            Ok(())
+        } else {
+            Err(JobError::NoActiveJob)
+        }
     }
 
     fn handle_job_execution(
@@ -88,50 +91,46 @@ impl JobAgent {
         execution: JobExecution,
     ) -> Result<Option<JobNotification>, JobError> {
         match execution.status {
-            JobStatus::Queued if self.active_job.is_none() => {
+            JobStatus::Queued if self.active_job.is_none() && execution.job_document.is_some() => {
                 // There is a new queued job available, and we are not currently
                 // processing a job. Update the status to InProgress, and set it
                 // active in the accepted response
                 // (`$aws/things/{thingName}/jobs/{jobId}/update/accepted`).
-                let client_token = self.get_client_token(client.client_id())?;
-                self.update_job_execution_internal(
-                    client,
-                    &execution.job_id,
-                    JobStatus::InProgress,
-                    execution.version_number,
-                    client_token,
-                    None,
-                    None,
-                )?;
+                self.active_job = Some(JobNotification {
+                    job_id: execution.job_id,
+                    version_number: execution.version_number,
+                    status: JobStatus::InProgress,
+                    details: execution.job_document.unwrap(),
+                });
+                self.update_job_execution_internal(client, None, None)?;
 
                 Ok(None)
             }
-            JobStatus::InProgress if self.active_job.is_none() => {
+            JobStatus::InProgress
+                if self.active_job.is_none() && execution.job_document.is_some() =>
+            {
                 // If we dont have an active job, and the cloud reports job
                 // should be active, it means something panicked, or we lost
-                // track of the current job
-                let client_token = self.get_client_token(client.client_id())?;
-                self.update_job_execution_internal(
-                    client,
-                    &execution.job_id,
-                    JobStatus::Failed,
-                    execution.version_number,
-                    client_token,
-                    None,
-                    None,
-                )?;
+                // track of the current job.
+                // TODO: Start over on this job, instead of failing it!
+                self.active_job = Some(JobNotification {
+                    job_id: execution.job_id,
+                    version_number: execution.version_number,
+                    status: JobStatus::Failed,
+                    details: execution.job_document.unwrap(),
+                });
+                self.update_job_execution_internal(client, None, None)?;
                 Ok(None)
             }
             JobStatus::InProgress if self.active_job.is_some() => {
                 // If we have an active job, and the cloud reports job should be
                 // active, it means there is an update for the currently
                 // executing job, perhaps requested by the device
-                // TODO:
 
+                // TODO:
                 // Validate that the job update is indeed for the active_job
                 // if execution.job_id == self.active_job {
                 //     self.active_job = Some(JobNotification {
-
                 //         ..self.active_job.clone().unwrap()
                 //     });
                 // }
@@ -164,7 +163,7 @@ impl IotJobsData for JobAgent {
         let thing_name = client.client_id();
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/{}/get", thing_name, job_id,)
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/{}/get", thing_name, job_id)
             .map_err(|_| JobError::Formatting)?;
 
         let p = serde_json::to_vec(&DescribeJobExecutionRequest {
@@ -186,7 +185,7 @@ impl IotJobsData for JobAgent {
         let thing_name = client.client_id();
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/get", thing_name,)
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/get", thing_name)
             .map_err(|_| JobError::Formatting)?;
 
         client.publish::<MaxTopicLen, consts::U128>(
@@ -208,7 +207,7 @@ impl IotJobsData for JobAgent {
         let thing_name = client.client_id();
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/start-next", thing_name,)
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/start-next", thing_name)
             .map_err(|_| JobError::Formatting)?;
 
         client.publish::<MaxTopicLen, consts::U128>(
@@ -228,21 +227,10 @@ impl IotJobsData for JobAgent {
         client: &impl mqttrust::Mqtt,
         status: JobStatus,
     ) -> Result<(), JobError> {
-        let client_token = self.get_client_token(client.client_id())?;
-
-        if let Some(ref job) = &self.active_job {
-            self.update_job_execution_internal(
-                client,
-                job.job_id.as_str(),
-                status,
-                job.version_number,
-                client_token,
-                None,
-                None,
-            )
-        } else {
-            Err(JobError::NoActiveJob)
+        if let Some(ref mut active_job) = self.active_job {
+            active_job.status = status;
         }
+        self.update_job_execution_internal(client, None, None)
     }
 
     fn subscribe_to_jobs(&mut self, client: &impl mqttrust::Mqtt) -> Result<(), JobError> {
@@ -395,11 +383,21 @@ impl IotJobsData for JobAgent {
                     }) if execution_state.is_some() && job_document.is_some() => {
                         let state = execution_state.unwrap();
 
+                        let version_number = if let Some(ref active) = self.active_job {
+                            if state.version_number > active.version_number {
+                                state.version_number
+                            } else {
+                                active.version_number
+                            }
+                        } else {
+                            state.version_number
+                        };
+
                         match state.status {
                             JobStatus::Queued | JobStatus::InProgress => {
                                 self.active_job = Some(JobNotification {
                                     job_id,
-                                    version_number: state.version_number,
+                                    version_number,
                                     status: state.status,
                                     details: job_document.unwrap(),
                                 });

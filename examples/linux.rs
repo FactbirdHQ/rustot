@@ -5,7 +5,7 @@ use embedded_nal::Ipv4Addr;
 use mqttrust::{MqttClient, MqttEvent, MqttOptions, Notification, Request};
 
 use rustot::{
-    jobs::{is_job_message, IotJobsData, JobAgent, JobDetails, JobStatus},
+    jobs::{is_job_message, IotJobsData, JobAgent, JobDetails},
     ota::ota::{is_ota_message, OtaAgent, OtaConfig},
 };
 
@@ -80,14 +80,9 @@ fn main() {
                             }
                         }
                     } else if is_ota_message(&publish.topic_name) {
-                        match ota_agent.handle_message(&mqtt_client, &publish) {
+                        match ota_agent.handle_message(&mqtt_client, &mut job_agent, &publish) {
                             Ok(progress) => {
                                 log::info!("OTA Progress: {}%", progress);
-                                if progress == 100 {
-                                    job_agent
-                                        .update_job_execution(&mqtt_client, JobStatus::Succeeded)
-                                        .unwrap();
-                                }
                             }
                             Err(e) => {
                                 log::error!("[{}, {:?}]:", publish.topic_name, publish.qospid);

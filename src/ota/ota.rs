@@ -38,9 +38,9 @@ use serde_cbor;
 use alloc::string::ToString;
 
 use super::cbor::{Bitmap, StreamRequest, StreamResponse};
-use super::pal::{OtaPal, OtaPalError};
+use super::pal::{OtaEvent, OtaPal, OtaPalError};
 use crate::consts::MaxStreamIdLen;
-use crate::jobs::{vec_to_vec, FileDescription, OtaJob};
+use crate::jobs::{vec_to_vec, FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
 use heapless::{consts, String, Vec};
 use mqttrust::{Mqtt, MqttClientError, Publish, QoS, SubscribeTopic};
 
@@ -132,6 +132,7 @@ impl OtaTopicType {
 #[derive(Debug)]
 pub enum OtaError<PalError> {
     Mqtt(MqttClientError),
+    Jobs(JobError),
     BadData,
     Memory,
     Formatting,
@@ -141,6 +142,7 @@ pub enum OtaError<PalError> {
     PalError(OtaPalError<PalError>),
     BadFileHandle,
     RequestRejected,
+    Busy,
     MaxMomentumAbort(u8),
 }
 
@@ -162,11 +164,18 @@ impl<PE> From<MqttClientError> for OtaError<PE> {
     }
 }
 
+impl<PE> From<JobError> for OtaError<PE> {
+    fn from(e: JobError) -> Self {
+        OtaError::Jobs(e)
+    }
+}
+
 pub struct OtaConfig {
     pub block_size: usize,
     pub max_request_momentum: u8,
     pub request_wait_ms: u32,
     pub max_blocks_per_request: u32,
+    pub percentage_change_between_status_update: u8,
 }
 
 impl Default for OtaConfig {
@@ -176,6 +185,7 @@ impl Default for OtaConfig {
             max_request_momentum: 3,
             request_wait_ms: 4500,
             max_blocks_per_request: 128,
+            percentage_change_between_status_update: 5,
         }
     }
 }
@@ -216,6 +226,7 @@ pub struct OtaAgent<P, T> {
     request_timer: T,
     agent_state: AgentState,
     pub image_state: ImageState,
+    next_update_percentage: u8,
 }
 
 pub fn is_ota_message(topic_name: &str) -> bool {
@@ -238,6 +249,7 @@ where
             request_timer,
             agent_state: AgentState::Ready,
             image_state: ImageState::Unknown,
+            next_update_percentage: 0,
         }
     }
 
@@ -249,7 +261,7 @@ where
         self.agent_state = AgentState::Ready;
     }
 
-    // Call this from timer timeout IRQ
+    // Call this from timer timeout IRQ or poll it regularly
     pub fn request_timer_irq(&mut self, client: &impl Mqtt) {
         if self.request_timer.wait().is_ok() {
             if let AgentState::Active(ref mut state) = self.agent_state {
@@ -264,6 +276,7 @@ where
     pub fn handle_message(
         &mut self,
         client: &impl Mqtt,
+        job_agent: &mut impl IotJobsData,
         publish: &Publish,
     ) -> Result<u8, OtaError<P::Error>> {
         match self.agent_state {
@@ -336,12 +349,40 @@ where
                         }
 
                         let blocks_remaining = state.total_blocks_remaining;
+                        let progress =
+                            (((total_blocks - blocks_remaining) * 100) / total_blocks) as u8;
+
                         if blocks_remaining == 0 {
                             log::info!("Received final expected block of file.");
 
-                            self.ota_pal.close_file(&state.file)?;
+                            let event = match self.ota_pal.close_file(&state.file) {
+                                Ok(()) => {
+                                    log::info!("File receive complete and signature is valid.");
+                                    // Update job status to success with 100% progress
+                                    job_agent.update_job_execution(client, JobStatus::Succeeded)?;
+                                    OtaEvent::Activate
+                                }
+                                Err(_e) => {
+                                    // Update job status to failed with reason `e`
+                                    job_agent.update_job_execution(client, JobStatus::Failed)?;
+
+                                    OtaEvent::Fail
+                                }
+                            };
+
+                            // Cleanup, unsubscribe and cleanup file contexts
+                            // self.close().ok();
+
+                            self.ota_pal.complete_callback(event)?;
                         } else {
                             // log::info!("Remaining: {}", state.total_blocks_remaining);
+
+                            if progress == self.next_update_percentage {
+                                // TODO: Include progress here
+                                job_agent.update_job_execution(client, JobStatus::InProgress)?;
+                                self.next_update_percentage +=
+                                    self.config.percentage_change_between_status_update;
+                            }
 
                             if state.request_block_remaining > 1 {
                                 state.request_block_remaining -= 1;
@@ -351,8 +392,7 @@ where
                                 self.publish_get_stream_message(client)?;
                             }
                         }
-
-                        Ok((((total_blocks - blocks_remaining) * 100) / total_blocks) as u8)
+                        Ok(progress)
                     }
                     Some(OtaTopicType::CborGetRejected(_)) => {
                         self.agent_state = AgentState::Ready;
@@ -369,7 +409,21 @@ where
         client: &impl Mqtt,
         job: OtaJob,
     ) -> Result<(), OtaError<P::Error>> {
+        if let AgentState::Active(OtaState {
+            ref stream_name, ..
+        }) = self.agent_state
+        {
+            // Already have an OTA in progress
+            if stream_name.as_str() == job.streamname.as_str() {
+                return Ok(());
+            } else {
+                // We dont handle parallel OTA jobs!
+                return Err(OtaError::Busy);
+            }
+        }
         // Subscribe to `$aws/things/{thingName}/streams/{streamId}/data/cbor`
+
+        log::debug!("Accepted a new JOB! {:?}", job);
 
         let mut topic_path = String::<consts::U256>::new();
         ufmt::uwrite!(
