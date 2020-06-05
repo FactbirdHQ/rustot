@@ -228,12 +228,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itoa"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8b7a7c0c47db5545ed3fef7468ee7bb5b74691498139e4b3f6a20685dc6dd8e"
-
-[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -546,19 +540,13 @@ dependencies = [
  "no-std-net",
  "rust-crypto",
  "serde",
+ "serde-json-core",
  "serde_bytes",
  "serde_cbor",
- "serde_json",
  "typenum",
  "ufmt",
  "void",
 ]
-
-[[package]]
-name = "ryu"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed3d612bc64430efeb3f7ee6ef26d590dce0c43249217bddc62112540c7941e1"
 
 [[package]]
 name = "schannel"
@@ -603,6 +591,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-json-core"
+version = "0.1.0"
+source = "git+https://github.com/MathiasKoch/serde-json-core?branch=factbird_mini#59e3fd72e95265f2d04729d6511dccf9cff9b9b5"
+dependencies = [
+ "heapless",
+ "serde",
+]
+
+[[package]]
 name = "serde_bytes"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -630,17 +627,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "serde_json"
-version = "1.0.51"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da07b57ee2623368351e9a0488bb0b261322a15a6e0ae53e243cbdc0f4208da9"
-dependencies = [
- "itoa",
- "ryu",
- "serde",
 ]
 
 [[package]]

@@ -99,14 +99,12 @@
 //! terminal status and is removed from the list.
 
 mod agent;
-mod temp;
+pub mod temp;
 
 pub use agent::{is_job_message, JobAgent};
-pub use temp::vec_to_vec;
 
 #[allow(unused_imports)]
 use serde::{Deserialize, Serialize};
-use serde_json;
 
 use crate::consts::{
     MaxClientTokenLen, MaxJobIdLen, MaxPendingJobs, MaxRunningJobs, MaxThingNameLen,
@@ -564,9 +562,9 @@ pub trait IotJobsData {
     /// for a thing (status IN_PROGRESS or QUEUED).
     ///
     /// Topic: $aws/things/{thingName}/jobs/{jobId}/get
-    fn describe_job_execution(
+    fn describe_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         job_id: &str,
         execution_number: Option<i64>,
         include_job_document: Option<bool>,
@@ -575,7 +573,10 @@ pub trait IotJobsData {
     /// Gets the list of all jobs for a thing that are not in a terminal status
     ///
     /// Topic: $aws/things/{thingName}/jobs/get
-    fn get_pending_job_executions(&mut self, client: &impl mqttrust::Mqtt) -> Result<(), JobError>;
+    fn get_pending_job_executions<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+        &mut self,
+        client: &impl mqttrust::Mqtt<P>,
+    ) -> Result<(), JobError>;
 
     /// Gets and starts the next pending job execution for a thing (status
     /// IN_PROGRESS or QUEUED).
@@ -599,9 +600,9 @@ pub trait IotJobsData {
     /// the step timer expires.
     ///
     /// Topic: $aws/things/{thingName}/jobs/start-next
-    fn start_next_pending_job_execution(
+    fn start_next_pending_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         step_timeout_in_minutes: Option<i64>,
     ) -> Result<(), JobError>;
 
@@ -611,9 +612,9 @@ pub trait IotJobsData {
     /// again, the job execution times out when the step timer expires.
     ///
     /// Topic: $aws/things/{thingName}/jobs/{jobId}/update
-    fn update_job_execution(
+    fn update_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         status: JobStatus,
     ) -> Result<(), JobError>;
 
@@ -622,22 +623,28 @@ pub trait IotJobsData {
     /// Topics:
     /// - $aws/things/{thingName}/jobs/notify-next
     /// - $aws/things/{thingName}/jobs/$next/get/accepted
-    fn subscribe_to_jobs(&mut self, client: &impl mqttrust::Mqtt) -> Result<(), JobError>;
+    fn subscribe_to_jobs<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+        &mut self,
+        client: &impl mqttrust::Mqtt<P>,
+    ) -> Result<(), JobError>;
 
     /// Unsubscribe from relevant job topics.
     ///
     /// Topics:
     /// - $aws/things/{thingName}/jobs/notify-next
     /// - $aws/things/{thingName}/jobs/$next/get/accepted
-    fn unsubscribe_from_jobs(&mut self, client: &impl mqttrust::Mqtt) -> Result<(), JobError>;
+    fn unsubscribe_from_jobs<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+        &mut self,
+        client: &impl mqttrust::Mqtt<P>,
+    ) -> Result<(), JobError>;
 
     /// Handle incomming job messages and process them accordingly.
     ///
     /// Anything received on `$aws/things/{thingName}/jobs/+` will get processed
     /// by this function
-    fn handle_message(
+    fn handle_message<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         publish: &mqttrust::Publish,
     ) -> Result<Option<JobNotification>, JobError>;
 }
@@ -707,9 +714,9 @@ impl JobTopicType {
 #[derive(Debug)]
 pub enum JobError {
     Mqtt(mqttrust::MqttClientError),
-    Serde(serde_json::Error),
-    // Serialize(serde_json_core::ser::Error),
-    // Deserialize(serde_json_core::de::Error),
+    // Serde(JsonError),
+    Serialize(serde_json_core::ser::Error),
+    Deserialize(serde_json_core::de::Error),
     Rejected(ErrorResponse),
     Memory,
     Formatting,
@@ -717,24 +724,24 @@ pub enum JobError {
     NoActiveJob,
 }
 
-impl From<serde_json::Error> for JobError {
-    fn from(e: serde_json::Error) -> Self {
-        JobError::Serde(e)
-    }
-}
+// impl From<JsonError> for JobError {
+//     fn from(e: JsonError) -> Self {
+//         JobError::Serde(e)
+//     }
+// }
 
 // Temp until https://github.com/japaric/heapless/pull/151, or serde_json can
 // be replaced with serde_json_core
-// impl From<serde_json_core::ser::Error> for JobError {
-//     fn from(e: serde_json_core::ser::Error) -> Self {
-//         JobError::Serialize(e)
-//     }
-// }
-// impl From<serde_json_core::de::Error> for JobError {
-//     fn from(e: serde_json_core::de::Error) -> Self {
-//         JobError::Deserialize(e)
-//     }
-// }
+impl From<serde_json_core::ser::Error> for JobError {
+    fn from(e: serde_json_core::ser::Error) -> Self {
+        JobError::Serialize(e)
+    }
+}
+impl From<serde_json_core::de::Error> for JobError {
+    fn from(e: serde_json_core::de::Error) -> Self {
+        JobError::Deserialize(e)
+    }
+}
 
 impl From<mqttrust::MqttClientError> for JobError {
     fn from(e: mqttrust::MqttClientError) -> Self {
@@ -813,6 +820,7 @@ mod test {
     use super::*;
     use core::cell::RefCell;
     use heapless::{consts, ArrayLength};
+    use serde_json_core::{from_slice, to_string, to_vec};
 
     pub struct MockClient<L: ArrayLength<u8>> {
         client_id: String<L>,
@@ -884,7 +892,7 @@ mod test {
             Some(
                 &mqttrust::PublishRequest::new(
                     alloc::format!("$aws/things/{}/jobs/{}/update", thing_name, "mini"),
-                    serde_json::to_vec(&UpdateJobExecutionRequest {
+                    to_vec::<consts::U512, _>(&UpdateJobExecutionRequest {
                         execution_number: None,
                         expected_version: 1,
                         include_job_document: Some(true),
@@ -894,6 +902,7 @@ mod test {
                         client_token: String::from("0:test_thing"),
                     })
                     .unwrap()
+                    .to_vec()
                 )
                 .into()
             )
@@ -909,7 +918,7 @@ mod test {
                 client_token: String::from("test_client:token"),
             };
             assert_eq!(
-                &serde_json::to_string(&req).unwrap(),
+                to_string::<consts::U512, _>(&req).unwrap().as_str(),
                 r#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
             );
         }
@@ -919,7 +928,7 @@ mod test {
                 client_token: String::from("test_client:token_pending"),
             };
             assert_eq!(
-                &serde_json::to_string(&req).unwrap(),
+                &to_string::<consts::U512, _>(&req).unwrap(),
                 r#"{"clientToken":"test_client:token_pending"}"#
             );
         }
@@ -930,7 +939,7 @@ mod test {
                 step_timeout_in_minutes: Some(50),
             };
             assert_eq!(
-                &serde_json::to_string(&req).unwrap(),
+                &to_string::<consts::U512, _>(&req).unwrap(),
                 r#"{"stepTimeoutInMinutes":50,"clientToken":"test_client:token_next_pending"}"#
             );
             let req_none = StartNextPendingJobExecutionRequest {
@@ -938,7 +947,7 @@ mod test {
                 step_timeout_in_minutes: None,
             };
             assert_eq!(
-                &serde_json::to_string(&req_none).unwrap(),
+                &to_string::<consts::U512, _>(&req_none).unwrap(),
                 r#"{"clientToken":"test_client:token_next_pending"}"#
             );
         }
@@ -954,7 +963,7 @@ mod test {
                 status: JobStatus::Failed,
             };
             assert_eq!(
-                &serde_json::to_string(&req).unwrap(),
+                &to_string::<consts::U512, _>(&req).unwrap(),
                 r#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#
             );
         }
@@ -983,7 +992,7 @@ mod test {
         "#
         .to_vec();
 
-        let response: NextJobExecutionChanged = serde_json::from_slice(&payload).unwrap();
+        let response: NextJobExecutionChanged = from_slice(&payload).unwrap();
 
         assert_eq!(
             response,
@@ -1017,7 +1026,7 @@ mod test {
             }"#
         .to_vec();
 
-        let response: GetPendingJobExecutionsResponse = serde_json::from_slice(&payload).unwrap();
+        let response: GetPendingJobExecutionsResponse = from_slice(&payload).unwrap();
 
         assert_eq!(
             response,
@@ -1057,7 +1066,7 @@ mod test {
             })
             .unwrap();
 
-        let response: GetPendingJobExecutionsResponse = serde_json::from_slice(&payload).unwrap();
+        let response: GetPendingJobExecutionsResponse = from_slice(&payload).unwrap();
 
         assert_eq!(
             response,
@@ -1092,7 +1101,7 @@ mod test {
             }"#
         .to_vec();
 
-        let response: DescribeJobExecutionResponse = serde_json::from_slice(&payload).unwrap();
+        let response: DescribeJobExecutionResponse = from_slice(&payload).unwrap();
 
         assert_eq!(
             response,
@@ -1151,7 +1160,7 @@ mod test {
           }"#
         .to_vec();
 
-        let response: DescribeJobExecutionResponse = serde_json::from_slice(&payload).unwrap();
+        let response: DescribeJobExecutionResponse = from_slice(&payload).unwrap();
 
         let mut files = Vec::new();
         files
@@ -1220,7 +1229,7 @@ mod test {
             }"#
         .to_vec();
 
-        let response: DescribeJobExecutionResponse = serde_json::from_slice(&payload).unwrap();
+        let response: DescribeJobExecutionResponse = from_slice(&payload).unwrap();
 
         assert_eq!(
             response,

@@ -40,7 +40,7 @@ use alloc::string::ToString;
 use super::cbor::{Bitmap, StreamRequest, StreamResponse};
 use super::pal::{OtaEvent, OtaPal, OtaPalError};
 use crate::consts::MaxStreamIdLen;
-use crate::jobs::{vec_to_vec, FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
+use crate::jobs::{FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
 use heapless::{consts, String, Vec};
 use mqttrust::{Mqtt, MqttClientError, Publish, QoS, SubscribeTopic};
 
@@ -257,7 +257,10 @@ where
         self.agent_state != AgentState::Ready
     }
 
-    pub fn close(&mut self, client: &impl Mqtt) -> Result<(), OtaError<P::Error>> {
+    pub fn close<M: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+        &mut self,
+        client: &impl Mqtt<M>,
+    ) -> Result<(), OtaError<P::Error>> {
         match self.agent_state {
             AgentState::Ready => Ok(()),
             AgentState::Active(ref state) => {
@@ -282,7 +285,10 @@ where
     }
 
     // Call this from timer timeout IRQ or poll it regularly
-    pub fn request_timer_irq(&mut self, client: &impl Mqtt) {
+    pub fn request_timer_irq<M: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+        &mut self,
+        client: &impl Mqtt<M>,
+    ) {
         if self.request_timer.wait().is_ok() {
             if let AgentState::Active(ref mut state) = self.agent_state {
                 if state.total_blocks_remaining > 0 {
@@ -293,9 +299,9 @@ where
         }
     }
 
-    pub fn handle_message(
+    pub fn handle_message<M: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl Mqtt,
+        client: &impl Mqtt<M>,
         job_agent: &mut impl IotJobsData,
         publish: &Publish,
     ) -> Result<u8, OtaError<P::Error>> {
@@ -418,9 +424,9 @@ where
         }
     }
 
-    pub fn finalize_ota_job(
+    pub fn finalize_ota_job<M: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl Mqtt,
+        client: &impl Mqtt<M>,
         status: JobStatus,
     ) -> Result<(), OtaError<P::Error>> {
         let event = match status {
@@ -431,9 +437,9 @@ where
         Ok(self.ota_pal.complete_callback(event)?)
     }
 
-    pub fn process_ota_job(
+    pub fn process_ota_job<M: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl Mqtt,
+        client: &impl Mqtt<M>,
         job: OtaJob,
     ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(OtaState {
@@ -503,7 +509,10 @@ where
         }
     }
 
-    fn publish_get_stream_message(&mut self, client: &impl Mqtt) -> Result<(), OtaError<P::Error>> {
+    fn publish_get_stream_message<M: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+        &mut self,
+        client: &impl Mqtt<M>,
+    ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(ref mut state) = self.agent_state {
             if state.request_momentum >= self.config.max_request_momentum {
                 return Err(OtaError::MaxMomentumAbort(self.config.max_request_momentum));
@@ -534,13 +543,7 @@ where
             // failure to communicate and will cause us to abort the OTA.
             state.request_momentum += 1;
 
-            client
-                .publish(
-                    topic,
-                    vec_to_vec::<_, heapless::consts::U384>(payload),
-                    QoS::AtMostOnce,
-                )
-                .ok();
+            client.publish(topic, payload.into(), QoS::AtMostOnce).ok();
 
             log::info!("Requesting blocks! Momentum: {}", state.request_momentum);
             // Start request timer

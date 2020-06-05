@@ -1,4 +1,3 @@
-use super::temp::vec_to_vec;
 use super::{
     DescribeJobExecutionRequest, DescribeJobExecutionResponse, ErrorResponse,
     GetPendingJobExecutionsRequest, IotJobsData, JobError, JobExecution, JobNotification,
@@ -7,6 +6,8 @@ use super::{
 };
 use crate::consts::{MaxClientTokenLen, MaxTopicLen};
 use heapless::{consts, String, Vec};
+
+use serde_json_core::{from_slice, to_vec};
 
 #[derive(Default)]
 pub struct JobAgent {
@@ -43,9 +44,9 @@ impl JobAgent {
         Ok(client_token)
     }
 
-    fn update_job_execution_internal(
+    fn update_job_execution_internal<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         execution_number: Option<i64>,
         step_timeout_in_minutes: Option<i64>,
     ) -> Result<(), JobError> {
@@ -63,9 +64,9 @@ impl JobAgent {
             .map_err(|_| JobError::Formatting)?;
 
             // Always include job_document, and job_execution_state!
-            client.publish::<MaxTopicLen, consts::U512>(
+            client.publish::<MaxTopicLen>(
                 topic,
-                vec_to_vec(serde_json::to_vec(&UpdateJobExecutionRequest {
+                to_vec::<consts::U512, _>(&UpdateJobExecutionRequest {
                     execution_number,
                     expected_version: active_job.version_number,
                     include_job_document: Some(true),
@@ -73,7 +74,9 @@ impl JobAgent {
                     status: active_job.status.clone(),
                     step_timeout_in_minutes,
                     client_token,
-                })?),
+                })?
+                .to_vec()
+                .into(),
                 mqttrust::QoS::AtLeastOnce,
             )?;
 
@@ -85,9 +88,9 @@ impl JobAgent {
         }
     }
 
-    fn handle_job_execution(
+    fn handle_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         execution: JobExecution,
     ) -> Result<Option<JobNotification>, JobError> {
         match execution.status {
@@ -153,9 +156,9 @@ impl JobAgent {
 }
 
 impl IotJobsData for JobAgent {
-    fn describe_job_execution(
+    fn describe_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         job_id: &str,
         execution_number: Option<i64>,
         include_job_document: Option<bool>,
@@ -166,42 +169,44 @@ impl IotJobsData for JobAgent {
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/{}/get", thing_name, job_id)
             .map_err(|_| JobError::Formatting)?;
 
-        let p = serde_json::to_vec(&DescribeJobExecutionRequest {
+        let p = to_vec::<consts::U128, _>(&DescribeJobExecutionRequest {
             execution_number,
             include_job_document,
             client_token: self.get_client_token(thing_name)?,
-        })?;
+        })?
+        .to_vec();
 
-        client.publish::<MaxTopicLen, consts::U128>(
-            topic,
-            vec_to_vec(p),
-            mqttrust::QoS::AtLeastOnce,
-        )?;
+        client.publish::<MaxTopicLen>(topic, p.into(), mqttrust::QoS::AtLeastOnce)?;
 
         Ok(())
     }
 
-    fn get_pending_job_executions(&mut self, client: &impl mqttrust::Mqtt) -> Result<(), JobError> {
+    fn get_pending_job_executions<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+        &mut self,
+        client: &impl mqttrust::Mqtt<P>,
+    ) -> Result<(), JobError> {
         let thing_name = client.client_id();
 
         let mut topic = String::new();
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/get", thing_name)
             .map_err(|_| JobError::Formatting)?;
 
-        client.publish::<MaxTopicLen, consts::U128>(
+        client.publish::<MaxTopicLen>(
             topic,
-            vec_to_vec(serde_json::to_vec(&GetPendingJobExecutionsRequest {
+            to_vec::<consts::U128, _>(&GetPendingJobExecutionsRequest {
                 client_token: self.get_client_token(thing_name)?,
-            })?),
+            })?
+            .to_vec()
+            .into(),
             mqttrust::QoS::AtLeastOnce,
         )?;
 
         Ok(())
     }
 
-    fn start_next_pending_job_execution(
+    fn start_next_pending_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         step_timeout_in_minutes: Option<i64>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
@@ -210,21 +215,23 @@ impl IotJobsData for JobAgent {
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/start-next", thing_name)
             .map_err(|_| JobError::Formatting)?;
 
-        client.publish::<MaxTopicLen, consts::U128>(
+        client.publish::<MaxTopicLen>(
             topic,
-            vec_to_vec(serde_json::to_vec(&StartNextPendingJobExecutionRequest {
+            to_vec::<consts::U128, _>(&StartNextPendingJobExecutionRequest {
                 step_timeout_in_minutes,
                 client_token: self.get_client_token(thing_name)?,
-            })?),
+            })?
+            .to_vec()
+            .into(),
             mqttrust::QoS::AtLeastOnce,
         )?;
 
         Ok(())
     }
 
-    fn update_job_execution(
+    fn update_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         status: JobStatus,
     ) -> Result<(), JobError> {
         if let Some(ref mut active_job) = self.active_job {
@@ -233,7 +240,10 @@ impl IotJobsData for JobAgent {
         self.update_job_execution_internal(client, None, None)
     }
 
-    fn subscribe_to_jobs(&mut self, client: &impl mqttrust::Mqtt) -> Result<(), JobError> {
+    fn subscribe_to_jobs<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+        &mut self,
+        client: &impl mqttrust::Mqtt<P>,
+    ) -> Result<(), JobError> {
         let thing_name = client.client_id();
         let mut topics: Vec<mqttrust::SubscribeTopic, consts::U3> = Vec::new();
 
@@ -271,7 +281,10 @@ impl IotJobsData for JobAgent {
         Ok(())
     }
 
-    fn unsubscribe_from_jobs(&mut self, client: &impl mqttrust::Mqtt) -> Result<(), JobError> {
+    fn unsubscribe_from_jobs<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+        &mut self,
+        client: &impl mqttrust::Mqtt<P>,
+    ) -> Result<(), JobError> {
         let thing_name = client.client_id();
 
         let mut topics: Vec<alloc::string::String, consts::U2> = Vec::new();
@@ -301,9 +314,9 @@ impl IotJobsData for JobAgent {
         Ok(())
     }
 
-    fn handle_message(
+    fn handle_message<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
         &mut self,
-        client: &impl mqttrust::Mqtt,
+        client: &impl mqttrust::Mqtt<P>,
         publish: &mqttrust::Publish,
     ) -> Result<Option<JobNotification>, JobError> {
         match JobTopicType::check(
@@ -324,7 +337,7 @@ impl IotJobsData for JobAgent {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/notify-next`
 
-                let response: NextJobExecutionChanged = serde_json::from_slice(&publish.payload)?;
+                let response: NextJobExecutionChanged = from_slice(&publish.payload)?;
                 log::debug!("notify-next message! {:?}", response);
                 if let Some(execution) = response.execution {
                     // Job updated from the cloud!
@@ -345,9 +358,7 @@ impl IotJobsData for JobAgent {
                 // `$aws/things/{thingName}/jobs/{jobId}/get/accepted`
 
                 log::debug!("{}/get/accepted message!", job_id);
-                if let Ok(response) =
-                    serde_json::from_slice::<DescribeJobExecutionResponse>(&publish.payload)
-                {
+                if let Ok(response) = from_slice::<DescribeJobExecutionResponse>(&publish.payload) {
                     if let Some(execution) = response.execution {
                         self.handle_job_execution(client, execution)
                     } else {
@@ -375,7 +386,7 @@ impl IotJobsData for JobAgent {
                 // `$aws/things/{thingName}/jobs/{jobId}/update/accepted`
                 log::debug!("{}/update/accepted message!", job_id);
 
-                match serde_json::from_slice::<UpdateJobExecutionResponse>(&publish.payload) {
+                match from_slice::<UpdateJobExecutionResponse>(&publish.payload) {
                     Ok(UpdateJobExecutionResponse {
                         execution_state,
                         job_document,
@@ -410,6 +421,9 @@ impl IotJobsData for JobAgent {
                     }
                     Ok(_) => {
                         // job_execution_state or job_document is missing, should never happen!
+                        log::error!(
+                            "job_execution_state or job_document is missing, should never happen!"
+                        );
                         Ok(None)
                     }
                     Err(_) => Err(JobError::InvalidTopic),
@@ -419,7 +433,7 @@ impl IotJobsData for JobAgent {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/get/rejected`
                 log::debug!("{}/get/rejected message!", job_id);
-                let error: ErrorResponse = serde_json::from_slice(&publish.payload)?;
+                let error: ErrorResponse = from_slice(&publish.payload)?;
                 log::debug!("{:?}", error);
                 Err(JobError::Rejected(error))
             }
@@ -427,7 +441,7 @@ impl IotJobsData for JobAgent {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/update/rejected`
                 log::debug!("{}/update/rejected message!", job_id);
-                let error: ErrorResponse = serde_json::from_slice(&publish.payload)?;
+                let error: ErrorResponse = from_slice(&publish.payload)?;
                 log::debug!("{:?}", error);
                 Err(JobError::Rejected(error))
             }
