@@ -15,7 +15,8 @@ use common::timer::SysTimer;
 use heapless::{consts, spsc::Queue};
 use std::thread;
 
-static mut Q: Queue<Request, consts::U10> = Queue(heapless::i::Queue::new());
+static mut Q: Queue<Request<heapless::Vec<u8, heapless::consts::U512>>, consts::U10> =
+    Queue(heapless::i::Queue::new());
 
 fn main() {
     env_logger::builder()
@@ -28,17 +29,13 @@ fn main() {
 
     log::info!("Starting!");
 
-    let thing_name = heapless::String::<heapless::consts::U32>::from("test_mini_2");
+    let thing_name = "test_mini_2";
 
     // Connect to broker.hivemq.com:1883
     let mut mqtt_eventloop = MqttEvent::new(
         c,
         SysTimer::new(),
-        MqttOptions::new(
-            thing_name.as_str(),
-            Ipv4Addr::new(52, 208, 158, 107).into(),
-            8883,
-        ),
+        MqttOptions::new(thing_name, Ipv4Addr::new(52, 208, 158, 107).into(), 8883),
     );
 
     let mqtt_client = MqttClient::new(p, thing_name);
@@ -61,7 +58,7 @@ fn main() {
             // ota_agent.request_timer_irq(&mqtt_client);
 
             match nb::block!(mqtt_eventloop.yield_event(&network)) {
-                Ok(Notification::Publish(publish)) => {
+                Ok(Notification::Publish(mut publish)) => {
                     if is_job_message(&publish.topic_name) {
                         match job_agent.handle_message(&mqtt_client, &publish) {
                             Ok(None) => {}
@@ -80,7 +77,7 @@ fn main() {
                             }
                         }
                     } else if is_ota_message(&publish.topic_name) {
-                        match ota_agent.handle_message(&mqtt_client, &mut job_agent, &publish) {
+                        match ota_agent.handle_message(&mqtt_client, &mut job_agent, &mut publish) {
                             Ok(progress) => {
                                 log::info!("OTA Progress: {}%", progress);
                             }

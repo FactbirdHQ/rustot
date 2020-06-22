@@ -28,24 +28,13 @@ mqttrust = { path = "../mqttrust", features = ["logging"] }
 no-std-net = "0.3.0"
 serde = { version = "^1", default-features = false, features = ["derive"] }
 serde-json-core = { git = "https://github.com/MathiasKoch/serde-json-core", branch = "factbird_mini" }
-serde_cbor =  { version = "^0.11", default-features = false, features = ["alloc"] }
+serde_cbor =  { version = "^0.11", default-features = false }
 bitmaps = { version = "^2", default-features = false }
 typenum = "^1"
-serde_bytes =  { version = "^0.11", default-features = false, features = ["alloc"] }
-
 
 [dev-dependencies]
-embedded-nal = { git = "https://github.com/thejpster/embedded-nal" }
+embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", branch = "factbird_mini" }
 void = { version = "1.0.2", default-features = false }
 env_logger = "0.7.1"
 native-tls = "^0.2"
 rust-crypto = "^0.2"
-
-[patch.'https://github.com/thejpster/embedded-nal']
-embedded-nal = { path = "../embedded-nal" }
-
-[patch.'https://github.com/BlackbirdHQ/mqttrust']
-mqttrust = { path = "../mqttrust" }
-
-[patch.crates-io]
-mqttrs = { path = "../mqttrs" }

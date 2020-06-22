@@ -99,7 +99,6 @@
 //! terminal status and is removed from the list.
 
 mod agent;
-pub mod temp;
 
 pub use agent::{is_job_message, JobAgent};
 
@@ -562,7 +561,7 @@ pub trait IotJobsData {
     /// for a thing (status IN_PROGRESS or QUEUED).
     ///
     /// Topic: $aws/things/{thingName}/jobs/{jobId}/get
-    fn describe_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn describe_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         job_id: &str,
@@ -573,7 +572,7 @@ pub trait IotJobsData {
     /// Gets the list of all jobs for a thing that are not in a terminal status
     ///
     /// Topic: $aws/things/{thingName}/jobs/get
-    fn get_pending_job_executions<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn get_pending_job_executions<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError>;
@@ -600,7 +599,7 @@ pub trait IotJobsData {
     /// the step timer expires.
     ///
     /// Topic: $aws/things/{thingName}/jobs/start-next
-    fn start_next_pending_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn start_next_pending_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         step_timeout_in_minutes: Option<i64>,
@@ -612,7 +611,7 @@ pub trait IotJobsData {
     /// again, the job execution times out when the step timer expires.
     ///
     /// Topic: $aws/things/{thingName}/jobs/{jobId}/update
-    fn update_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn update_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         status: JobStatus,
@@ -623,7 +622,7 @@ pub trait IotJobsData {
     /// Topics:
     /// - $aws/things/{thingName}/jobs/notify-next
     /// - $aws/things/{thingName}/jobs/$next/get/accepted
-    fn subscribe_to_jobs<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn subscribe_to_jobs<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError>;
@@ -633,7 +632,7 @@ pub trait IotJobsData {
     /// Topics:
     /// - $aws/things/{thingName}/jobs/notify-next
     /// - $aws/things/{thingName}/jobs/$next/get/accepted
-    fn unsubscribe_from_jobs<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn unsubscribe_from_jobs<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError>;
@@ -642,10 +641,10 @@ pub trait IotJobsData {
     ///
     /// Anything received on `$aws/things/{thingName}/jobs/+` will get processed
     /// by this function
-    fn handle_message<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn handle_message<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
-        publish: &mqttrust::Publish,
+        publish: &mqttrust::PublishNotification,
     ) -> Result<Option<JobNotification>, JobError>;
 }
 
@@ -713,7 +712,7 @@ impl JobTopicType {
 
 #[derive(Debug)]
 pub enum JobError {
-    Mqtt(mqttrust::MqttClientError),
+    Mqtt,
     // Serde(JsonError),
     Serialize(serde_json_core::ser::Error),
     Deserialize(serde_json_core::de::Error),
@@ -744,8 +743,8 @@ impl From<serde_json_core::de::Error> for JobError {
 }
 
 impl From<mqttrust::MqttClientError> for JobError {
-    fn from(e: mqttrust::MqttClientError) -> Self {
-        JobError::Mqtt(e)
+    fn from(_: mqttrust::MqttClientError) -> Self {
+        JobError::Mqtt
     }
 }
 
@@ -819,32 +818,39 @@ pub struct JobNotification {
 mod test {
     use super::*;
     use core::cell::RefCell;
-    use heapless::{consts, ArrayLength};
+    use heapless::{consts, ArrayLength, Vec};
     use serde_json_core::{from_slice, to_string, to_vec};
 
-    pub struct MockClient<L: ArrayLength<u8>> {
+    pub struct MockClient<L: ArrayLength<u8>, P: ArrayLength<u8>> {
         client_id: String<L>,
-        pub calls: RefCell<alloc::vec::Vec<mqttrust::Request>>,
+        pub calls: RefCell<Vec<mqttrust::Request<Vec<u8, P>>, consts::U15>>,
     }
 
-    impl<L: ArrayLength<u8>> MockClient<L> {
+    impl<L: ArrayLength<u8>, P: ArrayLength<u8>> MockClient<L, P> {
         pub fn new(client_id: String<L>) -> Self {
             MockClient {
                 client_id,
-                calls: RefCell::new(alloc::vec::Vec::new()),
+                calls: RefCell::new(Vec::new()),
             }
         }
     }
 
-    impl<L: ArrayLength<u8>> mqttrust::Mqtt for MockClient<L> {
+    impl<L: ArrayLength<u8>, P: ArrayLength<u8>> mqttrust::Mqtt<Vec<u8, P>> for MockClient<L, P> {
         fn client_id(&self) -> &str {
             &self.client_id
         }
 
-        fn send(&self, request: mqttrust::Request) -> Result<(), mqttrust::MqttClientError> {
-            self.calls.borrow_mut().push(request);
+        fn send(
+            &self,
+            request: mqttrust::Request<Vec<u8, P>>,
+        ) -> Result<(), mqttrust::MqttClientError> {
+            self.calls
+                .borrow_mut()
+                .push(request)
+                .map_err(|_| mqttrust::MqttClientError::Full)?;
             Ok(())
         }
+        type Error = mqttrust::MqttClientError;
     }
 
     #[test]
@@ -868,20 +874,20 @@ mod test {
                 }
             }
         }
-        "#
-        .to_vec();
+        "#;
 
-        let mqtt = MockClient::new(String::<consts::U128>::from(thing_name));
+        let mqtt: MockClient<consts::U128, consts::U512> =
+            MockClient::new(String::from(thing_name));
         let mut job_agent = JobAgent::new();
         let notification = job_agent
             .handle_message(
                 &mqtt,
-                &mqttrust::Publish {
+                &mqttrust::PublishNotification {
                     dup: false,
                     qospid: mqttrust::QosPid::AtMostOnce,
                     retain: false,
-                    topic_name: alloc::format!("$aws/things/{}/jobs/notify-next", thing_name),
-                    payload,
+                    topic_name: String::from("$aws/things/test_thing/jobs/notify-next"),
+                    payload: Vec::from_slice(payload).unwrap(),
                 },
             )
             .unwrap();
@@ -891,7 +897,7 @@ mod test {
             mqtt.calls.borrow().get(0),
             Some(
                 &mqttrust::PublishRequest::new(
-                    alloc::format!("$aws/things/{}/jobs/{}/update", thing_name, "mini"),
+                    String::from("$aws/things/test_thing/jobs/mini/update"),
                     to_vec::<consts::U512, _>(&UpdateJobExecutionRequest {
                         execution_number: None,
                         expected_version: 1,
@@ -902,7 +908,6 @@ mod test {
                         client_token: String::from("0:test_thing"),
                     })
                     .unwrap()
-                    .to_vec()
                 )
                 .into()
             )
@@ -971,7 +976,7 @@ mod test {
 
     #[test]
     fn deserialize_next_job_execution_changed() {
-        let payload: alloc::vec::Vec<u8> = br#"
+        let payload = br#"
         {
             "timestamp": 1587471560,
             "execution": {
@@ -989,10 +994,9 @@ mod test {
                 }
             }
         }
-        "#
-        .to_vec();
+        "#;
 
-        let response: NextJobExecutionChanged = from_slice(&payload).unwrap();
+        let response: NextJobExecutionChanged = from_slice(payload).unwrap();
 
         assert_eq!(
             response,
@@ -1019,14 +1023,13 @@ mod test {
 
     #[test]
     fn deserialize_get_pending_job_executions_response() {
-        let payload: alloc::vec::Vec<u8> = br#"{
+        let payload = br#"{
                 "clientToken": "0:client_name",
                 "timestamp": 1587381778,
                 "inProgressJobs": []
-            }"#
-        .to_vec();
+            }"#;
 
-        let response: GetPendingJobExecutionsResponse = from_slice(&payload).unwrap();
+        let response: GetPendingJobExecutionsResponse = from_slice(payload).unwrap();
 
         assert_eq!(
             response,
@@ -1038,7 +1041,7 @@ mod test {
             }
         );
 
-        let payload: alloc::vec::Vec<u8> = br#"{
+        let payload = br#"{
                 "clientToken": "0:client_name",
                 "timestamp": 1587381778,
                 "inProgressJobs": [],
@@ -1051,8 +1054,7 @@ mod test {
                         "versionNumber": 1
                     }
                 ]
-            }"#
-        .to_vec();
+            }"#;
 
         let mut queued_jobs: Vec<JobExecutionSummary, MaxPendingJobs> = Vec::new();
         queued_jobs
@@ -1066,7 +1068,7 @@ mod test {
             })
             .unwrap();
 
-        let response: GetPendingJobExecutionsResponse = from_slice(&payload).unwrap();
+        let response: GetPendingJobExecutionsResponse = from_slice(payload).unwrap();
 
         assert_eq!(
             response,
@@ -1081,7 +1083,7 @@ mod test {
 
     #[test]
     fn deserialize_describe_job_execution_response() {
-        let payload: alloc::vec::Vec<u8> = br#"{
+        let payload = br#"{
                 "clientToken": "0:client_name",
                 "timestamp": 1587381778,
                 "execution": {
@@ -1098,10 +1100,9 @@ mod test {
                         }
                     }
                 }
-            }"#
-        .to_vec();
+            }"#;
 
-        let response: DescribeJobExecutionResponse = from_slice(&payload).unwrap();
+        let response: DescribeJobExecutionResponse = from_slice(payload).unwrap();
 
         assert_eq!(
             response,
@@ -1129,7 +1130,7 @@ mod test {
 
     #[test]
     fn deserialize_ota_response() {
-        let payload: alloc::vec::Vec<u8> = br#"{
+        let payload = br#"{
             "clientToken": "0:client_name",
             "timestamp": 1587541592,
             "execution": {
@@ -1157,10 +1158,9 @@ mod test {
                 }
               }
             }
-          }"#
-        .to_vec();
+          }"#;
 
-        let response: DescribeJobExecutionResponse = from_slice(&payload).unwrap();
+        let response: DescribeJobExecutionResponse = from_slice(payload).unwrap();
 
         let mut files = Vec::new();
         files
@@ -1209,7 +1209,7 @@ mod test {
     // Temp. ignored. Progress for serde(other) can be tracked at:
     // https://github.com/serde-rs/serde/issues/912
     fn deserialize_unknown_job_document() {
-        let payload: alloc::vec::Vec<u8> = br#"{
+        let payload = br#"{
                 "clientToken": "0:client_name",
                 "timestamp": 1587381778,
                 "execution": {
@@ -1226,10 +1226,9 @@ mod test {
                         }
                     }
                 }
-            }"#
-        .to_vec();
+            }"#;
 
-        let response: DescribeJobExecutionResponse = from_slice(&payload).unwrap();
+        let response: DescribeJobExecutionResponse = from_slice(payload).unwrap();
 
         assert_eq!(
             response,

@@ -44,7 +44,7 @@ impl JobAgent {
         Ok(client_token)
     }
 
-    fn update_job_execution_internal<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn update_job_execution_internal<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         execution_number: Option<i64>,
@@ -64,21 +64,21 @@ impl JobAgent {
             .map_err(|_| JobError::Formatting)?;
 
             // Always include job_document, and job_execution_state!
-            client.publish::<MaxTopicLen>(
-                topic,
-                to_vec::<consts::U512, _>(&UpdateJobExecutionRequest {
-                    execution_number,
-                    expected_version: active_job.version_number,
-                    include_job_document: Some(true),
-                    include_job_execution_state: Some(true),
-                    status: active_job.status.clone(),
-                    step_timeout_in_minutes,
-                    client_token,
-                })?
-                .to_vec()
-                .into(),
-                mqttrust::QoS::AtLeastOnce,
-            )?;
+            client
+                .publish(
+                    topic,
+                    P::from_bytes(&to_vec::<consts::U512, _>(&UpdateJobExecutionRequest {
+                        execution_number,
+                        expected_version: active_job.version_number,
+                        include_job_document: Some(true),
+                        include_job_execution_state: Some(true),
+                        status: active_job.status.clone(),
+                        step_timeout_in_minutes,
+                        client_token,
+                    })?),
+                    mqttrust::QoS::AtLeastOnce,
+                )
+                .map_err(|_| JobError::Mqtt)?;
 
             active_job.version_number += 1;
 
@@ -88,24 +88,29 @@ impl JobAgent {
         }
     }
 
-    fn handle_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn handle_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         execution: JobExecution,
     ) -> Result<Option<JobNotification>, JobError> {
+        log::info!("Handle job exec! {:?}", execution.status);
         match execution.status {
             JobStatus::Queued if self.active_job.is_none() && execution.job_document.is_some() => {
                 // There is a new queued job available, and we are not currently
                 // processing a job. Update the status to InProgress, and set it
                 // active in the accepted response
                 // (`$aws/things/{thingName}/jobs/{jobId}/update/accepted`).
+                log::info!("Woot1!");
                 self.active_job = Some(JobNotification {
                     job_id: execution.job_id,
                     version_number: execution.version_number,
                     status: JobStatus::InProgress,
                     details: execution.job_document.unwrap(),
                 });
+                log::info!("Woot!");
+
                 self.update_job_execution_internal(client, None, None)?;
+                log::info!("Woot2!");
 
                 Ok(None)
             }
@@ -156,7 +161,7 @@ impl JobAgent {
 }
 
 impl IotJobsData for JobAgent {
-    fn describe_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn describe_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         job_id: &str,
@@ -169,19 +174,21 @@ impl IotJobsData for JobAgent {
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/{}/get", thing_name, job_id)
             .map_err(|_| JobError::Formatting)?;
 
-        let p = to_vec::<consts::U128, _>(&DescribeJobExecutionRequest {
+        // TODO: This should be possible to optimize, wrt. clones/copies and allocations
+        let p = to_vec::<consts::U512, _>(&DescribeJobExecutionRequest {
             execution_number,
             include_job_document,
             client_token: self.get_client_token(thing_name)?,
-        })?
-        .to_vec();
+        })?;
 
-        client.publish::<MaxTopicLen>(topic, p.into(), mqttrust::QoS::AtLeastOnce)?;
+        client
+            .publish(topic, P::from_bytes(&p), mqttrust::QoS::AtLeastOnce)
+            .map_err(|_| JobError::Mqtt)?;
 
         Ok(())
     }
 
-    fn get_pending_job_executions<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn get_pending_job_executions<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError> {
@@ -191,20 +198,22 @@ impl IotJobsData for JobAgent {
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/get", thing_name)
             .map_err(|_| JobError::Formatting)?;
 
-        client.publish::<MaxTopicLen>(
-            topic,
-            to_vec::<consts::U128, _>(&GetPendingJobExecutionsRequest {
-                client_token: self.get_client_token(thing_name)?,
-            })?
-            .to_vec()
-            .into(),
-            mqttrust::QoS::AtLeastOnce,
-        )?;
+        client
+            .publish(
+                topic,
+                P::from_bytes(&to_vec::<consts::U512, _>(
+                    &GetPendingJobExecutionsRequest {
+                        client_token: self.get_client_token(thing_name)?,
+                    },
+                )?),
+                mqttrust::QoS::AtLeastOnce,
+            )
+            .map_err(|_| JobError::Mqtt)?;
 
         Ok(())
     }
 
-    fn start_next_pending_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn start_next_pending_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         step_timeout_in_minutes: Option<i64>,
@@ -215,21 +224,23 @@ impl IotJobsData for JobAgent {
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/start-next", thing_name)
             .map_err(|_| JobError::Formatting)?;
 
-        client.publish::<MaxTopicLen>(
-            topic,
-            to_vec::<consts::U128, _>(&StartNextPendingJobExecutionRequest {
-                step_timeout_in_minutes,
-                client_token: self.get_client_token(thing_name)?,
-            })?
-            .to_vec()
-            .into(),
-            mqttrust::QoS::AtLeastOnce,
-        )?;
+        client
+            .publish(
+                topic,
+                P::from_bytes(&to_vec::<consts::U512, _>(
+                    &StartNextPendingJobExecutionRequest {
+                        step_timeout_in_minutes,
+                        client_token: self.get_client_token(thing_name)?,
+                    },
+                )?),
+                mqttrust::QoS::AtLeastOnce,
+            )
+            .map_err(|_| JobError::Mqtt)?;
 
         Ok(())
     }
 
-    fn update_job_execution<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn update_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         status: JobStatus,
@@ -240,84 +251,84 @@ impl IotJobsData for JobAgent {
         self.update_job_execution_internal(client, None, None)
     }
 
-    fn subscribe_to_jobs<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn subscribe_to_jobs<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
-        let mut topics: Vec<mqttrust::SubscribeTopic, consts::U3> = Vec::new();
+        let mut topics: Vec<mqttrust::SubscribeTopic, consts::U5> = Vec::new();
+
+        let mut topic = String::new();
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/get/+", thing_name)
+            .map_err(|_| JobError::Formatting)?;
 
         topics
             .push(mqttrust::SubscribeTopic {
-                topic_path: alloc::format!(
-                    "$aws/things/{thing_name}/jobs/+/get/+",
-                    thing_name = thing_name
-                ),
+                topic_path: topic,
                 qos: mqttrust::QoS::AtLeastOnce,
             })
             .map_err(|_| JobError::Memory)?;
 
+        let mut topic = String::new();
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/update/+", thing_name)
+            .map_err(|_| JobError::Formatting)?;
+
         topics
             .push(mqttrust::SubscribeTopic {
-                topic_path: alloc::format!(
-                    "$aws/things/{thing_name}/jobs/+/update/+",
-                    thing_name = thing_name
-                ),
+                topic_path: topic,
                 qos: mqttrust::QoS::AtLeastOnce,
             })
             .map_err(|_| JobError::Memory)?;
 
+        let mut topic = String::new();
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/notify-next", thing_name)
+            .map_err(|_| JobError::Formatting)?;
+
         topics
             .push(mqttrust::SubscribeTopic {
-                topic_path: alloc::format!(
-                    "$aws/things/{thing_name}/jobs/notify-next",
-                    thing_name = thing_name
-                ),
+                topic_path: topic,
                 qos: mqttrust::QoS::AtLeastOnce,
             })
             .map_err(|_| JobError::Memory)?;
 
-        client.subscribe(topics)?;
+        client.subscribe(topics).map_err(|_| JobError::Mqtt)?;
         Ok(())
     }
 
-    fn unsubscribe_from_jobs<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn unsubscribe_from_jobs<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
 
-        let mut topics: Vec<alloc::string::String, consts::U2> = Vec::new();
+        let mut topics: Vec<String<MaxTopicLen>, consts::U5> = Vec::new();
 
-        topics
-            .push(alloc::format!(
-                "$aws/things/{thing_name}/jobs/+/get/+",
-                thing_name = thing_name
-            ))
-            .map_err(|_| JobError::Memory)?;
+        let mut topic = String::new();
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/get/+", thing_name)
+            .map_err(|_| JobError::Formatting)?;
 
-        topics
-            .push(alloc::format!(
-                "$aws/things/{thing_name}/jobs/+/update/+",
-                thing_name = thing_name
-            ))
-            .map_err(|_| JobError::Memory)?;
+        topics.push(topic).map_err(|_| JobError::Memory)?;
 
-        topics
-            .push(alloc::format!(
-                "$aws/things/{thing_name}/jobs/notify-next",
-                thing_name = thing_name
-            ))
-            .map_err(|_| JobError::Memory)?;
+        let mut topic = String::new();
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/update/+", thing_name)
+            .map_err(|_| JobError::Formatting)?;
 
-        client.unsubscribe(topics)?;
+        topics.push(topic).map_err(|_| JobError::Memory)?;
+
+        let mut topic = String::new();
+        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/notify-next", thing_name)
+            .map_err(|_| JobError::Formatting)?;
+
+        topics.push(topic).map_err(|_| JobError::Memory)?;
+
+        client.unsubscribe(topics).map_err(|_| JobError::Mqtt)?;
         Ok(())
     }
 
-    fn handle_message<P: mqttrust::PublishPayload + From<alloc::vec::Vec<u8>>>(
+    fn handle_message<P: mqttrust::PublishPayload>(
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
-        publish: &mqttrust::Publish,
+        publish: &mqttrust::PublishNotification,
     ) -> Result<Option<JobNotification>, JobError> {
         match JobTopicType::check(
             client.client_id(),
@@ -365,10 +376,7 @@ impl IotJobsData for JobAgent {
                         Ok(None)
                     }
                 } else {
-                    log::error!(
-                        "Unknown job document! {:?}",
-                        alloc::string::String::from_utf8_lossy(&publish.payload)
-                    );
+                    log::error!("Unknown job document!");
 
                     // TODO: See progress for serde(other) can be tracked at:
                     // https://github.com/serde-rs/serde/issues/912
