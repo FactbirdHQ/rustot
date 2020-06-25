@@ -40,11 +40,11 @@ env_logger = "0.7.1"
 native-tls = "^0.2"
 rust-crypto = "^0.2"
 
-[patch.'https://github.com/thejpster/embedded-nal']
-embedded-nal = { path = "../embedded-nal" }
+#[patch.'https://github.com/thejpster/embedded-nal']
+#embedded-nal = { path = "../embedded-nal" }
 
-[patch.'https://github.com/BlackbirdHQ/mqttrust']
-mqttrust = { path = "../mqttrust" }
+#[patch.'https://github.com/BlackbirdHQ/mqttrust']
+#mqttrust = { path = "../mqttrust" }
 
-[patch.crates-io]
-mqttrs = { path = "../mqttrs" }
+#[patch.crates-io]
+#mqttrs = { path = "../mqttrs" }
