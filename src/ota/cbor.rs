@@ -97,9 +97,7 @@ where
     T: serde::ser::Serialize,
 {
     let mut serializer = serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(slice));
-    log::info!("1");
     value.serialize(&mut serializer).map_err(|_| ())?;
-    log::info!("2");
     Ok(serializer.into_inner().bytes_written())
 }
 

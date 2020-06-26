@@ -15,8 +15,8 @@ use common::timer::SysTimer;
 use heapless::{consts, spsc::Queue};
 use std::thread;
 
-static mut Q: Queue<Request<heapless::Vec<u8, heapless::consts::U512>>, consts::U10> =
-    Queue(heapless::i::Queue::new());
+static mut Q: Queue<Request<heapless::Vec<u8, heapless::consts::U512>>, consts::U10, u8> =
+    Queue(heapless::i::Queue::u8());
 
 fn main() {
     env_logger::builder()
