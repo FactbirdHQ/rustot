@@ -35,14 +35,12 @@
 
 use serde_cbor;
 
-use alloc::string::ToString;
-
 use super::cbor::{Bitmap, StreamRequest, StreamResponse};
 use super::pal::{OtaEvent, OtaPal, OtaPalError};
 use crate::consts::MaxStreamIdLen;
-use crate::jobs::{vec_to_vec, FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
+use crate::jobs::{FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
 use heapless::{consts, String, Vec};
-use mqttrust::{Mqtt, MqttClientError, Publish, QoS, SubscribeTopic};
+use mqttrust::{Mqtt, MqttClientError, PublishNotification, QoS, SubscribeTopic};
 
 use embedded_hal::timer::CountDown;
 
@@ -131,7 +129,7 @@ impl OtaTopicType {
 
 #[derive(Debug)]
 pub enum OtaError<PalError> {
-    Mqtt(MqttClientError),
+    Mqtt,
     Jobs(JobError),
     BadData,
     Memory,
@@ -159,8 +157,8 @@ impl<PE> From<OtaPalError<PE>> for OtaError<PE> {
 }
 
 impl<PE> From<MqttClientError> for OtaError<PE> {
-    fn from(e: MqttClientError) -> Self {
-        OtaError::Mqtt(e)
+    fn from(_e: MqttClientError) -> Self {
+        OtaError::Mqtt
     }
 }
 
@@ -257,20 +255,26 @@ where
         self.agent_state != AgentState::Ready
     }
 
-    pub fn close(&mut self, client: &impl Mqtt) -> Result<(), OtaError<P::Error>> {
+    pub fn close<M: mqttrust::PublishPayload>(
+        &mut self,
+        client: &impl Mqtt<M>,
+    ) -> Result<(), OtaError<P::Error>> {
         match self.agent_state {
             AgentState::Ready => Ok(()),
             AgentState::Active(ref state) => {
                 // Unsubscribe from stream topic
-                let topic_path = alloc::format!(
+                let mut topic_path = String::new();
+                ufmt::uwrite!(
+                    &mut topic_path,
                     "$aws/things/{}/streams/{}/data/cbor",
                     client.client_id(),
                     state.stream_name.as_str(),
-                );
+                )
+                .map_err(|_| OtaError::Formatting)?;
 
-                let mut topics = Vec::<alloc::string::String, consts::U1>::new();
-                topics.push(topic_path).map_err(|_| OtaError::Memory)?;
-                client.unsubscribe(topics)?;
+                client
+                    .unsubscribe(Vec::from_slice(&[topic_path]).map_err(|_| OtaError::Memory)?)
+                    .map_err(|_| OtaError::Mqtt)?;
 
                 self.ota_pal.abort(&state.file)?;
 
@@ -282,7 +286,7 @@ where
     }
 
     // Call this from timer timeout IRQ or poll it regularly
-    pub fn request_timer_irq(&mut self, client: &impl Mqtt) {
+    pub fn request_timer_irq<M: mqttrust::PublishPayload>(&mut self, client: &impl Mqtt<M>) {
         if self.request_timer.wait().is_ok() {
             if let AgentState::Active(ref mut state) = self.agent_state {
                 if state.total_blocks_remaining > 0 {
@@ -293,11 +297,11 @@ where
         }
     }
 
-    pub fn handle_message(
+    pub fn handle_message<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt,
+        client: &impl Mqtt<M>,
         job_agent: &mut impl IotJobsData,
-        publish: &Publish,
+        publish: &mut PublishNotification,
     ) -> Result<u8, OtaError<P::Error>> {
         match self.agent_state {
             AgentState::Active(ref mut state) => {
@@ -312,7 +316,8 @@ where
                             block_payload,
                             block_size,
                             file_id,
-                        } = serde_cbor::de::from_slice(&publish.payload).map_err(|e| {
+                        } = serde_cbor::de::from_mut_slice(&mut publish.payload).map_err(|e| {
+                            #[cfg(feature = "logging")]
                             log::error!("{:?}", e);
                             OtaError::BadData
                         })?;
@@ -331,6 +336,7 @@ where
                                     == (state.file.filesize
                                         - total_blocks * self.config.block_size))
                         {
+                            // #[cfg(feature = "logging")]
                             // log::info!("Received file block {}, size {}", block_id, block_size);
 
                             // We're actively receiving a file so update the
@@ -340,6 +346,7 @@ where
                             state.request_momentum = 0;
 
                             if !state.bitmap.to_inner().get(block_id) {
+                                #[cfg(feature = "logging")]
                                 log::warn!(
                                     "Block {} is a DUPLICATE. {} blocks remaining.",
                                     block_id,
@@ -360,6 +367,7 @@ where
                                 state.total_blocks_remaining -= 1;
                             }
                         } else {
+                            #[cfg(feature = "logging")]
                             log::error!(
                                 "Error! Block {} out of expected range! Size {}",
                                 block_id,
@@ -373,10 +381,12 @@ where
                             (((total_blocks - blocks_remaining) * 100) / total_blocks) as u8;
 
                         if blocks_remaining == 0 {
+                            #[cfg(feature = "logging")]
                             log::info!("Received final expected block of file.");
 
                             match self.ota_pal.close_file(&state.file) {
                                 Ok(()) => {
+                                    #[cfg(feature = "logging")]
                                     log::info!("File receive complete and signature is valid.");
                                     // Update job status to success with 100% progress
                                     job_agent.update_job_execution(client, JobStatus::Succeeded)?;
@@ -387,9 +397,10 @@ where
                                 }
                             };
                         } else {
+                            // #[cfg(feature = "logging")]
                             // log::info!("Remaining: {}", state.total_blocks_remaining);
-
                             if progress == self.next_update_percentage {
+                                #[cfg(feature = "logging")]
                                 log::info!("OTA Progress: {}%", progress);
 
                                 // TODO: Include progress here
@@ -418,9 +429,9 @@ where
         }
     }
 
-    pub fn finalize_ota_job(
+    pub fn finalize_ota_job<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt,
+        client: &impl Mqtt<M>,
         status: JobStatus,
     ) -> Result<(), OtaError<P::Error>> {
         let event = match status {
@@ -431,9 +442,9 @@ where
         Ok(self.ota_pal.complete_callback(event)?)
     }
 
-    pub fn process_ota_job(
+    pub fn process_ota_job<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt,
+        client: &impl Mqtt<M>,
         job: OtaJob,
     ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(OtaState {
@@ -450,9 +461,10 @@ where
         }
         // Subscribe to `$aws/things/{thingName}/streams/{streamId}/data/cbor`
 
+        #[cfg(feature = "logging")]
         log::debug!("Accepted a new JOB! {:?}", job);
 
-        let mut topic_path = String::<consts::U256>::new();
+        let mut topic_path = String::new();
         ufmt::uwrite!(
             &mut topic_path,
             "$aws/things/{}/streams/{}/data/cbor",
@@ -461,19 +473,20 @@ where
         )
         .map_err(|_| OtaError::Formatting)?;
 
-        let mut topics = Vec::<SubscribeTopic, consts::U1>::new();
+        let mut topics = Vec::new();
         topics
             .push(SubscribeTopic {
-                topic_path: topic_path.to_string(),
+                topic_path,
                 qos: QoS::AtMostOnce,
             })
             .map_err(|_| OtaError::Memory)?;
 
-        client.subscribe(topics)?;
+        client.subscribe(topics).map_err(|_| OtaError::Mqtt)?;
 
         // Publish to `$aws/things/{thingName}/streams/{streamId}/get/cbor` to
         // initiate the stream transfer
         let file = job.files.get(0).unwrap().clone();
+        #[cfg(feature = "logging")]
         log::info!("{:?}", file);
         let bitmap = Bitmap::new(file.filesize, self.config.block_size);
 
@@ -503,24 +516,31 @@ where
         }
     }
 
-    fn publish_get_stream_message(&mut self, client: &impl Mqtt) -> Result<(), OtaError<P::Error>> {
+    fn publish_get_stream_message<M: mqttrust::PublishPayload>(
+        &mut self,
+        client: &impl Mqtt<M>,
+    ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(ref mut state) = self.agent_state {
             if state.request_momentum >= self.config.max_request_momentum {
                 return Err(OtaError::MaxMomentumAbort(self.config.max_request_momentum));
             }
 
-            let payload = serde_cbor::ser::to_vec(&StreamRequest {
-                // Arbitrary client token sent in the stream "GET" message
-                client_token: "rdy",
-                file_id: state.file.fileid,
-                block_size: self.config.block_size,
-                block_offset: 0,
-                block_bitmap: &state.bitmap,
-                number_of_blocks: state.request_block_remaining,
-            })
+            let buf: &mut [u8] = &mut [0u8; 2048];
+            let len = crate::ota::cbor::to_slice(
+                &StreamRequest {
+                    // Arbitrary client token sent in the stream "GET" message
+                    client_token: "rdy",
+                    file_id: state.file.fileid,
+                    block_size: self.config.block_size,
+                    block_offset: 0,
+                    block_bitmap: &state.bitmap,
+                    number_of_blocks: state.request_block_remaining,
+                },
+                buf,
+            )
             .map_err(|_| OtaError::BadData)?;
 
-            let mut topic: String<consts::U256> = String::new();
+            let mut topic = String::new();
             ufmt::uwrite!(
                 &mut topic,
                 "$aws/things/{}/streams/{}/get/cbor",
@@ -535,13 +555,10 @@ where
             state.request_momentum += 1;
 
             client
-                .publish(
-                    topic,
-                    vec_to_vec::<_, heapless::consts::U384>(payload),
-                    QoS::AtMostOnce,
-                )
+                .publish(topic, M::from_bytes(&buf[..len]), QoS::AtMostOnce)
                 .ok();
 
+            #[cfg(feature = "logging")]
             log::info!("Requesting blocks! Momentum: {}", state.request_momentum);
             // Start request timer
             self.request_timer.start(self.config.request_wait_ms);

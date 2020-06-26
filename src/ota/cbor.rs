@@ -45,7 +45,7 @@ impl Serialize for Bitmap {
                 .to_inner()
                 .into_value()
                 .iter()
-                .map(|b| b.to_le_bytes().to_vec())
+                .map(|b| Vec::<_, consts::U16>::from_slice(&b.to_le_bytes()).expect("Failed here"))
                 .flatten()
                 .collect::<Vec<_, consts::U128>>()[..=(self.len() / 8)],
         )
@@ -76,7 +76,7 @@ pub struct StreamResponse<'a> {
     pub block_id: usize,
     #[serde(rename = "l")]
     pub block_size: usize,
-    #[serde(rename = "p", with = "serde_bytes")]
+    #[serde(rename = "p")]
     pub block_payload: &'a [u8],
 }
 
@@ -92,13 +92,22 @@ pub struct StreamResponse<'a> {
 //     pub block_payload: u32,
 // }
 
+pub fn to_slice<T>(value: &T, slice: &mut [u8]) -> Result<usize, ()>
+where
+    T: serde::ser::Serialize,
+{
+    let mut serializer = serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(slice));
+    value.serialize(&mut serializer).map_err(|_| ())?;
+    Ok(serializer.into_inner().bytes_written())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
 
     #[test]
     fn deserialize_stream_response() {
-        let payload = &[
+        let payload = &mut [
             191, 97, 102, 0, 97, 105, 0, 97, 108, 25, 4, 0, 97, 112, 89, 4, 0, 141, 62, 28, 246,
             80, 193, 2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -138,7 +147,7 @@ mod test {
             0, 0, 0, 0, 0, 0, 255,
         ];
 
-        let response: StreamResponse = serde_cbor::de::from_slice(payload).unwrap();
+        let response: StreamResponse = serde_cbor::de::from_mut_slice(payload).unwrap();
 
         assert_eq!(
             response,
@@ -205,17 +214,23 @@ mod test {
             block_bitmap: &Bitmap::new(file_size, BLOCK_SIZE),
         };
 
-        let payload = serde_cbor::ser::to_vec(&req).unwrap();
+        let buf: &mut [u8] = &mut [0u8; 1024];
+        let len = to_slice(&req, buf).unwrap();
 
         // Expectation from equivalent C version, based on FreeRTOS OTA
         // implementation
-        assert_eq!(
-            payload,
-            alloc::vec![
-                166, 97, 99, 99, 114, 100, 121, 97, 102, 0, 97, 108, 25, 8, 0, 97, 111, 0, 97, 98,
-                76, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1, 97, 110, 24, 64
-            ]
-        )
+        let expectation = [
+            166, 97, 99, 99, 114, 100, 121, 97, 102, 0, 97, 108, 25, 8, 0, 97, 111, 0, 97, 98, 76,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1, 97, 110, 24, 64,
+        ];
+        assert_eq!(len, expectation.len(), "Arrays don't have the same length");
+        assert!(
+            buf[..len]
+                .iter()
+                .zip(expectation.iter())
+                .all(|(a, b)| a == b),
+            "Arrays are not equal"
+        );
     }
 
     #[test]
@@ -232,19 +247,24 @@ mod test {
             block_bitmap: &Bitmap::new(file_size, BLOCK_SIZE),
         };
 
-        let payload = serde_cbor::ser::to_vec(&req).unwrap();
+        let buf: &mut [u8] = &mut [0u8; 1024];
+        let len = to_slice(&req, buf).unwrap();
 
         // Expectation from equivalent C version, based on FreeRTOS OTA
         // implementation
-        assert_eq!(
-            payload,
-            alloc::vec![
-                166, 97, 99, 99, 114, 100, 121, 97, 102, 0, 97, 108, 25, 2, 0, 97, 111, 0, 97, 98,
-                88, 45, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-                255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-                255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 7, 97, 110, 25, 1,
-                0
-            ]
-        )
+        let expectation = [
+            166, 97, 99, 99, 114, 100, 121, 97, 102, 0, 97, 108, 25, 2, 0, 97, 111, 0, 97, 98, 88,
+            45, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 7, 97, 110, 25, 1, 0,
+        ];
+        assert_eq!(len, expectation.len(), "Arrays don't have the same length");
+        assert!(
+            buf[..len]
+                .iter()
+                .zip(expectation.iter())
+                .all(|(a, b)| a == b),
+            "Arrays are not equal"
+        );
     }
 }
