@@ -317,6 +317,7 @@ where
                             block_size,
                             file_id,
                         } = serde_cbor::de::from_mut_slice(&mut publish.payload).map_err(|e| {
+                            #[cfg(feature = "logging")]
                             log::error!("{:?}", e);
                             OtaError::BadData
                         })?;
@@ -335,6 +336,7 @@ where
                                     == (state.file.filesize
                                         - total_blocks * self.config.block_size))
                         {
+                            // #[cfg(feature = "logging")]
                             // log::info!("Received file block {}, size {}", block_id, block_size);
 
                             // We're actively receiving a file so update the
@@ -344,6 +346,7 @@ where
                             state.request_momentum = 0;
 
                             if !state.bitmap.to_inner().get(block_id) {
+                                #[cfg(feature = "logging")]
                                 log::warn!(
                                     "Block {} is a DUPLICATE. {} blocks remaining.",
                                     block_id,
@@ -364,6 +367,7 @@ where
                                 state.total_blocks_remaining -= 1;
                             }
                         } else {
+                            #[cfg(feature = "logging")]
                             log::error!(
                                 "Error! Block {} out of expected range! Size {}",
                                 block_id,
@@ -377,10 +381,12 @@ where
                             (((total_blocks - blocks_remaining) * 100) / total_blocks) as u8;
 
                         if blocks_remaining == 0 {
+                            #[cfg(feature = "logging")]
                             log::info!("Received final expected block of file.");
 
                             match self.ota_pal.close_file(&state.file) {
                                 Ok(()) => {
+                                    #[cfg(feature = "logging")]
                                     log::info!("File receive complete and signature is valid.");
                                     // Update job status to success with 100% progress
                                     job_agent.update_job_execution(client, JobStatus::Succeeded)?;
@@ -391,9 +397,10 @@ where
                                 }
                             };
                         } else {
+                            // #[cfg(feature = "logging")]
                             // log::info!("Remaining: {}", state.total_blocks_remaining);
-
                             if progress == self.next_update_percentage {
+                                #[cfg(feature = "logging")]
                                 log::info!("OTA Progress: {}%", progress);
 
                                 // TODO: Include progress here
@@ -454,6 +461,7 @@ where
         }
         // Subscribe to `$aws/things/{thingName}/streams/{streamId}/data/cbor`
 
+        #[cfg(feature = "logging")]
         log::debug!("Accepted a new JOB! {:?}", job);
 
         let mut topic_path = String::new();
@@ -478,6 +486,7 @@ where
         // Publish to `$aws/things/{thingName}/streams/{streamId}/get/cbor` to
         // initiate the stream transfer
         let file = job.files.get(0).unwrap().clone();
+        #[cfg(feature = "logging")]
         log::info!("{:?}", file);
         let bitmap = Bitmap::new(file.filesize, self.config.block_size);
 
@@ -549,6 +558,7 @@ where
                 .publish(topic, M::from_bytes(&buf[..len]), QoS::AtMostOnce)
                 .ok();
 
+            #[cfg(feature = "logging")]
             log::info!("Requesting blocks! Momentum: {}", state.request_momentum);
             // Start request timer
             self.request_timer.start(self.config.request_wait_ms);

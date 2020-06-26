@@ -260,12 +260,11 @@ dependencies = [
 [[package]]
 name = "mqttrust"
 version = "0.0.5"
-source = "git+https://github.com/BlackbirdHQ/mqttrust?branch=wip/alloc-free#15a0f65a281bf5ff94b5a8b72eda787b04c87b3e"
+source = "git+https://github.com/BlackbirdHQ/mqttrust?rev=2cdffdb#2cdffdb39bf37af53d1bb213bf1171cb911503ff"
 dependencies = [
  "embedded-hal",
  "embedded-nal",
  "heapless",
- "log",
  "mqttrs",
  "nb",
  "no-std-net",
