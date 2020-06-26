@@ -23,7 +23,7 @@ nb = "0.1.2"
 ufmt = "0.1.0"
 heapless = { version = "0.5.5", features = ["serde", "ufmt-impl"] }
 log = { version = "0.4", default-features = false }
-mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", branch = "wip/alloc-free", features = ["logging"] }
+mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "2cdffdb", features = ["logging"] }
 no-std-net = "0.3.0"
 serde = { version = "^1", default-features = false, features = ["derive"] }
 serde-json-core = { git = "https://github.com/MathiasKoch/serde-json-core", branch = "factbird_mini" }

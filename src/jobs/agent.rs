@@ -4,7 +4,7 @@ use super::{
     JobStatus, JobTopicType, NextJobExecutionChanged, StartNextPendingJobExecutionRequest,
     UpdateJobExecutionRequest, UpdateJobExecutionResponse,
 };
-use crate::consts::{MaxClientTokenLen, MaxTopicLen};
+use crate::consts::MaxClientTokenLen;
 use heapless::{consts, String, Vec};
 
 use serde_json_core::{from_slice, to_vec};

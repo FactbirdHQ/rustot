@@ -37,7 +37,7 @@ use serde_cbor;
 
 use super::cbor::{Bitmap, StreamRequest, StreamResponse};
 use super::pal::{OtaEvent, OtaPal, OtaPalError};
-use crate::consts::{MaxStreamIdLen, MaxTopicLen};
+use crate::consts::MaxStreamIdLen;
 use crate::jobs::{FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
 use heapless::{consts, String, Vec};
 use mqttrust::{Mqtt, MqttClientError, PublishNotification, QoS, SubscribeTopic};
@@ -263,7 +263,7 @@ where
             AgentState::Ready => Ok(()),
             AgentState::Active(ref state) => {
                 // Unsubscribe from stream topic
-                let mut topic_path = String::<MaxTopicLen>::new();
+                let mut topic_path = String::new();
                 ufmt::uwrite!(
                     &mut topic_path,
                     "$aws/things/{}/streams/{}/data/cbor",
@@ -456,7 +456,7 @@ where
 
         log::debug!("Accepted a new JOB! {:?}", job);
 
-        let mut topic_path = String::<MaxTopicLen>::new();
+        let mut topic_path = String::new();
         ufmt::uwrite!(
             &mut topic_path,
             "$aws/things/{}/streams/{}/data/cbor",
@@ -531,7 +531,7 @@ where
             )
             .map_err(|_| OtaError::BadData)?;
 
-            let mut topic: String<MaxTopicLen> = String::new();
+            let mut topic = String::new();
             ufmt::uwrite!(
                 &mut topic,
                 "$aws/things/{}/streams/{}/get/cbor",
