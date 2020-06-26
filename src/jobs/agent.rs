@@ -93,24 +93,20 @@ impl JobAgent {
         client: &impl mqttrust::Mqtt<P>,
         execution: JobExecution,
     ) -> Result<Option<JobNotification>, JobError> {
-        log::info!("Handle job exec! {:?}", execution.status);
         match execution.status {
             JobStatus::Queued if self.active_job.is_none() && execution.job_document.is_some() => {
                 // There is a new queued job available, and we are not currently
                 // processing a job. Update the status to InProgress, and set it
                 // active in the accepted response
                 // (`$aws/things/{thingName}/jobs/{jobId}/update/accepted`).
-                log::info!("Woot1!");
                 self.active_job = Some(JobNotification {
                     job_id: execution.job_id,
                     version_number: execution.version_number,
                     status: JobStatus::InProgress,
                     details: execution.job_document.unwrap(),
                 });
-                log::info!("Woot!");
 
                 self.update_job_execution_internal(client, None, None)?;
-                log::info!("Woot2!");
 
                 Ok(None)
             }
@@ -256,7 +252,7 @@ impl IotJobsData for JobAgent {
         client: &impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
-        let mut topics: Vec<mqttrust::SubscribeTopic, consts::U5> = Vec::new();
+        let mut topics = Vec::new();
 
         let mut topic = String::new();
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/get/+", thing_name)
@@ -301,7 +297,7 @@ impl IotJobsData for JobAgent {
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
 
-        let mut topics: Vec<String<MaxTopicLen>, consts::U5> = Vec::new();
+        let mut topics = Vec::new();
 
         let mut topic = String::new();
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/get/+", thing_name)

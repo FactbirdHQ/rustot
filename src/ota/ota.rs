@@ -465,7 +465,7 @@ where
         )
         .map_err(|_| OtaError::Formatting)?;
 
-        let mut topics = Vec::<SubscribeTopic, consts::U5>::new();
+        let mut topics = Vec::new();
         topics
             .push(SubscribeTopic {
                 topic_path,
@@ -516,7 +516,6 @@ where
                 return Err(OtaError::MaxMomentumAbort(self.config.max_request_momentum));
             }
 
-            log::info!("Serializing!");
             let buf: &mut [u8] = &mut [0u8; 2048];
             let len = crate::ota::cbor::to_slice(
                 &StreamRequest {
@@ -532,8 +531,6 @@ where
             )
             .map_err(|_| OtaError::BadData)?;
 
-            log::info!("Serialized {}!", len);
-
             let mut topic: String<MaxTopicLen> = String::new();
             ufmt::uwrite!(
                 &mut topic,
@@ -547,7 +544,6 @@ where
             // is received to ANY request. Too much momentum is interpreted as a
             // failure to communicate and will cause us to abort the OTA.
             state.request_momentum += 1;
-
 
             client
                 .publish(topic, M::from_bytes(&buf[..len]), QoS::AtMostOnce)

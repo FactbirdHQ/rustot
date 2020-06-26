@@ -537,7 +537,7 @@ pub struct Jobs {
 pub struct ErrorResponse {
     code: ErrorCode,
     /// An error message string.
-    message: String<consts::U256>,
+    message: String<consts::U128>,
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
