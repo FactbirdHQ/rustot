@@ -19,17 +19,12 @@ static mut Q: Queue<Request<heapless::Vec<u8, heapless::consts::U512>>, consts::
     Queue(heapless::i::Queue::u8());
 
 fn main() {
-    #[cfg(feature = "logging")]
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Trace)
-        .init();
-
     let (p, c) = unsafe { Q.split() };
 
     let network = Network;
 
-    #[cfg(feature = "logging")]
-    log::info!("Starting!");
+    // #[cfg(feature = "logging")]
+    // log::info!("Starting!");
 
     let thing_name = "test_mini_2";
 
@@ -65,8 +60,8 @@ fn main() {
                         match job_agent.handle_message(&mqtt_client, &publish) {
                             Ok(None) => {}
                             Ok(Some(job)) => {
-                                #[cfg(feature = "logging")]
-                                log::debug!("Accepted a new JOB! {:?}", job);
+                                // #[cfg(feature = "logging")]
+                                // log::debug!("Accepted a new JOB! {:?}", job);
                                 match job.details {
                                     JobDetails::OtaJob(otajob) => {
                                         ota_agent.process_ota_job(&mqtt_client, otajob).unwrap()
@@ -75,28 +70,28 @@ fn main() {
                                 }
                             }
                             Err(e) => {
-                                #[cfg(feature = "logging")]
-                                log::error!("[{}, {:?}]:", publish.topic_name, publish.qospid);
-                                #[cfg(feature = "logging")]
-                                log::error!("{:?}", e);
+                                // #[cfg(feature = "logging")]
+                                // log::error!("[{}, {:?}]:", publish.topic_name, publish.qospid);
+                                // #[cfg(feature = "logging")]
+                                // log::error!("{:?}", e);
                             }
                         }
                     } else if is_ota_message(&publish.topic_name) {
                         match ota_agent.handle_message(&mqtt_client, &mut job_agent, &mut publish) {
                             Ok(progress) => {
-                                #[cfg(feature = "logging")]
-                                log::info!("OTA Progress: {}%", progress);
+                                // #[cfg(feature = "logging")]
+                                // log::info!("OTA Progress: {}%", progress);
                             }
                             Err(e) => {
-                                #[cfg(feature = "logging")]
-                                log::error!("[{}, {:?}]:", publish.topic_name, publish.qospid);
-                                #[cfg(feature = "logging")]
-                                log::error!("{:?}", e);
+                                // #[cfg(feature = "logging")]
+                                // log::error!("[{}, {:?}]:", publish.topic_name, publish.qospid);
+                                // #[cfg(feature = "logging")]
+                                // log::error!("{:?}", e);
                             }
                         }
                     } else {
-                        #[cfg(feature = "logging")]
-                        log::info!("Got some other incoming message {:?}", publish);
+                        // #[cfg(feature = "logging")]
+                        // log::info!("Got some other incoming message {:?}", publish);
                     }
                 }
                 _ => {
