@@ -337,8 +337,7 @@ impl IotJobsData for JobAgent {
                 .collect::<Vec<&str, consts::U8>>(),
         ) {
             None => {
-                #[cfg(feature = "logging")]
-                log::debug!("Not a job message!");
+                defmt::debug!("Not a job message!");
                 Ok(None)
             }
             Some(JobTopicType::NotifyNext) => {
@@ -346,8 +345,7 @@ impl IotJobsData for JobAgent {
                 // `$aws/things/{thingName}/jobs/notify-next`
 
                 let response: NextJobExecutionChanged = from_slice(&publish.payload)?;
-                #[cfg(feature = "logging")]
-                log::debug!("notify-next message! {:?}", response);
+                defmt::debug!("notify-next message!");
                 if let Some(execution) = response.execution {
                     // Job updated from the cloud!
                     self.handle_job_execution(client, execution)
@@ -358,8 +356,7 @@ impl IotJobsData for JobAgent {
             }
             Some(JobTopicType::Notify) => {
                 // Message published to `$aws/things/{thingName}/jobs/notify`
-                #[cfg(feature = "logging")]
-                log::error!("notify message!, currently unhandled! Use notify-next instead");
+                defmt::error!("notify message!, currently unhandled! Use notify-next instead");
 
                 Ok(None)
             }
@@ -367,8 +364,7 @@ impl IotJobsData for JobAgent {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/get/accepted`
 
-                #[cfg(feature = "logging")]
-                log::debug!("{}/get/accepted message!", job_id);
+                defmt::debug!("{:str}/get/accepted message!", job_id.as_str());
                 if let Ok(response) = from_slice::<DescribeJobExecutionResponse>(&publish.payload) {
                     if let Some(execution) = response.execution {
                         self.handle_job_execution(client, execution)
@@ -376,8 +372,7 @@ impl IotJobsData for JobAgent {
                         Ok(None)
                     }
                 } else {
-                    #[cfg(feature = "logging")]
-                    log::error!("Unknown job document!");
+                    defmt::error!("Unknown job document!");
 
                     // TODO: See progress for serde(other) can be tracked at:
                     // https://github.com/serde-rs/serde/issues/912
@@ -393,8 +388,7 @@ impl IotJobsData for JobAgent {
             Some(JobTopicType::UpdateAccepted(job_id)) => {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/update/accepted`
-                #[cfg(feature = "logging")]
-                log::debug!("{}/update/accepted message!", job_id);
+                defmt::debug!("{:str}/update/accepted message!", job_id.as_str());
 
                 match from_slice::<UpdateJobExecutionResponse>(&publish.payload) {
                     Ok(UpdateJobExecutionResponse {
@@ -431,8 +425,7 @@ impl IotJobsData for JobAgent {
                     }
                     Ok(_) => {
                         // job_execution_state or job_document is missing, should never happen!
-                        #[cfg(feature = "logging")]
-                        log::error!(
+                        defmt::error!(
                             "job_execution_state or job_document is missing, should never happen!"
                         );
                         Ok(None)
@@ -443,21 +436,17 @@ impl IotJobsData for JobAgent {
             Some(JobTopicType::GetRejected(job_id)) => {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/get/rejected`
-                #[cfg(feature = "logging")]
-                log::debug!("{}/get/rejected message!", job_id);
+                defmt::debug!("{:str}/get/rejected message!", job_id.as_str());
                 let error: ErrorResponse = from_slice(&publish.payload)?;
-                #[cfg(feature = "logging")]
-                log::debug!("{:?}", error);
+                // defmt::debug!("{:?}", error);
                 Err(JobError::Rejected(error))
             }
             Some(JobTopicType::UpdateRejected(job_id)) => {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/update/rejected`
-                #[cfg(feature = "logging")]
-                log::debug!("{}/update/rejected message!", job_id);
+                defmt::debug!("{:str}/update/rejected message!", job_id.as_str());
                 let error: ErrorResponse = from_slice(&publish.payload)?;
-                #[cfg(feature = "logging")]
-                log::debug!("{:?}", error);
+                // defmt::debug!("{:?}", error);
                 Err(JobError::Rejected(error))
             }
             Some(JobTopicType::Invalid) => Err(JobError::InvalidTopic),
