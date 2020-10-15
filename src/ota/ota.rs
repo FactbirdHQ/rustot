@@ -383,7 +383,7 @@ where
                             return Err(OtaError::BlockOutOfRange);
                         }
 
-                        if state.total_blocks_remaining <= 0 {
+                        if state.total_blocks_remaining == 0 {
                             defmt::info!("Received final expected block of file.");
 
                             match self.ota_pal.close_file(&state.file) {
