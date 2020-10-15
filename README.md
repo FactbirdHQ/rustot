@@ -5,10 +5,13 @@
 
 > no_std, no_alloc crate for AWS IoT Devices, implementing Jobs, OTA, Device Defender and IoT Shadows
 
-![CI][workflow]
-<!-- [![Crates.io Version][crates-io-badge]][crates-io]
+![Test][test]
+[![Code coverage][codecov-badge]][codecov]
+![No Std][no-std-badge]
+<!--
+[![Crates.io Version][crates-io-badge]][crates-io]
 [![Crates.io Downloads][crates-io-download-badge]][crates-io-download]
-[![chat][chat-badge]][chat] -->
+-->
 
 Any contributions will be welcomed! Even if they are just suggestions, bugs or reviews!
 
@@ -37,10 +40,14 @@ Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual licensed as above, without any additional terms or conditions.
 
-
 <!-- Badges -->
-[workflow]: https://github.com/BlackbirdHQ/rustot/workflows/CI/badge.svg
-<!-- [crates-io]: https://crates.io/crates/rustot -->
-<!-- [crates-io-badge]: https://img.shields.io/crates/v/rustot.svg?maxAge=3600
+[test]: https://github.com/BlackbirdHQ/rustot/workflows/Test/badge.svg
+[no-std-badge]: https://img.shields.io/badge/no__std-yes-blue
+[codecov-badge]: https://codecov.io/gh/BlackbirdHQ/rustot/branch/master/graph/badge.svg
+[codecov]: https://codecov.io/gh/BlackbirdHQ/rustot
+<!--
+[crates-io]: https://crates.io/crates/rustot
+[crates-io-badge]: https://img.shields.io/crates/v/rustot.svg?maxAge=3600
 [crates-io-download]: https://crates.io/crates/rustot
-[crates-io-download-badge]: https://img.shields.io/crates/d/rustot.svg?maxAge=3600 -->
+[crates-io-download-badge]: https://img.shields.io/crates/d/rustot.svg?maxAge=3600
+-->
