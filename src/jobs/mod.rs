@@ -277,7 +277,8 @@ pub struct JobExecution {
     // execution.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+    pub status_details:
+        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
     // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -442,7 +443,8 @@ struct UpdateJobExecutionRequest {
     // the job execution. If not specified, the statusDetails are unchanged.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+    pub status_details:
+        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
     // Specifies the amount of time this device has to finish execution of this
     // job. If the job execution status is not set to a terminal state before
     // this timer expires, or before the timer is reset (by again calling
@@ -616,7 +618,9 @@ pub trait IotJobsData {
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         status: JobStatus,
-        status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+        status_details: Option<
+            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
+        >,
     ) -> Result<(), JobError>;
 
     /// Subscribe to relevant job topics.
@@ -911,7 +915,8 @@ mod test {
                         client_token: String::from("0:test_thing"),
                     })
                     .unwrap()
-                ).qos(mqttrust::QoS::AtMostOnce)
+                )
+                .qos(mqttrust::QoS::AtMostOnce)
                 .into()
             )
         );

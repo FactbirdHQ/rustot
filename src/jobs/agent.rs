@@ -48,7 +48,9 @@ impl JobAgent {
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         execution_number: Option<i64>,
-        status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+        status_details: Option<
+            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
+        >,
         step_timeout_in_minutes: Option<i64>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
@@ -94,7 +96,9 @@ impl JobAgent {
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         execution: JobExecution,
-        status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+        status_details: Option<
+            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
+        >,
     ) -> Result<Option<JobNotification>, JobError> {
         match execution.status {
             JobStatus::Queued if self.active_job.is_none() && execution.job_document.is_some() => {
@@ -247,7 +251,9 @@ impl IotJobsData for JobAgent {
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         status: JobStatus,
-        status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+        status_details: Option<
+            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
+        >,
     ) -> Result<(), JobError> {
         if let Some(ref mut active_job) = self.active_job {
             active_job.status = status;
