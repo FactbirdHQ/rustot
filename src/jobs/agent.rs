@@ -48,6 +48,7 @@ impl JobAgent {
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         execution_number: Option<i64>,
+        status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
         step_timeout_in_minutes: Option<i64>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
@@ -73,10 +74,11 @@ impl JobAgent {
                         include_job_document: Some(true),
                         include_job_execution_state: Some(true),
                         status: active_job.status.clone(),
+                        status_details,
                         step_timeout_in_minutes,
                         client_token,
                     })?),
-                    mqttrust::QoS::AtLeastOnce,
+                    mqttrust::QoS::AtMostOnce,
                 )
                 .map_err(|_| JobError::Mqtt)?;
 
@@ -92,6 +94,7 @@ impl JobAgent {
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         execution: JobExecution,
+        status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
     ) -> Result<Option<JobNotification>, JobError> {
         match execution.status {
             JobStatus::Queued if self.active_job.is_none() && execution.job_document.is_some() => {
@@ -105,8 +108,9 @@ impl JobAgent {
                     status: JobStatus::InProgress,
                     details: execution.job_document.unwrap(),
                 });
+                defmt::debug!("Accepting new job!");
 
-                self.update_job_execution_internal(client, None, None)?;
+                self.update_job_execution_internal(client, None, status_details, None)?;
 
                 Ok(None)
             }
@@ -123,7 +127,8 @@ impl JobAgent {
                     status: JobStatus::Failed,
                     details: execution.job_document.unwrap(),
                 });
-                self.update_job_execution_internal(client, None, None)?;
+                self.update_job_execution_internal(client, None, status_details, None)?;
+                self.active_job = None;
                 Ok(None)
             }
             JobStatus::InProgress if self.active_job.is_some() => {
@@ -141,7 +146,9 @@ impl JobAgent {
 
                 Ok(self.active_job.clone())
             }
-            JobStatus::Canceled | JobStatus::Removed if self.active_job.is_some() => {
+            JobStatus::Canceled | JobStatus::Removed | JobStatus::Failed
+                if self.active_job.is_some() =>
+            {
                 // Current job is canceled! Abort if possible
                 let job = self.active_job.clone().unwrap();
                 self.active_job = None;
@@ -171,7 +178,7 @@ impl IotJobsData for JobAgent {
             .map_err(|_| JobError::Formatting)?;
 
         // TODO: This should be possible to optimize, wrt. clones/copies and allocations
-        let p = to_vec::<consts::U512, _>(&DescribeJobExecutionRequest {
+        let p = to_vec::<consts::U128, _>(&DescribeJobExecutionRequest {
             execution_number,
             include_job_document,
             client_token: self.get_client_token(thing_name)?,
@@ -197,7 +204,7 @@ impl IotJobsData for JobAgent {
         client
             .publish(
                 topic,
-                P::from_bytes(&to_vec::<consts::U512, _>(
+                P::from_bytes(&to_vec::<consts::U48, _>(
                     &GetPendingJobExecutionsRequest {
                         client_token: self.get_client_token(thing_name)?,
                     },
@@ -223,7 +230,7 @@ impl IotJobsData for JobAgent {
         client
             .publish(
                 topic,
-                P::from_bytes(&to_vec::<consts::U512, _>(
+                P::from_bytes(&to_vec::<consts::U48, _>(
                     &StartNextPendingJobExecutionRequest {
                         step_timeout_in_minutes,
                         client_token: self.get_client_token(thing_name)?,
@@ -240,11 +247,12 @@ impl IotJobsData for JobAgent {
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         status: JobStatus,
+        status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
     ) -> Result<(), JobError> {
         if let Some(ref mut active_job) = self.active_job {
             active_job.status = status;
         }
-        self.update_job_execution_internal(client, None, None)
+        self.update_job_execution_internal(client, None, status_details, None)
     }
 
     fn subscribe_to_jobs<P: mqttrust::PublishPayload>(
@@ -345,10 +353,13 @@ impl IotJobsData for JobAgent {
                 // `$aws/things/{thingName}/jobs/notify-next`
 
                 let response: NextJobExecutionChanged = from_slice(&publish.payload)?;
-                defmt::debug!("notify-next message!");
+                defmt::debug!(
+                    "notify-next message! active_job: {:?}",
+                    self.active_job.is_some()
+                );
                 if let Some(execution) = response.execution {
                     // Job updated from the cloud!
-                    self.handle_job_execution(client, execution)
+                    self.handle_job_execution(client, execution, None)
                 } else {
                     // Queue is empty! `jobs done`
                     Ok(None)
@@ -367,7 +378,7 @@ impl IotJobsData for JobAgent {
                 defmt::debug!("{:str}/get/accepted message!", job_id.as_str());
                 if let Ok(response) = from_slice::<DescribeJobExecutionResponse>(&publish.payload) {
                     if let Some(execution) = response.execution {
-                        self.handle_job_execution(client, execution)
+                        self.handle_job_execution(client, execution, None)
                     } else {
                         Ok(None)
                     }
@@ -409,7 +420,7 @@ impl IotJobsData for JobAgent {
                         };
 
                         match state.status {
-                            JobStatus::Canceled | JobStatus::Removed => {
+                            JobStatus::Canceled | JobStatus::Removed | JobStatus::Failed => {
                                 self.active_job = None;
                             }
                             _ => {

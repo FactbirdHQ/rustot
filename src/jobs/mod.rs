@@ -188,7 +188,7 @@ struct DescribeJobExecutionRequest {
 }
 
 /// Topic: $aws/things/{thingName}/jobs/{jobId}/get/accepted
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct DescribeJobExecutionResponse {
     /// Contains data about a job execution.
     #[serde(rename = "execution")]
@@ -236,7 +236,7 @@ pub struct GetPendingJobExecutionsResponse {
 }
 
 /// Contains data about a job execution.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct JobExecution {
     /// The estimated number of seconds that remain before the job execution
     /// status will be changed to <code>TIMED_OUT</code>.
@@ -274,10 +274,11 @@ pub struct JobExecution {
     #[serde(rename = "status")]
     pub status: JobStatus,
     // / A collection of name/value pairs that describe the status of the job
-    // execution. #[serde(rename = "statusDetails")] #[serde(skip_serializing_if
-    // = "Option::is_none")] pub status_details:
-    // Option<::std::collections::HashMap<String, String>>, The name of the
-    // thing that is executing the job.
+    // execution.
+    #[serde(rename = "statusDetails")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+    // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thing_name: Option<String<MaxThingNameLen>>,
@@ -386,7 +387,7 @@ struct StartNextPendingJobExecutionRequest {
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/start-next/accepted \
 /// Topic (rejected): $aws/things/{thingName}/jobs/start-next/rejected
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct StartNextPendingJobExecutionResponse {
     /// A JobExecution object.
     #[serde(rename = "execution")]
@@ -407,7 +408,7 @@ pub struct StartNextPendingJobExecutionResponse {
 /// job execution times out when the step timer expires.
 ///
 /// Topic: $aws/things/{thingName}/jobs/{jobId}/update
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize)]
 struct UpdateJobExecutionRequest {
     /// Optional. A number that identifies a particular job execution on a
     /// particular device.
@@ -439,12 +440,12 @@ struct UpdateJobExecutionRequest {
     pub status: JobStatus,
     // /  Optional. A collection of name/value pairs that describe the status of
     // the job execution. If not specified, the statusDetails are unchanged.
-    // #[serde(rename = "statusDetails")] #[serde(skip_serializing_if =
-    // "Option::is_none")] pub status_details:
-    // Option<::std::collections::HashMap<String, String>>, Specifies the amount
-    // of time this device has to finish execution of this job. If the job
-    // execution status is not set to a terminal state before this timer
-    // expires, or before the timer is reset (by again calling
+    #[serde(rename = "statusDetails")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+    // Specifies the amount of time this device has to finish execution of this
+    // job. If the job execution status is not set to a terminal state before
+    // this timer expires, or before the timer is reset (by again calling
     // <code>UpdateJobExecution</code>, setting the status to
     // <code>IN_PROGRESS</code> and specifying a new timeout value in this
     // field) the job execution status will be automatically set to
@@ -508,7 +509,7 @@ pub struct JobExecutionsChanged {
 /// J2.
 ///
 /// Topic: $aws/things/{thingName}/jobs/notify-next
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct NextJobExecutionChanged {
     /// Contains data about a job execution.
     #[serde(rename = "execution")]
@@ -615,6 +616,7 @@ pub trait IotJobsData {
         &mut self,
         client: &impl mqttrust::Mqtt<P>,
         status: JobStatus,
+        status_details: Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
     ) -> Result<(), JobError>;
 
     /// Subscribe to relevant job topics.
@@ -791,7 +793,7 @@ pub enum Protocol {
 pub struct OtaJob {
     pub protocols: Vec<Protocol, consts::U2>,
     pub streamname: String<consts::U64>,
-    pub files: Vec<FileDescription, consts::U3>,
+    pub files: Vec<FileDescription, consts::U1>,
 }
 
 /// All known job document that the device knows how to process.
@@ -904,11 +906,12 @@ mod test {
                         include_job_document: Some(true),
                         include_job_execution_state: Some(true),
                         status: JobStatus::InProgress,
+                        status_details: None,
                         step_timeout_in_minutes: None,
                         client_token: String::from("0:test_thing"),
                     })
                     .unwrap()
-                )
+                ).qos(mqttrust::QoS::AtMostOnce)
                 .into()
             )
         );
@@ -965,6 +968,7 @@ mod test {
                 expected_version: 2,
                 include_job_document: Some(true),
                 include_job_execution_state: Some(true),
+                status_details: None,
                 status: JobStatus::Failed,
             };
             assert_eq!(
@@ -1013,6 +1017,7 @@ mod test {
                     status: JobStatus::Queued,
                     version_number: 1,
                     approximate_seconds_before_timed_out: None,
+                    status_details: None,
                     started_at: None,
                     thing_name: None,
                 }),
@@ -1116,6 +1121,7 @@ mod test {
                     job_id: String::from("test"),
                     last_updated_at: 1587036256,
                     queued_at: 1587036256,
+                    status_details: None,
                     status: JobStatus::Queued,
                     version_number: 1,
                     approximate_seconds_before_timed_out: None,
@@ -1192,6 +1198,7 @@ mod test {
                     job_id: String::from("AFR_OTA-ota_test2"),
                     last_updated_at: 1587535224,
                     queued_at: 1587535224,
+                    status_details: None,
                     status: JobStatus::Queued,
                     version_number: 1,
                     approximate_seconds_before_timed_out: None,
@@ -1244,6 +1251,7 @@ mod test {
                     approximate_seconds_before_timed_out: None,
                     started_at: None,
                     thing_name: None,
+                    status_details: None,
                 }),
                 timestamp: 1587381778,
                 client_token: String::from("0:client_name"),
