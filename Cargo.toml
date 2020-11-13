@@ -22,7 +22,8 @@ embedded-hal = { git = "https://github.com/MathiasKoch/embedded-hal", branch = "
 nb = "^1"
 ufmt = "0.1.0"
 heapless = { version = "0.5.5", features = ["serde", "ufmt-impl"] }
-mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", branch = "enhancement/defmt" }
+# mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", branch = "enhancement/defmt" }
+mqttrust = { path = "../mqttrust" }
 no-std-net = "0.4.0"
 serde = { version = "^1", default-features = false, features = ["derive"] }
 serde-json-core = { git = "https://github.com/MathiasKoch/serde-json-core", branch = "factbird_mini" }
@@ -30,7 +31,7 @@ serde_cbor =  { version = "^0.11", default-features = false }
 bitmaps = { version = "^2", default-features = false }
 typenum = "^1"
 
-defmt = { git = "https://github.com/knurling-rs/defmt", branch = "main" }
+defmt = { version = "^0.1" }
 
 [dev-dependencies]
 embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", branch = "factbird-mini-1.0" }
