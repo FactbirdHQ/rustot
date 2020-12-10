@@ -97,8 +97,9 @@ checksum = "812b30ff14930407c86a23e256ac050b8e6913f597adcc88e29d40517f7a16de"
 
 [[package]]
 name = "embedded-hal"
-version = "1.0.0-alpha.1"
-source = "git+https://github.com/MathiasKoch/embedded-hal?branch=feature/alternative-storage#9f3b9555e6765a7987542e375db733c4e482c92a"
+version = "1.0.0-alpha.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2260cabeacf4bda1df1a8d54f67047a9aadf02fe14cfab07649f2cec6a4693b"
 dependencies = [
  "nb",
 ]
@@ -106,7 +107,7 @@ dependencies = [
 [[package]]
 name = "embedded-nal"
 version = "0.1.0"
-source = "git+https://github.com/MathiasKoch/embedded-nal?branch=factbird-mini-1.0#d0d8363c0990a8924ddfeb47655ffbdbdf424f97"
+source = "git+https://github.com/BlackbirdHQ/embedded-nal?branch=factbird-mini-1.0#d0d8363c0990a8924ddfeb47655ffbdbdf424f97"
 dependencies = [
  "heapless",
  "nb",
@@ -241,7 +242,7 @@ dependencies = [
 [[package]]
 name = "mqttrust"
 version = "0.0.5"
-source = "git+https://github.com/BlackbirdHQ/mqttrust?rev=2c1bb62#2c1bb62867c1a4be35e560880f18f21544e0e7c3"
+source = "git+https://github.com/BlackbirdHQ/mqttrust?rev=4c6c35e#4c6c35eaca91f5ecb4a8c12f7149de7550d6e2c4"
 dependencies = [
  "defmt",
  "embedded-hal",

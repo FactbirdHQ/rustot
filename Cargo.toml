@@ -18,11 +18,11 @@ name = "rustot"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-embedded-hal = { git = "https://github.com/MathiasKoch/embedded-hal", branch = "feature/alternative-storage" }
+embedded-hal = { version = "1.0.0-alpha.4" }
 nb = "^1"
 ufmt = "0.1.0"
 heapless = { version = "0.5.5", features = ["serde", "ufmt-impl"] }
-mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "2c1bb62" }
+mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "4c6c35e" }
 no-std-net = "0.4.0"
 serde = { version = "^1", default-features = false, features = ["derive"] }
 serde-json-core = { git = "https://github.com/MathiasKoch/serde-json-core", branch = "factbird_mini" }
@@ -33,7 +33,7 @@ typenum = "^1"
 defmt = { version = "^0.1" }
 
 [dev-dependencies]
-embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", branch = "factbird-mini-1.0" }
+embedded-nal = { git = "https://github.com/BlackbirdHQ/embedded-nal", branch = "factbird-mini-1.0" }
 native-tls = "^0.2"
 rust-crypto = "^0.2"
 
