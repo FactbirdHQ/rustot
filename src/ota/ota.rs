@@ -169,11 +169,11 @@ impl<PE> From<JobError> for OtaError<PE> {
 }
 
 pub struct OtaConfig {
-    pub block_size: usize,
-    pub max_request_momentum: u8,
-    pub request_wait_ms: u32,
-    pub max_blocks_per_request: u32,
-    pub percentage_change_between_status_update: u8,
+    block_size: usize,
+    max_request_momentum: u8,
+    request_wait_ms: u32,
+    max_blocks_per_request: u32,
+    status_update_frequency: u32,
 }
 
 impl Default for OtaConfig {
@@ -183,7 +183,7 @@ impl Default for OtaConfig {
             max_request_momentum: 3,
             request_wait_ms: 4500,
             max_blocks_per_request: 128,
-            percentage_change_between_status_update: 5,
+            status_update_frequency: 24,
         }
     }
 }
@@ -191,6 +191,13 @@ impl Default for OtaConfig {
 impl OtaConfig {
     pub fn set_block_size(self, block_size: usize) -> Self {
         Self { block_size, ..self }
+    }
+
+    pub fn set_max_request_momentum(self, max_request_momentum: u8) -> Self {
+        Self {
+            max_request_momentum,
+            ..self
+        }
     }
 
     pub fn set_request_wait_ms(self, request_wait_ms: u32) -> Self {
@@ -203,6 +210,13 @@ impl OtaConfig {
     pub fn set_max_blocks_per_request(self, max_blocks_per_request: u32) -> Self {
         Self {
             max_blocks_per_request,
+            ..self
+        }
+    }
+
+    pub fn set_status_update_frequency(self, status_update_frequency: u32) -> Self {
+        Self {
+            status_update_frequency,
             ..self
         }
     }
@@ -224,7 +238,6 @@ pub struct OtaAgent<P, T> {
     request_timer: T,
     agent_state: AgentState,
     pub image_state: ImageState,
-    next_update_percentage: u8,
 }
 
 pub fn is_ota_message(topic_name: &str) -> bool {
@@ -247,7 +260,6 @@ where
             request_timer,
             agent_state: AgentState::Ready,
             image_state: ImageState::Unknown,
-            next_update_percentage: 0,
         }
     }
 
@@ -257,7 +269,7 @@ where
 
     pub fn close<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
     ) -> Result<(), OtaError<P::Error>> {
         match self.agent_state {
             AgentState::Ready => Ok(()),
@@ -286,8 +298,8 @@ where
     }
 
     // Call this from timer timeout IRQ or poll it regularly
-    pub fn request_timer_irq<M: mqttrust::PublishPayload>(&mut self, client: &impl Mqtt<M>) {
-        if self.request_timer.wait().is_ok() {
+    pub fn request_timer_irq<M: mqttrust::PublishPayload>(&mut self, client: &mut impl Mqtt<M>) {
+        if self.request_timer.try_wait().is_ok() {
             if let AgentState::Active(ref mut state) = self.agent_state {
                 if state.total_blocks_remaining > 0 {
                     state.request_block_remaining = self.config.max_blocks_per_request;
@@ -299,17 +311,19 @@ where
 
     pub fn handle_message<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
         job_agent: &mut impl IotJobsData,
         publish: &mut PublishNotification,
-    ) -> Result<u8, OtaError<P::Error>> {
+    ) -> Result<(), OtaError<P::Error>> {
         match self.agent_state {
             AgentState::Active(ref mut state) => {
                 match OtaTopicType::check(client.client_id(), &publish.topic_name) {
                     None | Some(OtaTopicType::Invalid) => Err(OtaError::InvalidTopic),
                     Some(OtaTopicType::CborData(_)) => {
                         // Reset or start the firmware request timer.
-                        self.request_timer.start(self.config.request_wait_ms);
+                        self.request_timer
+                            .try_start(self.config.request_wait_ms)
+                            .ok();
 
                         let StreamResponse {
                             block_id,
@@ -317,7 +331,7 @@ where
                             block_size,
                             file_id,
                         } = serde_cbor::de::from_mut_slice(&mut publish.payload).map_err(|_e| {
-                            // defmt::error!("{:?}", e);
+                            defmt::error!("CBOR decoding error");
                             OtaError::BadData
                         })?;
 
@@ -328,6 +342,7 @@ where
                         let total_blocks = ((state.file.filesize + self.config.block_size - 1)
                             / self.config.block_size)
                             - 1;
+                        let received_blocks = (total_blocks - state.total_blocks_remaining) as u32;
 
                         if (block_id < total_blocks && block_size == self.config.block_size)
                             || (block_id == total_blocks
@@ -335,12 +350,6 @@ where
                                     == (state.file.filesize
                                         - total_blocks * self.config.block_size))
                         {
-                            defmt::info!(
-                                "Received file block {:?}, size {:?}",
-                                block_id,
-                                block_size
-                            );
-
                             // We're actively receiving a file so update the
                             // job status as needed. First reset the
                             // momentum counter since we received a good
@@ -355,9 +364,7 @@ where
                                 );
 
                                 // Just return same progress as before
-                                return Ok((((total_blocks - state.total_blocks_remaining) * 100)
-                                    / total_blocks)
-                                    as u8);
+                                return Ok(());
                             } else {
                                 self.ota_pal.write_block(
                                     &state.file,
@@ -376,33 +383,68 @@ where
                             return Err(OtaError::BlockOutOfRange);
                         }
 
-                        let blocks_remaining = state.total_blocks_remaining;
-                        let progress =
-                            (((total_blocks - blocks_remaining) * 100) / total_blocks) as u8;
-
-                        if blocks_remaining == 0 {
+                        if state.total_blocks_remaining == 0 {
                             defmt::info!("Received final expected block of file.");
 
                             match self.ota_pal.close_file(&state.file) {
                                 Ok(()) => {
-                                    defmt::info!("File receive complete and signature is valid.");
+                                    defmt::debug!("File receive complete and signature is valid.");
+
+                                    let mut progress = String::new();
+                                    ufmt::uwrite!(
+                                        &mut progress,
+                                        "{}/{}",
+                                        total_blocks,
+                                        total_blocks
+                                    )
+                                    .map_err(|_| JobError::Formatting)?;
+
+                                    let mut map = heapless::IndexMap::new();
+                                    map.insert(String::from("receive"), progress).unwrap();
+
                                     // Update job status to success with 100% progress
-                                    job_agent.update_job_execution(client, JobStatus::Succeeded)?;
+                                    job_agent.update_job_execution(
+                                        client,
+                                        JobStatus::Succeeded,
+                                        Some(map),
+                                    )?;
                                 }
                                 Err(_e) => {
                                     // Update job status to failed with reason `e`
-                                    job_agent.update_job_execution(client, JobStatus::Failed)?;
+                                    job_agent.update_job_execution(
+                                        client,
+                                        JobStatus::Failed,
+                                        None,
+                                    )?;
                                 }
                             };
                         } else {
-                            defmt::info!("Remaining: {:?}", state.total_blocks_remaining);
-                            if progress == self.next_update_percentage {
-                                defmt::info!("OTA Progress: {:?}%", progress);
+                            defmt::debug!(
+                                "Received file block {:?}, size {:?}, remaining: {:?}",
+                                block_id,
+                                block_size,
+                                total_blocks as u32 - received_blocks
+                            );
+                            if received_blocks % self.config.status_update_frequency as u32 == 0 {
+                                let mut progress = String::new();
+                                ufmt::uwrite!(
+                                    &mut progress,
+                                    "{}/{}",
+                                    received_blocks,
+                                    total_blocks
+                                )
+                                .map_err(|_| JobError::Formatting)?;
 
-                                // TODO: Include progress here
-                                job_agent.update_job_execution(client, JobStatus::InProgress)?;
-                                self.next_update_percentage +=
-                                    self.config.percentage_change_between_status_update;
+                                defmt::info!("OTA Progress: {:str}", progress.as_str());
+
+                                let mut map = heapless::IndexMap::new();
+                                map.insert(String::from("receive"), progress).unwrap();
+
+                                job_agent.update_job_execution(
+                                    client,
+                                    JobStatus::InProgress,
+                                    Some(map),
+                                )?;
                             }
 
                             if state.request_block_remaining > 1 {
@@ -413,7 +455,7 @@ where
                                 self.publish_get_stream_message(client)?;
                             }
                         }
-                        Ok(progress)
+                        Ok(())
                     }
                     Some(OtaTopicType::CborGetRejected(_)) => {
                         self.agent_state = AgentState::Ready;
@@ -427,7 +469,7 @@ where
 
     pub fn finalize_ota_job<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
         status: JobStatus,
     ) -> Result<(), OtaError<P::Error>> {
         let event = match status {
@@ -440,7 +482,7 @@ where
 
     pub fn process_ota_job<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
         job: OtaJob,
     ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(OtaState {
@@ -457,7 +499,7 @@ where
         }
         // Subscribe to `$aws/things/{thingName}/streams/{streamId}/data/cbor`
 
-        // defmt::debug!("Accepted a new JOB! {:?}", job);
+        defmt::debug!("Accepted a new JOB! {:str}", job.streamname.as_str());
 
         let mut topic_path = String::new();
         ufmt::uwrite!(
@@ -511,14 +553,14 @@ where
 
     fn publish_get_stream_message<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
     ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(ref mut state) = self.agent_state {
             if state.request_momentum >= self.config.max_request_momentum {
                 return Err(OtaError::MaxMomentumAbort(self.config.max_request_momentum));
             }
 
-            let buf: &mut [u8] = &mut [0u8; 2048];
+            let buf: &mut [u8] = &mut [0u8; 128];
             let len = crate::ota::cbor::to_slice(
                 &StreamRequest {
                     // Arbitrary client token sent in the stream "GET" message
@@ -551,9 +593,15 @@ where
                 .publish(topic, M::from_bytes(&buf[..len]), QoS::AtMostOnce)
                 .ok();
 
-            defmt::info!("Requesting blocks! Momentum: {:?}", state.request_momentum);
+            defmt::info!(
+                "Requesting blocks! Momentum: {:?}, using {:?} bytes",
+                state.request_momentum,
+                len
+            );
             // Start request timer
-            self.request_timer.start(self.config.request_wait_ms);
+            self.request_timer
+                .try_start(self.config.request_wait_ms)
+                .ok();
 
             Ok(())
         } else {

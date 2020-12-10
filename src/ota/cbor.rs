@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 #[derive(Clone, PartialEq)]
 pub struct Bitmap {
-    inner: innerBitmap<typenum::U640>,
+    inner: innerBitmap<typenum::U1024>,
     len: usize,
 }
 
@@ -13,15 +13,15 @@ impl Bitmap {
         // Number of blocks, rounded up
         let num_blocks = (file_size + block_size - 1) / block_size;
 
-        debug_assert!(num_blocks < 128 * 5, "{:?} < {}", num_blocks, 128 * 5);
+        assert!(num_blocks < 128 * 8, "{:?} < {}", num_blocks, 128 * 8);
 
         Self {
-            inner: innerBitmap::from_value(<[u128; 5]>::make_mask(num_blocks)),
+            inner: innerBitmap::from_value(<[u128; 8]>::make_mask(num_blocks)),
             len: num_blocks,
         }
     }
 
-    pub fn to_inner(&self) -> &innerBitmap<typenum::U640> {
+    pub fn to_inner(&self) -> &innerBitmap<typenum::U1024> {
         &self.inner
     }
 
@@ -29,7 +29,7 @@ impl Bitmap {
         self.len
     }
 
-    pub fn to_inner_mut(&mut self) -> &mut innerBitmap<typenum::U640> {
+    pub fn to_inner_mut(&mut self) -> &mut innerBitmap<typenum::U1024> {
         &mut self.inner
     }
 }
