@@ -847,7 +847,7 @@ mod test {
         }
 
         fn send(
-            &self,
+            &mut self,
             request: mqttrust::Request<Vec<u8, P>>,
         ) -> Result<(), mqttrust::MqttClientError> {
             self.calls
@@ -882,12 +882,12 @@ mod test {
         }
         "#;
 
-        let mqtt: MockClient<consts::U128, consts::U512> =
+        let mut mqtt: MockClient<consts::U128, consts::U512> =
             MockClient::new(String::from(thing_name));
         let mut job_agent = JobAgent::new();
         let notification = job_agent
             .handle_message(
-                &mqtt,
+                &mut mqtt,
                 &mqttrust::PublishNotification {
                     dup: false,
                     qospid: mqttrust::QosPid::AtMostOnce,
