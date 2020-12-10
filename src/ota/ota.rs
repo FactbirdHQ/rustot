@@ -269,7 +269,7 @@ where
 
     pub fn close<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
     ) -> Result<(), OtaError<P::Error>> {
         match self.agent_state {
             AgentState::Ready => Ok(()),
@@ -298,7 +298,7 @@ where
     }
 
     // Call this from timer timeout IRQ or poll it regularly
-    pub fn request_timer_irq<M: mqttrust::PublishPayload>(&mut self, client: &impl Mqtt<M>) {
+    pub fn request_timer_irq<M: mqttrust::PublishPayload>(&mut self, client: &mut impl Mqtt<M>) {
         if self.request_timer.try_wait().is_ok() {
             if let AgentState::Active(ref mut state) = self.agent_state {
                 if state.total_blocks_remaining > 0 {
@@ -311,7 +311,7 @@ where
 
     pub fn handle_message<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
         job_agent: &mut impl IotJobsData,
         publish: &mut PublishNotification,
     ) -> Result<(), OtaError<P::Error>> {
@@ -469,7 +469,7 @@ where
 
     pub fn finalize_ota_job<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
         status: JobStatus,
     ) -> Result<(), OtaError<P::Error>> {
         let event = match status {
@@ -482,7 +482,7 @@ where
 
     pub fn process_ota_job<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
         job: OtaJob,
     ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(OtaState {
@@ -553,7 +553,7 @@ where
 
     fn publish_get_stream_message<M: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl Mqtt<M>,
+        client: &mut impl Mqtt<M>,
     ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(ref mut state) = self.agent_state {
             if state.request_momentum >= self.config.max_request_momentum {

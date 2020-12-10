@@ -231,8 +231,9 @@ dependencies = [
 
 [[package]]
 name = "mqttrs"
-version = "0.3.0"
-source = "git+https://github.com/MathiasKoch/mqttrs?branch=wip/alloc-free-encode#e8ac1d538e84146816360154ceb887245365bdb6"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bdfa9214dccd47bfd9e2dbb653e06d2b6c87f88649d8945108a8d20c954b05c"
 dependencies = [
  "heapless",
 ]
@@ -240,6 +241,7 @@ dependencies = [
 [[package]]
 name = "mqttrust"
 version = "0.0.5"
+source = "git+https://github.com/BlackbirdHQ/mqttrust?rev=2c1bb62#2c1bb62867c1a4be35e560880f18f21544e0e7c3"
 dependencies = [
  "defmt",
  "embedded-hal",

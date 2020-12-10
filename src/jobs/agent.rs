@@ -46,7 +46,7 @@ impl JobAgent {
 
     fn update_job_execution_internal<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         execution_number: Option<i64>,
         status_details: Option<
             heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
@@ -94,7 +94,7 @@ impl JobAgent {
 
     fn handle_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         execution: JobExecution,
         status_details: Option<
             heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
@@ -170,7 +170,7 @@ impl JobAgent {
 impl IotJobsData for JobAgent {
     fn describe_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         job_id: &str,
         execution_number: Option<i64>,
         include_job_document: Option<bool>,
@@ -197,9 +197,10 @@ impl IotJobsData for JobAgent {
 
     fn get_pending_job_executions<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
+        let client_token = self.get_client_token(thing_name)?;
 
         let mut topic = String::new();
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/get", thing_name)
@@ -209,9 +210,7 @@ impl IotJobsData for JobAgent {
             .publish(
                 topic,
                 P::from_bytes(&to_vec::<consts::U48, _>(
-                    &GetPendingJobExecutionsRequest {
-                        client_token: self.get_client_token(thing_name)?,
-                    },
+                    &GetPendingJobExecutionsRequest { client_token },
                 )?),
                 mqttrust::QoS::AtLeastOnce,
             )
@@ -222,10 +221,11 @@ impl IotJobsData for JobAgent {
 
     fn start_next_pending_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         step_timeout_in_minutes: Option<i64>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
+        let client_token = self.get_client_token(thing_name)?;
 
         let mut topic = String::new();
         ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/start-next", thing_name)
@@ -237,7 +237,7 @@ impl IotJobsData for JobAgent {
                 P::from_bytes(&to_vec::<consts::U48, _>(
                     &StartNextPendingJobExecutionRequest {
                         step_timeout_in_minutes,
-                        client_token: self.get_client_token(thing_name)?,
+                        client_token,
                     },
                 )?),
                 mqttrust::QoS::AtLeastOnce,
@@ -249,7 +249,7 @@ impl IotJobsData for JobAgent {
 
     fn update_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
         status_details: Option<
             heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
@@ -263,7 +263,7 @@ impl IotJobsData for JobAgent {
 
     fn subscribe_to_jobs<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
         let mut topics = Vec::new();
@@ -307,7 +307,7 @@ impl IotJobsData for JobAgent {
 
     fn unsubscribe_from_jobs<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
 
@@ -337,7 +337,7 @@ impl IotJobsData for JobAgent {
 
     fn handle_message<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         publish: &mqttrust::PublishNotification,
     ) -> Result<Option<JobNotification>, JobError> {
         match JobTopicType::check(

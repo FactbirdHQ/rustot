@@ -566,7 +566,7 @@ pub trait IotJobsData {
     /// Topic: $aws/things/{thingName}/jobs/{jobId}/get
     fn describe_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         job_id: &str,
         execution_number: Option<i64>,
         include_job_document: Option<bool>,
@@ -577,7 +577,7 @@ pub trait IotJobsData {
     /// Topic: $aws/things/{thingName}/jobs/get
     fn get_pending_job_executions<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError>;
 
     /// Gets and starts the next pending job execution for a thing (status
@@ -604,7 +604,7 @@ pub trait IotJobsData {
     /// Topic: $aws/things/{thingName}/jobs/start-next
     fn start_next_pending_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         step_timeout_in_minutes: Option<i64>,
     ) -> Result<(), JobError>;
 
@@ -616,7 +616,7 @@ pub trait IotJobsData {
     /// Topic: $aws/things/{thingName}/jobs/{jobId}/update
     fn update_job_execution<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
         status_details: Option<
             heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
@@ -630,7 +630,7 @@ pub trait IotJobsData {
     /// - $aws/things/{thingName}/jobs/$next/get/accepted
     fn subscribe_to_jobs<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError>;
 
     /// Unsubscribe from relevant job topics.
@@ -640,7 +640,7 @@ pub trait IotJobsData {
     /// - $aws/things/{thingName}/jobs/$next/get/accepted
     fn unsubscribe_from_jobs<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
     ) -> Result<(), JobError>;
 
     /// Handle incomming job messages and process them accordingly.
@@ -649,7 +649,7 @@ pub trait IotJobsData {
     /// by this function
     fn handle_message<P: mqttrust::PublishPayload>(
         &mut self,
-        client: &impl mqttrust::Mqtt<P>,
+        client: &mut impl mqttrust::Mqtt<P>,
         publish: &mqttrust::PublishNotification,
     ) -> Result<Option<JobNotification>, JobError>;
 }

@@ -22,7 +22,7 @@ embedded-hal = { git = "https://github.com/MathiasKoch/embedded-hal", branch = "
 nb = "^1"
 ufmt = "0.1.0"
 heapless = { version = "0.5.5", features = ["serde", "ufmt-impl"] }
-mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", branch = "enhancement/defmt" }
+mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "2c1bb62" }
 no-std-net = "0.4.0"
 serde = { version = "^1", default-features = false, features = ["derive"] }
 serde-json-core = { git = "https://github.com/MathiasKoch/serde-json-core", branch = "factbird_mini" }
