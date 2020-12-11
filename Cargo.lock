@@ -566,8 +566,9 @@ dependencies = [
 
 [[package]]
 name = "serde-json-core"
-version = "0.1.0"
-source = "git+https://github.com/MathiasKoch/serde-json-core?branch=factbird_mini#b02a33c6c433474e231e9e48e8a049ff4512ae82"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89fd6016a00149b485f66da701f76d909210d319040c97b6eff300f6e2ba2153"
 dependencies = [
  "heapless",
  "serde",

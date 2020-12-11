@@ -358,7 +358,7 @@ impl IotJobsData for JobAgent {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/notify-next`
 
-                let response: NextJobExecutionChanged = from_slice(&publish.payload)?;
+                let (response, _) = from_slice::<NextJobExecutionChanged>(&publish.payload)?;
                 defmt::debug!(
                     "notify-next message! active_job: {:?}",
                     self.active_job.is_some()
@@ -382,7 +382,9 @@ impl IotJobsData for JobAgent {
                 // `$aws/things/{thingName}/jobs/{jobId}/get/accepted`
 
                 defmt::debug!("{:str}/get/accepted message!", job_id.as_str());
-                if let Ok(response) = from_slice::<DescribeJobExecutionResponse>(&publish.payload) {
+                if let Ok((response, _)) =
+                    from_slice::<DescribeJobExecutionResponse>(&publish.payload)
+                {
                     if let Some(execution) = response.execution {
                         self.handle_job_execution(client, execution, None)
                     } else {
@@ -408,11 +410,14 @@ impl IotJobsData for JobAgent {
                 defmt::debug!("{:str}/update/accepted message!", job_id.as_str());
 
                 match from_slice::<UpdateJobExecutionResponse>(&publish.payload) {
-                    Ok(UpdateJobExecutionResponse {
-                        execution_state,
-                        job_document,
-                        ..
-                    }) if execution_state.is_some() && job_document.is_some() => {
+                    Ok((
+                        UpdateJobExecutionResponse {
+                            execution_state,
+                            job_document,
+                            ..
+                        },
+                        _,
+                    )) if execution_state.is_some() && job_document.is_some() => {
                         let state = execution_state.unwrap();
 
                         let version_number = if let Some(ref active) = self.active_job {
@@ -454,7 +459,7 @@ impl IotJobsData for JobAgent {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/get/rejected`
                 defmt::debug!("{:str}/get/rejected message!", job_id.as_str());
-                let error: ErrorResponse = from_slice(&publish.payload)?;
+                let (error, _) = from_slice::<ErrorResponse>(&publish.payload)?;
                 // defmt::debug!("{:?}", error);
                 Err(JobError::Rejected(error))
             }
@@ -462,7 +467,7 @@ impl IotJobsData for JobAgent {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/update/rejected`
                 defmt::debug!("{:str}/update/rejected message!", job_id.as_str());
-                let error: ErrorResponse = from_slice(&publish.payload)?;
+                let (error, _) = from_slice::<ErrorResponse>(&publish.payload)?;
                 // defmt::debug!("{:?}", error);
                 Err(JobError::Rejected(error))
             }

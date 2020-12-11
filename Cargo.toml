@@ -25,7 +25,7 @@ heapless = { version = "0.5.5", features = ["serde", "ufmt-impl"] }
 mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "4c6c35e" }
 no-std-net = "0.4.0"
 serde = { version = "^1", default-features = false, features = ["derive"] }
-serde-json-core = { git = "https://github.com/MathiasKoch/serde-json-core", branch = "factbird_mini" }
+serde-json-core = { version = "0.2.0" }
 serde_cbor =  { version = "^0.11", default-features = false }
 bitmaps = { version = "^2", default-features = false }
 typenum = "^1"
