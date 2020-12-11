@@ -382,7 +382,9 @@ impl IotJobsData for JobAgent {
                 // `$aws/things/{thingName}/jobs/{jobId}/get/accepted`
 
                 defmt::debug!("{:str}/get/accepted message!", job_id.as_str());
-                if let Ok((response, _)) = from_slice::<DescribeJobExecutionResponse>(&publish.payload) {
+                if let Ok((response, _)) =
+                    from_slice::<DescribeJobExecutionResponse>(&publish.payload)
+                {
                     if let Some(execution) = response.execution {
                         self.handle_job_execution(client, execution, None)
                     } else {
@@ -408,11 +410,14 @@ impl IotJobsData for JobAgent {
                 defmt::debug!("{:str}/update/accepted message!", job_id.as_str());
 
                 match from_slice::<UpdateJobExecutionResponse>(&publish.payload) {
-                    Ok((UpdateJobExecutionResponse {
-                        execution_state,
-                        job_document,
-                        ..
-                    }, _)) if execution_state.is_some() && job_document.is_some() => {
+                    Ok((
+                        UpdateJobExecutionResponse {
+                            execution_state,
+                            job_document,
+                            ..
+                        },
+                        _,
+                    )) if execution_state.is_some() && job_document.is_some() => {
                         let state = execution_state.unwrap();
 
                         let version_number = if let Some(ref active) = self.active_job {
