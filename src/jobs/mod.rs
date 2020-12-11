@@ -1005,7 +1005,7 @@ mod test {
         }
         "#;
 
-        let response: NextJobExecutionChanged = from_slice(payload).unwrap();
+        let (response, _) = from_slice::<NextJobExecutionChanged>(payload).unwrap();
 
         assert_eq!(
             response,
@@ -1039,7 +1039,7 @@ mod test {
                 "inProgressJobs": []
             }"#;
 
-        let response: GetPendingJobExecutionsResponse = from_slice(payload).unwrap();
+        let (response, _) = from_slice::<GetPendingJobExecutionsResponse>(payload).unwrap();
 
         assert_eq!(
             response,
@@ -1078,7 +1078,7 @@ mod test {
             })
             .unwrap();
 
-        let response: GetPendingJobExecutionsResponse = from_slice(payload).unwrap();
+        let (response, _) = from_slice::<GetPendingJobExecutionsResponse>(payload).unwrap();
 
         assert_eq!(
             response,
@@ -1112,7 +1112,7 @@ mod test {
                 }
             }"#;
 
-        let response: DescribeJobExecutionResponse = from_slice(payload).unwrap();
+        let (response, _) = from_slice::<DescribeJobExecutionResponse>(payload).unwrap();
 
         assert_eq!(
             response,
@@ -1171,7 +1171,7 @@ mod test {
             }
           }"#;
 
-        let response: DescribeJobExecutionResponse = from_slice(payload).unwrap();
+        let (response, _) = from_slice::<DescribeJobExecutionResponse>(payload).unwrap();
 
         let mut files = Vec::new();
         files
@@ -1240,7 +1240,7 @@ mod test {
                 }
             }"#;
 
-        let response: DescribeJobExecutionResponse = from_slice(payload).unwrap();
+        let (response, _) = from_slice::<DescribeJobExecutionResponse>(payload).unwrap();
 
         assert_eq!(
             response,
