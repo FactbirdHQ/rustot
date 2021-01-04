@@ -1,6 +1,6 @@
 [package]
 name = "rustot"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "AWS IoT"
 readme = "README.md"
@@ -18,22 +18,20 @@ name = "rustot"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-embedded-hal = { version = "1.0.0-alpha.4" }
+heapless = { version = "0.5.5", features = ["serde", "ufmt-impl"] }
+serde = { version = "^1", default-features = false, features = ["derive"] }
+serde_cbor = { version = "^0.11", default-features = false }
+bitmaps = { version = "^2", default-features = false }
+embedded-hal = "1.0.0-alpha.4"
+serde-json-core = "0.2.0"
 nb = "^1"
 ufmt = "0.1.0"
-heapless = { version = "0.5.5", features = ["serde", "ufmt-impl"] }
-mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "4c6c35e" }
-no-std-net = "0.4.0"
-serde = { version = "^1", default-features = false, features = ["derive"] }
-serde-json-core = { version = "0.2.0" }
-serde_cbor =  { version = "^0.11", default-features = false }
-bitmaps = { version = "^2", default-features = false }
+# mqttrust = "0.1.0"
+mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", branch = "embedded-nal-v0.2.0" }
 typenum = "^1"
-
-defmt = { version = "^0.1" }
+defmt = "^0.1"
 
 [dev-dependencies]
-embedded-nal = { git = "https://github.com/BlackbirdHQ/embedded-nal", branch = "factbird-mini-1.0" }
 native-tls = "^0.2"
 rust-crypto = "^0.2"
 

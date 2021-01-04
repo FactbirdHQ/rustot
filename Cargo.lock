@@ -106,8 +106,9 @@ dependencies = [
 
 [[package]]
 name = "embedded-nal"
-version = "0.1.0"
-source = "git+https://github.com/BlackbirdHQ/embedded-nal?branch=factbird-mini-1.0#d0d8363c0990a8924ddfeb47655ffbdbdf424f97"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94438b64f02a2b5900dc88f181ee94b0f006f4313aede19d4773ad05a4416e5c"
 dependencies = [
  "heapless",
  "nb",
@@ -242,7 +243,7 @@ dependencies = [
 [[package]]
 name = "mqttrust"
 version = "0.0.5"
-source = "git+https://github.com/BlackbirdHQ/mqttrust?rev=4c6c35e#4c6c35eaca91f5ecb4a8c12f7149de7550d6e2c4"
+source = "git+https://github.com/BlackbirdHQ/mqttrust?branch=embedded-nal-v0.2.0#5f5b06caca7fc931b1da4f93b842a995c1265aae"
 dependencies = [
  "defmt",
  "embedded-hal",
@@ -485,17 +486,15 @@ checksum = "dcf128d1287d2ea9d80910b5f1120d0b8eede3fbf1abe91c40d39ea7d51e6fda"
 
 [[package]]
 name = "rustot"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bitmaps",
  "defmt",
  "embedded-hal",
- "embedded-nal",
  "heapless",
  "mqttrust",
  "native-tls",
  "nb",
- "no-std-net",
  "rust-crypto",
  "serde",
  "serde-json-core",
