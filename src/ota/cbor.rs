@@ -35,7 +35,7 @@ impl Bitmap {
 }
 
 impl Serialize for Bitmap {
-    fn serialize<S>(&self, serializer: S) -> serde::export::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
