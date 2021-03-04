@@ -33,9 +33,11 @@
 //!   https://gist.github.com/korken89/947d6458f34ca3ea7293dc06c2251078 for C++
 //!   example with WFBootloader)
 
+use core::ops::{Deref, DerefMut};
+
 use serde_cbor;
 
-use super::cbor::{Bitmap, StreamRequest, StreamResponse};
+use super::cbor::{Bitmap, GetStreamRequest, GetStreamResponse};
 use super::pal::{OtaEvent, OtaPal, OtaPalError};
 use crate::consts::MaxStreamIdLen;
 use crate::jobs::{FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
@@ -43,21 +45,6 @@ use heapless::{consts, String, Vec};
 use mqttrust::{Mqtt, MqttClientError, PublishNotification, QoS, SubscribeTopic};
 
 use embedded_hal::timer::CountDown;
-
-// #[derive(Default)]
-// pub struct Statistics {
-//     packets_received: u32,
-//     packets_dropped: u32,
-//     packets_queued: u32,
-//     packets_processed: u32,
-//     publish_failures: u32,
-// }
-
-// impl Statistics {
-//     pub fn new() -> Self {
-//         Statistics::default()
-//     }
-// }
 
 #[derive(Clone, PartialEq)]
 pub enum AgentState {
@@ -179,7 +166,7 @@ pub struct OtaConfig {
 impl Default for OtaConfig {
     fn default() -> Self {
         OtaConfig {
-            block_size: 1024,
+            block_size: 256,
             max_request_momentum: 3,
             request_wait_ms: 4500,
             max_blocks_per_request: 128,
@@ -208,6 +195,8 @@ impl OtaConfig {
     }
 
     pub fn set_max_blocks_per_request(self, max_blocks_per_request: u32) -> Self {
+        assert!(max_blocks_per_request < 32);
+
         Self {
             max_blocks_per_request,
             ..self
@@ -225,6 +214,7 @@ impl OtaConfig {
 #[derive(Clone, PartialEq)]
 pub struct OtaState {
     file: FileDescription,
+    block_offset: u32,
     bitmap: Bitmap,
     stream_name: String<MaxStreamIdLen>,
     total_blocks_remaining: usize,
@@ -325,11 +315,12 @@ where
                             .try_start(self.config.request_wait_ms)
                             .ok();
 
-                        let StreamResponse {
+                        let GetStreamResponse {
                             block_id,
                             block_payload,
                             block_size,
                             file_id,
+                            ..
                         } = serde_cbor::de::from_mut_slice(&mut publish.payload).map_err(|_e| {
                             defmt::error!("CBOR decoding error");
                             OtaError::BadData
@@ -339,16 +330,18 @@ where
                             return Err(OtaError::BadFileHandle);
                         }
 
-                        let total_blocks = ((state.file.filesize + self.config.block_size - 1)
-                            / self.config.block_size)
-                            - 1;
-                        let received_blocks = (total_blocks - state.total_blocks_remaining) as u32;
+                        let total_blocks = (state.file.filesize + self.config.block_size - 1)
+                            / self.config.block_size;
+                        let last_block_id = total_blocks - 1;
 
-                        if (block_id < total_blocks && block_size == self.config.block_size)
-                            || (block_id == total_blocks
+                        let received_blocks =
+                            (total_blocks - state.total_blocks_remaining + 1) as u32;
+
+                        if (block_id < last_block_id && block_size == self.config.block_size)
+                            || (block_id == last_block_id
                                 && block_size
                                     == (state.file.filesize
-                                        - total_blocks * self.config.block_size))
+                                        - last_block_id * self.config.block_size))
                         {
                             // We're actively receiving a file so update the
                             // job status as needed. First reset the
@@ -356,7 +349,11 @@ where
                             // block.
                             state.request_momentum = 0;
 
-                            if !state.bitmap.to_inner().get(block_id) {
+                            if !state
+                                .bitmap
+                                .deref()
+                                .get(block_id - state.block_offset as usize)
+                            {
                                 defmt::warn!(
                                     "Block {:?} is a DUPLICATE. {:?} blocks remaining.",
                                     block_id,
@@ -371,7 +368,10 @@ where
                                     block_id * self.config.block_size,
                                     block_payload,
                                 )?;
-                                state.bitmap.to_inner_mut().set(block_id, false);
+                                state
+                                    .bitmap
+                                    .deref_mut()
+                                    .set(block_id - state.block_offset as usize, false);
                                 state.total_blocks_remaining -= 1;
                             }
                         } else {
@@ -388,21 +388,26 @@ where
 
                             match self.ota_pal.close_file(&state.file) {
                                 Ok(()) => {
-                                    defmt::debug!("File receive complete and signature is valid.");
-
                                     let mut progress = String::new();
                                     ufmt::uwrite!(
                                         &mut progress,
                                         "{}/{}",
-                                        total_blocks,
+                                        received_blocks,
                                         total_blocks
                                     )
                                     .map_err(|_| JobError::Formatting)?;
+
+                                    defmt::debug!(
+                                        "File receive complete and signature is valid. {=str}",
+                                        progress.as_str()
+                                    );
 
                                     let mut map = heapless::IndexMap::new();
                                     map.insert(String::from("receive"), progress).unwrap();
 
                                     // Update job status to success with 100% progress
+                                    // TODO: Update progress, but keep status as InProgress, until the firmware has been successfully booted.
+                                    // Also consider OTA self test flow as part of status updates.
                                     job_agent.update_job_execution(
                                         client,
                                         JobStatus::Succeeded,
@@ -435,7 +440,7 @@ where
                                 )
                                 .map_err(|_| JobError::Formatting)?;
 
-                                defmt::info!("OTA Progress: {:str}", progress.as_str());
+                                defmt::info!("OTA Progress: {=str}", progress.as_str());
 
                                 let mut map = heapless::IndexMap::new();
                                 map.insert(String::from("receive"), progress).unwrap();
@@ -450,8 +455,17 @@ where
                             if state.request_block_remaining > 1 {
                                 state.request_block_remaining -= 1;
                             } else {
-                                // Received number of data blocks requested so restart the request timer
-                                state.request_block_remaining = self.config.max_blocks_per_request;
+                                // Received number of data blocks requested so restart the request timer, and start a new bitmap
+                                state.block_offset += self.config.max_blocks_per_request;
+                                state.bitmap = Bitmap::new(
+                                    state.file.filesize,
+                                    self.config.block_size,
+                                    state.block_offset,
+                                );
+                                state.request_block_remaining = core::cmp::min(
+                                    self.config.max_blocks_per_request,
+                                    state.total_blocks_remaining as u32,
+                                );
                                 self.publish_get_stream_message(client)?;
                             }
                         }
@@ -499,7 +513,7 @@ where
         }
         // Subscribe to `$aws/things/{thingName}/streams/{streamId}/data/cbor`
 
-        defmt::debug!("Accepted a new JOB! {:str}", job.streamname.as_str());
+        defmt::debug!("Accepted a new JOB! {=str}", job.streamname.as_str());
 
         let mut topic_path = String::new();
         ufmt::uwrite!(
@@ -523,7 +537,8 @@ where
         // Publish to `$aws/things/{thingName}/streams/{streamId}/get/cbor` to
         // initiate the stream transfer
         let file = job.files.get(0).unwrap().clone();
-        let bitmap = Bitmap::new(file.filesize, self.config.block_size);
+        let block_offset = 0;
+        let bitmap = Bitmap::new(file.filesize, self.config.block_size, block_offset);
 
         if let Err(e) = self.ota_pal.create_file_for_rx(&file) {
             // Close Ota Context
@@ -541,6 +556,7 @@ where
             self.agent_state = AgentState::Active(OtaState {
                 file,
                 stream_name: job.streamname,
+                block_offset,
                 bitmap,
                 total_blocks_remaining,
                 request_block_remaining: number_of_blocks,
@@ -560,16 +576,17 @@ where
                 return Err(OtaError::MaxMomentumAbort(self.config.max_request_momentum));
             }
 
-            let buf: &mut [u8] = &mut [0u8; 128];
+            let buf: &mut [u8] = &mut [0u8; 32];
             let len = crate::ota::cbor::to_slice(
-                &StreamRequest {
+                &GetStreamRequest {
                     // Arbitrary client token sent in the stream "GET" message
-                    client_token: "rdy",
+                    client_token: None,
+                    stream_version: None,
                     file_id: state.file.fileid,
                     block_size: self.config.block_size,
-                    block_offset: 0,
-                    block_bitmap: &state.bitmap,
-                    number_of_blocks: state.request_block_remaining,
+                    block_offset: Some(state.block_offset),
+                    block_bitmap: Some(&state.bitmap),
+                    number_of_blocks: None,
                 },
                 buf,
             )
