@@ -6,6 +6,7 @@ use crate::{jobs::FileDescription, ota::ota::ImageState};
 pub enum OtaPalError<E> {
     SignatureCheckFailed,
     FileWriteFailed,
+    FileTooLarge,
     FileCloseFailed,
     BadFileHandle,
     Unsupported,
