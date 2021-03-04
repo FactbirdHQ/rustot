@@ -102,14 +102,11 @@ mod agent;
 
 pub use agent::{is_job_message, JobAgent};
 
-#[allow(unused_imports)]
-use serde::{Deserialize, Serialize};
-
 use crate::consts::{
     MaxClientTokenLen, MaxJobIdLen, MaxPendingJobs, MaxRunningJobs, MaxThingNameLen,
 };
-
 use heapless::{consts, String, Vec};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum JobStatus {
@@ -719,7 +716,6 @@ impl JobTopicType {
 #[derive(Debug)]
 pub enum JobError {
     Mqtt,
-    // Serde(JsonError),
     Serialize(serde_json_core::ser::Error),
     Deserialize(serde_json_core::de::Error),
     Rejected(ErrorResponse),
@@ -729,14 +725,6 @@ pub enum JobError {
     NoActiveJob,
 }
 
-// impl From<JsonError> for JobError {
-//     fn from(e: JsonError) -> Self {
-//         JobError::Serde(e)
-//     }
-// }
-
-// Temp until https://github.com/japaric/heapless/pull/151, or serde_json can
-// be replaced with serde_json_core
 impl From<serde_json_core::ser::Error> for JobError {
     fn from(e: serde_json_core::ser::Error) -> Self {
         JobError::Serialize(e)

@@ -381,7 +381,7 @@ impl IotJobsData for JobAgent {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/get/accepted`
 
-                defmt::debug!("{:str}/get/accepted message!", job_id.as_str());
+                defmt::debug!("{=str}/get/accepted message!", job_id.as_str());
                 if let Ok((response, _)) =
                     from_slice::<DescribeJobExecutionResponse>(&publish.payload)
                 {
@@ -407,7 +407,7 @@ impl IotJobsData for JobAgent {
             Some(JobTopicType::UpdateAccepted(job_id)) => {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/update/accepted`
-                defmt::debug!("{:str}/update/accepted message!", job_id.as_str());
+                defmt::debug!("{=str}/update/accepted message!", job_id.as_str());
 
                 match from_slice::<UpdateJobExecutionResponse>(&publish.payload) {
                     Ok((
@@ -458,7 +458,7 @@ impl IotJobsData for JobAgent {
             Some(JobTopicType::GetRejected(job_id)) => {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/get/rejected`
-                defmt::debug!("{:str}/get/rejected message!", job_id.as_str());
+                defmt::debug!("{=str}/get/rejected message!", job_id.as_str());
                 let (error, _) = from_slice::<ErrorResponse>(&publish.payload)?;
                 // defmt::debug!("{:?}", error);
                 Err(JobError::Rejected(error))
@@ -466,7 +466,7 @@ impl IotJobsData for JobAgent {
             Some(JobTopicType::UpdateRejected(job_id)) => {
                 // Message published to
                 // `$aws/things/{thingName}/jobs/{jobId}/update/rejected`
-                defmt::debug!("{:str}/update/rejected message!", job_id.as_str());
+                defmt::debug!("{=str}/update/rejected message!", job_id.as_str());
                 let (error, _) = from_slice::<ErrorResponse>(&publish.payload)?;
                 // defmt::debug!("{:?}", error);
                 Err(JobError::Rejected(error))
