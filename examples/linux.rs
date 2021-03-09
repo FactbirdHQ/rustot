@@ -38,7 +38,7 @@ fn main() {
     let mqtt_client = MqttClient::new(p, thing_name);
 
     let file_handler = FileHandler::new();
-    let mut job_agent = JobAgent::new();
+    let mut job_agent = JobAgent::new(3);
     let mut ota_agent = OtaAgent::new(file_handler, SysTimer::new(), OtaConfig::default());
 
     nb::block!(mqtt_eventloop.connect(&network)).expect("Failed to connect to MQTT");

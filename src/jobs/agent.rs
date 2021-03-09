@@ -12,6 +12,7 @@ use serde_json_core::{from_slice, to_vec};
 #[derive(Default)]
 pub struct JobAgent {
     request_cnt: u32,
+    max_retries: u8,
     active_job: Option<JobNotification>,
 }
 
@@ -24,9 +25,10 @@ pub fn is_job_message(topic_name: &str) -> bool {
 
 impl JobAgent {
     /// Create a new IoT Job Agent reacting to topics for `thing_name`
-    pub fn new() -> Self {
+    pub fn new(max_retries: u8) -> Self {
         JobAgent {
             request_cnt: 0,
+            max_retries,
             active_job: None,
         }
     }
@@ -48,9 +50,6 @@ impl JobAgent {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         execution_number: Option<i64>,
-        status_details: Option<
-            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
-        >,
         step_timeout_in_minutes: Option<i64>,
     ) -> Result<(), JobError> {
         let thing_name = client.client_id();
@@ -75,8 +74,8 @@ impl JobAgent {
                         expected_version: active_job.version_number,
                         include_job_document: Some(true),
                         include_job_execution_state: Some(true),
-                        status: active_job.status.clone(),
-                        status_details,
+                        status: active_job.status,
+                        status_details: active_job.status_details.as_ref(),
                         step_timeout_in_minutes,
                         client_token,
                     })?),
@@ -97,9 +96,9 @@ impl JobAgent {
         client: &mut impl mqttrust::Mqtt<P>,
         execution: JobExecution,
         status_details: Option<
-            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
+            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>,
         >,
-    ) -> Result<Option<JobNotification>, JobError> {
+    ) -> Result<Option<&JobNotification>, JobError> {
         match execution.status {
             JobStatus::Queued if self.active_job.is_none() && execution.job_document.is_some() => {
                 // There is a new queued job available, and we are not currently
@@ -111,10 +110,11 @@ impl JobAgent {
                     version_number: execution.version_number,
                     status: JobStatus::InProgress,
                     details: execution.job_document.unwrap(),
+                    status_details,
                 });
                 defmt::debug!("Accepting new job!");
 
-                self.update_job_execution_internal(client, None, status_details, None)?;
+                self.update_job_execution_internal(client, None, None)?;
 
                 Ok(None)
             }
@@ -124,43 +124,90 @@ impl JobAgent {
                 // If we dont have an active job, and the cloud reports job
                 // should be active, it means something panicked, or we lost
                 // track of the current job.
-                // TODO: Start over on this job, instead of failing it!
+
+                // Start over current job, instead of failing it
+                let mut map = execution
+                    .status_details
+                    .unwrap_or_else(|| heapless::IndexMap::new());
+
+                let attempt = map
+                    .get(&String::from("attempt"))
+                    .and_then(|a| a.as_str().parse::<u8>().ok())
+                    .unwrap_or_else(|| 1);
+
+                let status = if attempt < self.max_retries {
+                    defmt::debug!("Retrying existing job! Attempt: {}", attempt);
+
+                    let mut attempt_str = String::new();
+                    if ufmt::uwrite!(&mut attempt_str, "{}", attempt + 1).is_ok() {
+                        map.insert(String::from("attempt"), attempt_str).ok();
+                    }
+
+                    map.insert(String::from("progress"), String::from("0/0"))
+                        .ok();
+
+                    for (k, v) in map.iter() {
+                        defmt::debug!("{}: {}", k.as_str(), v.as_str());
+                    }
+
+                    JobStatus::InProgress
+                } else {
+                    defmt::error!(
+                        "Retried job {} times without success! Failing it...",
+                        self.max_retries
+                    );
+                    JobStatus::Failed
+                };
+
                 self.active_job = Some(JobNotification {
                     job_id: execution.job_id,
                     version_number: execution.version_number,
-                    status: JobStatus::Failed,
+                    status: status.clone(),
                     details: execution.job_document.unwrap(),
+                    status_details: Some(map),
                 });
-                self.update_job_execution_internal(client, None, status_details, None)?;
-                self.active_job = None;
-                Ok(None)
+
+                self.update_job_execution_internal(client, None, None)?;
+
+                if status == JobStatus::Failed {
+                    self.active_job = None;
+                    Ok(None)
+                } else {
+                    Ok(self.active_job.as_ref())
+                }
             }
-            JobStatus::InProgress if self.active_job.is_some() => {
+            JobStatus::InProgress => {
                 // If we have an active job, and the cloud reports job should be
                 // active, it means there is an update for the currently
                 // executing job, perhaps requested by the device
 
-                // TODO:
                 // Validate that the job update is indeed for the active_job
-                // if execution.job_id == self.active_job {
-                //     self.active_job = Some(JobNotification {
-                //         ..self.active_job.clone().unwrap()
-                //     });
-                // }
-
-                Ok(self.active_job.clone())
+                match self.active_job {
+                    Some(ref active_job) if execution.job_id != active_job.job_id => {
+                        // TODO: We got a job notification for a new job
+                    }
+                    Some(_) => {
+                        // We got a job notification for a the currently active job
+                    }
+                    None => {
+                        defmt::error!("Active job is none! Should never happen!");
+                    }
+                }
+                Ok(self.active_job.as_ref())
             }
             JobStatus::Canceled | JobStatus::Removed | JobStatus::Failed
                 if self.active_job.is_some() =>
             {
+                // TODO:
                 // Current job is canceled! Abort if possible
-                let job = self.active_job.clone().unwrap();
-                self.active_job = None;
+                // let job = self.active_job.unwrap();
+                // self.active_job = None;
 
-                Ok(Some(JobNotification {
-                    status: JobStatus::Canceled,
-                    ..job
-                }))
+                // Ok(Some(&JobNotification {
+                //     status: JobStatus::Canceled,
+                //     ..job
+                // }))'
+                Ok(None)
             }
             _ => Ok(None),
         }
@@ -252,13 +299,25 @@ impl IotJobsData for JobAgent {
         client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
         status_details: Option<
-            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
+            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>,
         >,
     ) -> Result<(), JobError> {
         if let Some(ref mut active_job) = self.active_job {
             active_job.status = status;
+
+            // Merge status_details
+            match active_job.status_details {
+                Some(ref mut active_details) => {
+                    if let Some(new_details) = status_details {
+                        new_details.iter().for_each(|(key, value)| {
+                            active_details.insert(key.clone(), value.clone()).ok();
+                        });
+                    }
+                }
+                None => active_job.status_details = status_details,
+            };
         }
-        self.update_job_execution_internal(client, None, status_details, None)
+        self.update_job_execution_internal(client, None, None)
     }
 
     fn subscribe_to_jobs<P: mqttrust::PublishPayload>(
@@ -339,7 +398,7 @@ impl IotJobsData for JobAgent {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         publish: &mqttrust::PublishNotification,
-    ) -> Result<Option<JobNotification>, JobError> {
+    ) -> Result<Option<&JobNotification>, JobError> {
         match JobTopicType::check(
             client.client_id(),
             &publish
@@ -440,10 +499,11 @@ impl IotJobsData for JobAgent {
                                     version_number,
                                     status: state.status,
                                     details: job_document.unwrap(),
+                                    status_details: state.status_details,
                                 });
                             }
                         }
-                        Ok(self.active_job.clone())
+                        Ok(self.active_job.as_ref())
                     }
                     Ok(_) => {
                         // job_execution_state or job_document is missing, should never happen!
