@@ -108,7 +108,7 @@ use crate::consts::{
 use heapless::{consts, String, Vec};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum JobStatus {
     #[serde(rename = "QUEUED")]
     Queued,
@@ -275,7 +275,7 @@ pub struct JobExecution {
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_details:
-        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>>,
     // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,18 +287,20 @@ pub struct JobExecution {
 }
 
 /// Contains data about the state of a job execution.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct JobExecutionState {
     /// The status of the job execution. Can be one of: "QUEUED", "IN_PROGRESS",
     /// "FAILED", "SUCCESS", "CANCELED", "REJECTED", or "REMOVED".
     #[serde(rename = "status")]
     pub status: JobStatus,
-    // /// A collection of name/value pairs that describe the status of the job
-    // /// execution. #[serde(rename = "statusDetails")]
-    // #[serde(skip_serializing_if = "Option::is_none")] pub status_details:
-    // Option<::std::collections::HashMap<String, String>>, The version of the
-    // job execution. Job execution versions are incremented each time they are
-    // updated by a device.
+    /// A collection of name/value pairs that describe the status of the job
+    /// execution.
+    #[serde(rename = "statusDetails")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_details:
+        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>>,
+    // The version of the job execution. Job execution versions are incremented
+    // each time they are updated by a device.
     #[serde(rename = "versionNumber")]
     pub version_number: i64,
 }
@@ -407,7 +409,7 @@ pub struct StartNextPendingJobExecutionResponse {
 ///
 /// Topic: $aws/things/{thingName}/jobs/{jobId}/update
 #[derive(Debug, PartialEq, Serialize)]
-struct UpdateJobExecutionRequest {
+struct UpdateJobExecutionRequest<'a> {
     /// Optional. A number that identifies a particular job execution on a
     /// particular device.
     #[serde(rename = "executionNumber")]
@@ -441,7 +443,7 @@ struct UpdateJobExecutionRequest {
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_details:
-        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>>,
+        Option<&'a heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>>,
     // Specifies the amount of time this device has to finish execution of this
     // job. If the job execution status is not set to a terminal state before
     // this timer expires, or before the timer is reset (by again calling
@@ -463,7 +465,7 @@ struct UpdateJobExecutionRequest {
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/{jobId}/update/accepted \
 /// Topic (rejected): $aws/things/{thingName}/jobs/{jobId}/update/rejected
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct UpdateJobExecutionResponse {
     /// A JobExecutionState object.
     #[serde(rename = "executionState")]
@@ -533,7 +535,7 @@ pub struct Jobs {
 
 /// Contains information about an error that occurred during an AWS IoT Jobs
 /// service operation.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct ErrorResponse {
     code: ErrorCode,
     /// An error message string.
@@ -616,7 +618,7 @@ pub trait IotJobsData {
         client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
         status_details: Option<
-            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U1>,
+            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>,
         >,
     ) -> Result<(), JobError>;
 
@@ -648,7 +650,7 @@ pub trait IotJobsData {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         publish: &mqttrust::PublishNotification,
-    ) -> Result<Option<JobNotification>, JobError>;
+    ) -> Result<Option<&JobNotification>, JobError>;
 }
 
 enum JobTopicType {
@@ -800,12 +802,14 @@ pub enum JobDetails {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct JobNotification {
     pub job_id: String<MaxJobIdLen>,
     pub version_number: i64,
     pub status: JobStatus,
     pub details: JobDetails,
+    pub status_details:
+        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>>,
 }
 
 #[cfg(test)]
@@ -872,7 +876,7 @@ mod test {
 
         let mut mqtt: MockClient<consts::U128, consts::U512> =
             MockClient::new(String::from(thing_name));
-        let mut job_agent = JobAgent::new();
+        let mut job_agent = JobAgent::new(3);
         let notification = job_agent
             .handle_message(
                 &mut mqtt,

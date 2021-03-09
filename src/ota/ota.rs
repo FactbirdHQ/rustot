@@ -403,7 +403,7 @@ where
                                     );
 
                                     let mut map = heapless::IndexMap::new();
-                                    map.insert(String::from("receive"), progress).unwrap();
+                                    map.insert(String::from("progress"), progress).ok();
 
                                     // Update job status to success with 100% progress
                                     // TODO: Update progress, but keep status as InProgress, until the firmware has been successfully booted.
@@ -424,13 +424,15 @@ where
                                 }
                             };
                         } else {
-                            defmt::debug!(
+                            defmt::trace!(
                                 "Received file block {:?}, size {:?}, remaining: {:?}",
                                 block_id,
                                 block_size,
                                 total_blocks as u32 - received_blocks
                             );
-                            if received_blocks % self.config.status_update_frequency as u32 == 0 {
+                            if (received_blocks - 1) % self.config.status_update_frequency as u32
+                                == 0
+                            {
                                 let mut progress = String::new();
                                 ufmt::uwrite!(
                                     &mut progress,
@@ -443,7 +445,7 @@ where
                                 defmt::info!("OTA Progress: {=str}", progress.as_str());
 
                                 let mut map = heapless::IndexMap::new();
-                                map.insert(String::from("receive"), progress).unwrap();
+                                map.insert(String::from("progress"), progress).ok();
 
                                 job_agent.update_job_execution(
                                     client,
@@ -491,13 +493,14 @@ where
             _ => OtaEvent::Fail,
         };
         self.close(client)?;
+        // TODO: Somehow allow time for mqtt messages to get sent!
         Ok(self.ota_pal.complete_callback(event)?)
     }
 
     pub fn process_ota_job<M: mqttrust::PublishPayload>(
         &mut self,
         client: &mut impl Mqtt<M>,
-        job: OtaJob,
+        job: &OtaJob,
     ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(OtaState {
             ref stream_name, ..
@@ -555,7 +558,7 @@ where
 
             self.agent_state = AgentState::Active(OtaState {
                 file,
-                stream_name: job.streamname,
+                stream_name: job.streamname.clone(),
                 block_offset,
                 bitmap,
                 total_blocks_remaining,
