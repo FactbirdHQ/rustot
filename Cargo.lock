@@ -252,7 +252,7 @@ dependencies = [
 [[package]]
 name = "mqttrust"
 version = "0.0.5"
-source = "git+https://github.com/BlackbirdHQ/mqttrust?rev=af6407b#af6407b220648e297633613106fa81920b592384"
+source = "git+https://github.com/BlackbirdHQ/mqttrust?rev=56987ec#56987ec198d4f0e561c779aa152526693a73d863"
 dependencies = [
  "defmt",
  "embedded-hal",
