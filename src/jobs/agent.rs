@@ -397,7 +397,7 @@ impl IotJobsData for JobAgent {
     fn handle_message<P: mqttrust::PublishPayload>(
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
-        publish: &mqttrust::PublishNotification,
+        publish: &mqttrust_core::PublishNotification,
     ) -> Result<Option<&JobNotification>, JobError> {
         match JobTopicType::check(
             client.client_id(),

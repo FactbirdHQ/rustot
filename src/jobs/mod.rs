@@ -649,7 +649,7 @@ pub trait IotJobsData {
     fn handle_message<P: mqttrust::PublishPayload>(
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
-        publish: &mqttrust::PublishNotification,
+        publish: &mqttrust_core::PublishNotification,
     ) -> Result<Option<&JobNotification>, JobError>;
 }
 
@@ -738,8 +738,8 @@ impl From<serde_json_core::de::Error> for JobError {
     }
 }
 
-impl From<mqttrust::MqttClientError> for JobError {
-    fn from(_: mqttrust::MqttClientError) -> Self {
+impl From<mqttrust_core::MqttClientError> for JobError {
+    fn from(_: mqttrust_core::MqttClientError) -> Self {
         JobError::Mqtt
     }
 }
@@ -841,14 +841,14 @@ mod test {
         fn send(
             &mut self,
             request: mqttrust::Request<Vec<u8, P>>,
-        ) -> Result<(), mqttrust::MqttClientError> {
+        ) -> Result<(), mqttrust_core::MqttClientError> {
             self.calls
                 .borrow_mut()
                 .push(request)
-                .map_err(|_| mqttrust::MqttClientError::Full)?;
+                .map_err(|_| mqttrust_core::MqttClientError::Full)?;
             Ok(())
         }
-        type Error = mqttrust::MqttClientError;
+        type Error = mqttrust_core::MqttClientError;
     }
 
     #[test]
@@ -880,9 +880,9 @@ mod test {
         let notification = job_agent
             .handle_message(
                 &mut mqtt,
-                &mqttrust::PublishNotification {
+                &mqttrust_core::PublishNotification {
                     dup: false,
-                    qospid: mqttrust::QosPid::AtMostOnce,
+                    qospid: mqttrust_core::QosPid::AtMostOnce,
                     retain: false,
                     topic_name: String::from("$aws/things/test_thing/jobs/notify-next"),
                     payload: Vec::from_slice(payload).unwrap(),
