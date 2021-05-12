@@ -52,6 +52,7 @@ pub enum AgentState {
     Active(OtaState),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageState {
     Unknown,
     Aborted,
@@ -161,16 +162,18 @@ pub struct OtaConfig {
     request_wait_ms: u32,
     max_blocks_per_request: u32,
     status_update_frequency: u32,
+    allow_downgrade: bool
 }
 
 impl Default for OtaConfig {
     fn default() -> Self {
-        OtaConfig {
+        Self {
             block_size: 256,
             max_request_momentum: 3,
             request_wait_ms: 4500,
             max_blocks_per_request: 128,
             status_update_frequency: 24,
+            allow_downgrade: false
         }
     }
 }
@@ -227,7 +230,6 @@ pub struct OtaAgent<P, T> {
     ota_pal: P,
     request_timer: T,
     agent_state: AgentState,
-    pub image_state: ImageState,
 }
 
 pub fn is_ota_message(topic_name: &str) -> bool {
@@ -249,7 +251,6 @@ where
             ota_pal,
             request_timer,
             agent_state: AgentState::Ready,
-            image_state: ImageState::Unknown,
         }
     }
 
@@ -404,13 +405,13 @@ where
 
                                     let mut map = heapless::IndexMap::new();
                                     map.insert(String::from("progress"), progress).ok();
+                                    map.insert(String::from("self_test"), String::from("ready"))
+                                        .ok();
 
                                     // Update job status to success with 100% progress
-                                    // TODO: Update progress, but keep status as InProgress, until the firmware has been successfully booted.
-                                    // Also consider OTA self test flow as part of status updates.
                                     job_agent.update_job_execution(
                                         client,
-                                        JobStatus::Succeeded,
+                                        JobStatus::InProgress,
                                         Some(map),
                                     )?;
                                 }
@@ -514,59 +515,83 @@ where
                 return Err(OtaError::Busy);
             }
         }
-        // Subscribe to `$aws/things/{thingName}/streams/{streamId}/data/cbor`
 
-        defmt::debug!("Accepted a new JOB! {=str}", job.streamname.as_str());
+        if job.self_test.is_some() {
+            if self.config.allow_downgrade || self.validate_update_version_newer(&job) {
+                defmt::debug!(
+                    "Setting image state to Testing for file ID {}",
+                    job.streamname.as_str()
+                );
 
-        let mut topic_path = String::new();
-        ufmt::uwrite!(
-            &mut topic_path,
-            "$aws/things/{}/streams/{}/data/cbor",
-            client.client_id(),
-            job.streamname.as_str(),
-        )
-        .map_err(|_| OtaError::Formatting)?;
+                self.ota_pal.set_platform_image_state(ImageState::Testing)?;
+                // TODO: prvUpdateJobStatusFromImageState()
+            } else {
+                defmt::debug!(
+                    "Downgrade or same version not allowed, rejecting the update & rebooting."
+                );
 
-        let mut topics = Vec::new();
-        topics
-            .push(SubscribeTopic {
-                topic_path,
-                qos: QoS::AtMostOnce,
-            })
-            .map_err(|_| OtaError::Memory)?;
+                self.ota_pal.set_platform_image_state(ImageState::Rejected)?;
+                // TODO: prvUpdateJobStatusFromImageState()
 
-        client.subscribe(topics).map_err(|_| OtaError::Mqtt)?;
 
-        // Publish to `$aws/things/{thingName}/streams/{streamId}/get/cbor` to
-        // initiate the stream transfer
-        let file = job.files.get(0).unwrap().clone();
-        let block_offset = 0;
-        let bitmap = Bitmap::new(file.filesize, self.config.block_size, block_offset);
-
-        if let Err(e) = self.ota_pal.create_file_for_rx(&file) {
-            // Close Ota Context
-            self.agent_state = AgentState::Ready;
-            Err(e.into())
+                self.ota_pal.reset_device()?;
+            }
+            Ok(())
         } else {
-            let number_of_blocks = core::cmp::min(
-                self.config.max_blocks_per_request,
-                128 * 1024 / self.config.block_size as u32,
-            );
+            // Subscribe to `$aws/things/{thingName}/streams/{streamId}/data/cbor`
+            defmt::debug!("Accepted a new JOB! {=str}", job.streamname.as_str());
 
-            let total_blocks_remaining =
-                (file.filesize + self.config.block_size - 1) / self.config.block_size;
+            let mut topic_path = String::new();
+            ufmt::uwrite!(
+                &mut topic_path,
+                "$aws/things/{}/streams/{}/data/cbor",
+                client.client_id(),
+                job.streamname.as_str(),
+            )
+            .map_err(|_| OtaError::Formatting)?;
 
-            self.agent_state = AgentState::Active(OtaState {
-                file,
-                stream_name: job.streamname.clone(),
-                block_offset,
-                bitmap,
-                total_blocks_remaining,
-                request_block_remaining: number_of_blocks,
-                request_momentum: 0,
-            });
+            let mut topics = Vec::new();
+            topics
+                .push(SubscribeTopic {
+                    topic_path,
+                    qos: QoS::AtMostOnce,
+                })
+                .map_err(|_| OtaError::Memory)?;
 
-            self.publish_get_stream_message(client)
+            client.subscribe(topics).map_err(|_| OtaError::Mqtt)?;
+
+            // Publish to `$aws/things/{thingName}/streams/{streamId}/get/cbor` to
+            // initiate the stream transfer
+            let file = job.files.get(0).unwrap().clone();
+            let block_offset = 0;
+            let bitmap = Bitmap::new(file.filesize, self.config.block_size, block_offset);
+
+            if let Err(e) = self.ota_pal.create_file_for_rx(&file) {
+                // Close Ota Context
+                self.ota_pal.set_platform_image_state(ImageState::Aborted)?;
+                self.agent_state = AgentState::Ready;
+                Err(e.into())
+            } else {
+                let number_of_blocks = core::cmp::min(
+                    self.config.max_blocks_per_request,
+                    128 * 1024 / self.config.block_size as u32,
+                );
+
+                let total_blocks_remaining =
+                    (file.filesize + self.config.block_size - 1) / self.config.block_size;
+
+                self.agent_state = AgentState::Active(OtaState {
+                    file,
+                    stream_name: job.streamname.clone(),
+                    block_offset,
+                    bitmap,
+                    total_blocks_remaining,
+                    request_block_remaining: number_of_blocks,
+                    request_momentum: 0,
+                });
+
+                self.publish_get_stream_message(client)
+            }
         }
     }
 
@@ -627,5 +652,9 @@ where
         } else {
             Err(OtaError::NoOtaActive)
         }
+    }
+
+    fn validate_update_version_newer(&self, job: &OtaJob) -> bool {
+        true
     }
 }

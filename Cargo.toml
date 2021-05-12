@@ -32,8 +32,7 @@ typenum = "^1"
 defmt = "^0.2"
 
 [dev-dependencies]
-native-tls = "^0.2"
-rust-crypto = "^0.2"
+# native-tls = "^0.2"
 
 [features]
 default = []
