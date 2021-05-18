@@ -29,16 +29,18 @@
 //! - MQTT Client
 //! - Code sign verification
 //! - CBOR deserializer
-//! - Firmware writer (see
-//!   https://gist.github.com/korken89/947d6458f34ca3ea7293dc06c2251078 for C++
-//!   example with WFBootloader)
 
+use core::cmp::Ordering;
 use core::ops::{Deref, DerefMut};
+use core::str::FromStr;
 
 use serde_cbor;
 
-use super::cbor::{Bitmap, GetStreamRequest, GetStreamResponse};
 use super::pal::{OtaEvent, OtaPal, OtaPalError};
+use super::{
+    cbor::{Bitmap, GetStreamRequest, GetStreamResponse},
+    pal::Version,
+};
 use crate::consts::MaxStreamIdLen;
 use crate::jobs::{FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
 use heapless::{consts, String, Vec};
@@ -116,7 +118,7 @@ impl OtaTopicType {
 }
 
 #[derive(Debug)]
-pub enum OtaError<PalError> {
+pub enum OtaError<PalError: Copy> {
     Mqtt,
     Jobs(JobError),
     BadData,
@@ -132,25 +134,25 @@ pub enum OtaError<PalError> {
     MaxMomentumAbort(u8),
 }
 
-impl<PE> From<core::fmt::Error> for OtaError<PE> {
+impl<PE: Copy> From<core::fmt::Error> for OtaError<PE> {
     fn from(_e: core::fmt::Error) -> Self {
         OtaError::Formatting
     }
 }
 
-impl<PE> From<OtaPalError<PE>> for OtaError<PE> {
+impl<PE: Copy> From<OtaPalError<PE>> for OtaError<PE> {
     fn from(e: OtaPalError<PE>) -> Self {
         OtaError::PalError(e)
     }
 }
 
-impl<PE> From<MqttClientError> for OtaError<PE> {
+impl<PE: Copy> From<MqttClientError> for OtaError<PE> {
     fn from(_e: MqttClientError) -> Self {
         OtaError::Mqtt
     }
 }
 
-impl<PE> From<JobError> for OtaError<PE> {
+impl<PE: Copy> From<JobError> for OtaError<PE> {
     fn from(e: JobError) -> Self {
         OtaError::Jobs(e)
     }
@@ -162,7 +164,7 @@ pub struct OtaConfig {
     request_wait_ms: u32,
     max_blocks_per_request: u32,
     status_update_frequency: u32,
-    allow_downgrade: bool
+    allow_downgrade: bool,
 }
 
 impl Default for OtaConfig {
@@ -173,7 +175,7 @@ impl Default for OtaConfig {
             request_wait_ms: 4500,
             max_blocks_per_request: 128,
             status_update_frequency: 24,
-            allow_downgrade: false
+            allow_downgrade: false,
         }
     }
 }
@@ -212,6 +214,13 @@ impl OtaConfig {
             ..self
         }
     }
+
+    pub fn set_allow_downgrade(self, allow_downgrade: bool) -> Self {
+        Self {
+            allow_downgrade,
+            ..self
+        }
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -244,6 +253,7 @@ where
     P: OtaPal,
     T: CountDown,
     T::Time: From<u32>,
+    P::Error: Copy
 {
     pub fn new(ota_pal: P, request_timer: T, config: OtaConfig) -> Self {
         OtaAgent {
@@ -403,10 +413,18 @@ where
                                         progress.as_str()
                                     );
 
+                                    let current_version =
+                                        self.ota_pal.get_active_firmware_version()?;
+
                                     let mut map = heapless::IndexMap::new();
                                     map.insert(String::from("progress"), progress).ok();
                                     map.insert(String::from("self_test"), String::from("ready"))
                                         .ok();
+                                    map.insert(
+                                        String::from("updated_by"),
+                                        current_version.to_string(),
+                                    )
+                                    .ok();
 
                                     // Update job status to success with 100% progress
                                     job_agent.update_job_execution(
@@ -502,6 +520,9 @@ where
         &mut self,
         client: &mut impl Mqtt<M>,
         job: &OtaJob,
+        status_details: Option<
+            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>,
+        >,
     ) -> Result<(), OtaError<P::Error>> {
         if let AgentState::Active(OtaState {
             ref stream_name, ..
@@ -516,24 +537,38 @@ where
             }
         }
 
-        if job.self_test.is_some() {
-            if self.config.allow_downgrade || self.validate_update_version_newer(&job) {
+        let self_test = status_details
+            .as_ref()
+            .and_then(|details| details.get(&String::from("self_test")));
+
+        if self_test.is_some() {
+            let ordering = status_details
+                .as_ref()
+                .and_then(|details| details.get(&String::from("updated_by")))
+                .and_then(|v| Version::from_str(v.as_str()).ok())
+                .and_then(|version| {
+                    self.ota_pal
+                        .get_active_firmware_version()
+                        .ok()
+                        .map(|v| v.cmp(&version))
+                })
+                .unwrap_or(Ordering::Greater);
+
+            if self.config.allow_downgrade || ordering == Ordering::Greater {
                 defmt::debug!(
                     "Setting image state to Testing for file ID {}",
                     job.streamname.as_str()
                 );
 
-                self.ota_pal.set_platform_image_state(ImageState::Testing)?;
-                // TODO: prvUpdateJobStatusFromImageState()
+                self.set_image_state_with_reason(ImageState::Testing, Some(OtaPalError::VersionCheck))?;
             } else {
                 defmt::debug!(
                     "Downgrade or same version not allowed, rejecting the update & rebooting."
                 );
 
-                self.ota_pal.set_platform_image_state(ImageState::Rejected)?;
-                // TODO: prvUpdateJobStatusFromImageState()
+                self.set_image_state_with_reason(ImageState::Rejected, Some(OtaPalError::VersionCheck))?;
 
-
+                // All reject cases must reset the device
                 self.ota_pal.reset_device()?;
             }
             Ok(())
@@ -568,7 +603,7 @@ where
 
             if let Err(e) = self.ota_pal.create_file_for_rx(&file) {
                 // Close Ota Context
-                self.ota_pal.set_platform_image_state(ImageState::Aborted)?;
+                self.set_image_state_with_reason(ImageState::Aborted, Some(e))?;
                 self.agent_state = AgentState::Ready;
                 Err(e.into())
             } else {
@@ -654,7 +689,24 @@ where
         }
     }
 
-    fn validate_update_version_newer(&self, job: &OtaJob) -> bool {
-        true
+    fn set_image_state_with_reason(&mut self, state: ImageState, reason: Option<OtaPalError<P::Error>>) -> Result<(), OtaError<P::Error>> {
+        let (new_state, new_reason) = match self.ota_pal.set_platform_image_state(state) {
+            Err(e) if state != ImageState::Aborted => {
+                // If the platform image state couldn't be set correctly, force fail the update by setting the
+                // image state to "Rejected" unless it's already in "Aborted".
+                (ImageState::Rejected, Some(reason.unwrap_or(e)))
+            },
+            _ => (state, reason),
+        };
+
+        if self.is_active() {
+            if new_state == ImageState::Testing {
+                // We discovered we're ready for test mode, put job status in self_test active.
+            } else {
+
+            }
+        }
+
+        Ok(())
     }
 }

@@ -1,9 +1,13 @@
 //! Platform abstraction trait for OTA updates
 
+use core::str::FromStr;
+
+use heapless::ArrayLength;
+
 use crate::{jobs::FileDescription, ota::ota::ImageState};
 
-#[derive(Debug)]
-pub enum OtaPalError<E> {
+#[derive(Debug, Clone, Copy)]
+pub enum OtaPalError<E: Copy> {
     SignatureCheckFailed,
     FileWriteFailed,
     FileTooLarge,
@@ -12,6 +16,7 @@ pub enum OtaPalError<E> {
     Unsupported,
     BadImageState,
     CommitFailed,
+    VersionCheck,
     Custom(E),
 }
 
@@ -33,9 +38,70 @@ pub enum OtaEvent {
     StartTest,
 }
 
+#[derive(Debug, Eq)]
+pub struct Version {
+    major: u8,
+    minor: u8,
+    patch: u8,
+}
+
+impl FromStr for Version {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut iter = s.split(".");
+        Ok(Self {
+            major: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
+            minor: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
+            patch: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
+        })
+    }
+}
+
+impl Version {
+    pub fn to_string<L: ArrayLength<u8>>(&self) -> heapless::String<L> {
+        let mut s = heapless::String::new();
+        ufmt::uwrite!(&mut s, "{}.{}.{}", self.major, self.minor, self.patch).unwrap();
+        s
+    }
+}
+
+impl core::cmp::PartialEq for Version {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.major == other.major && self.minor == other.minor && self.patch == other.patch
+    }
+}
+
+impl core::cmp::PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl core::cmp::Ord for Version {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        match self.major.cmp(&other.major) {
+            core::cmp::Ordering::Equal => {}
+            r => return r,
+        }
+
+        match self.minor.cmp(&other.minor) {
+            core::cmp::Ordering::Equal => {}
+            r => return r,
+        }
+
+        match self.patch.cmp(&other.patch) {
+            core::cmp::Ordering::Equal => {}
+            r => return r,
+        }
+
+        core::cmp::Ordering::Equal
+    }
+}
 /// Platform abstraction layer for OTA jobs
 pub trait OtaPal {
-    type Error;
+    type Error: Copy;
 
     /// OTA abort.
     ///
@@ -185,5 +251,10 @@ pub trait OtaPal {
                 self.set_platform_image_state(ImageState::Accepted)
             }
         }
+    }
+
+    ///
+    fn get_active_firmware_version(&self) -> Result<Version, OtaPalError<Self::Error>> {
+        Err(OtaPalError::Unsupported)
     }
 }

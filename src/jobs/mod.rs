@@ -785,11 +785,6 @@ pub enum Protocol {
 /// OTA job document, compatible with FreeRTOS OTA process
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct OtaJob {
-    /// 
-    #[serde(rename = "self_test")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub self_test: Option<String<consts::U8>>,
-
     pub protocols: Vec<Protocol, consts::U2>,
     pub streamname: String<consts::U64>,
     pub files: Vec<FileDescription, consts::U1>,
@@ -800,6 +795,8 @@ pub struct OtaJob {
 pub enum JobDetails {
     #[serde(rename = "afr_ota")]
     OtaJob(OtaJob),
+    
+    #[cfg(test)]
     #[serde(rename = "test_job")]
     TestJob(TestJob),
 
