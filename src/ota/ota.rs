@@ -39,10 +39,10 @@ use serde_cbor;
 
 use super::cbor::{Bitmap, GetStreamRequest, GetStreamResponse};
 use super::pal::{OtaEvent, OtaPal, OtaPalError};
-use crate::consts::MaxStreamIdLen;
+use crate::consts::MAX_STREAM_ID_LEN;
 use crate::jobs::{FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
-use heapless::{consts, String, Vec};
-use mqttrust::{Mqtt, MqttClientError, PublishNotification, QoS, SubscribeTopic};
+use heapless::{String, Vec};
+use mqttrust::{Mqtt, MqttError, PublishNotification, QoS, SubscribeTopic};
 
 use embedded_hal::timer::CountDown;
 
@@ -61,8 +61,8 @@ pub enum ImageState {
 }
 
 enum OtaTopicType {
-    CborData(String<MaxStreamIdLen>),
-    CborGetRejected(String<MaxStreamIdLen>),
+    CborData(String<MAX_STREAM_ID_LEN>),
+    CborGetRejected(String<MAX_STREAM_ID_LEN>),
     Invalid,
 }
 
@@ -71,9 +71,9 @@ impl OtaTopicType {
     ///
     /// Example:
     /// ```
-    /// use heapless::{String, Vec, consts};
+    /// use heapless::{String, Vec};
     ///
-    /// let topic_path: String<consts::U128> =
+    /// let topic_path: String<128> =
     ///     String::from("$aws/things/SomeThingName/streams/AFR_OTA-fc149b0e-cb4e-456a-8cfb-7f0998a2855a/data/cbor");
     ///
     /// assert!(OtaTopicType::check("SomeThingName", &topic_path).is_some());
@@ -90,7 +90,7 @@ impl OtaTopicType {
         // Use the first 7
         // ($aws/things/{thingName}/jobs/$next/get/accepted), leaving
         // tokens 8+ at index 7
-        let topic_tokens = topic_name.splitn(8, '/').collect::<Vec<&str, consts::U8>>();
+        let topic_tokens = topic_name.splitn(8, '/').collect::<Vec<&str, 8>>();
 
         if topic_tokens.get(2) != Some(&expected_thing_name) {
             return None;
@@ -143,8 +143,8 @@ impl<PE> From<OtaPalError<PE>> for OtaError<PE> {
     }
 }
 
-impl<PE> From<MqttClientError> for OtaError<PE> {
-    fn from(_e: MqttClientError) -> Self {
+impl<PE> From<MqttError> for OtaError<PE> {
+    fn from(_e: MqttError) -> Self {
         OtaError::Mqtt
     }
 }
@@ -216,7 +216,7 @@ pub struct OtaState {
     file: FileDescription,
     block_offset: u32,
     bitmap: Bitmap,
-    stream_name: String<MaxStreamIdLen>,
+    stream_name: String<MAX_STREAM_ID_LEN>,
     total_blocks_remaining: usize,
     request_block_remaining: u32,
     request_momentum: u8,
@@ -231,7 +231,7 @@ pub struct OtaAgent<P, T> {
 }
 
 pub fn is_ota_message(topic_name: &str) -> bool {
-    let topic_tokens = topic_name.splitn(8, '/').collect::<Vec<&str, consts::U8>>();
+    let topic_tokens = topic_name.splitn(8, '/').collect::<Vec<&str, 8>>();
     topic_tokens.get(0) == Some(&"$aws")
         && topic_tokens.get(1) == Some(&"things")
         && topic_tokens.get(3) == Some(&"streams")

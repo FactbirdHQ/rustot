@@ -4,8 +4,8 @@ use super::{
     JobStatus, JobTopicType, NextJobExecutionChanged, StartNextPendingJobExecutionRequest,
     UpdateJobExecutionRequest, UpdateJobExecutionResponse,
 };
-use crate::consts::MaxClientTokenLen;
-use heapless::{consts, String, Vec};
+use crate::consts::MAX_CLIENT_TOKEN_LEN;
+use heapless::{String, Vec};
 
 use serde_json_core::{from_slice, to_vec};
 
@@ -17,7 +17,7 @@ pub struct JobAgent {
 }
 
 pub fn is_job_message(topic_name: &str) -> bool {
-    let topic_tokens = topic_name.splitn(8, '/').collect::<Vec<&str, consts::U8>>();
+    let topic_tokens = topic_name.splitn(8, '/').collect::<Vec<&str, 8>>();
     topic_tokens.get(0) == Some(&"$aws")
         && topic_tokens.get(1) == Some(&"things")
         && topic_tokens.get(3) == Some(&"jobs")
@@ -38,7 +38,7 @@ impl JobAgent {
     fn get_client_token(
         &mut self,
         thing_name: &str,
-    ) -> Result<String<MaxClientTokenLen>, JobError> {
+    ) -> Result<String<MAX_CLIENT_TOKEN_LEN>, JobError> {
         let mut client_token = String::new();
         ufmt::uwrite!(&mut client_token, "{}:{}", self.request_cnt, thing_name)
             .map_err(|_| JobError::Formatting)?;
@@ -69,7 +69,7 @@ impl JobAgent {
             client
                 .publish(
                     topic,
-                    P::from_bytes(&to_vec::<consts::U512, _>(&UpdateJobExecutionRequest {
+                    P::from_bytes(&to_vec::<_, 512>(&UpdateJobExecutionRequest {
                         execution_number,
                         expected_version: active_job.version_number,
                         include_job_document: Some(true),
@@ -96,7 +96,7 @@ impl JobAgent {
         client: &mut impl mqttrust::Mqtt<P>,
         execution: JobExecution,
         status_details: Option<
-            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>,
+            heapless::FnvIndexMap<String<8>, String<10>, 4>,
         >,
     ) -> Result<Option<&JobNotification>, JobError> {
         match execution.status {
@@ -229,7 +229,7 @@ impl IotJobsData for JobAgent {
             .map_err(|_| JobError::Formatting)?;
 
         // TODO: This should be possible to optimize, wrt. clones/copies and allocations
-        let p = to_vec::<consts::U128, _>(&DescribeJobExecutionRequest {
+        let p = to_vec::<_, 128>(&DescribeJobExecutionRequest {
             execution_number,
             include_job_document,
             client_token: self.get_client_token(thing_name)?,
@@ -256,7 +256,7 @@ impl IotJobsData for JobAgent {
         client
             .publish(
                 topic,
-                P::from_bytes(&to_vec::<consts::U48, _>(
+                P::from_bytes(&to_vec::<_, 48>(
                     &GetPendingJobExecutionsRequest { client_token },
                 )?),
                 mqttrust::QoS::AtLeastOnce,
@@ -281,7 +281,7 @@ impl IotJobsData for JobAgent {
         client
             .publish(
                 topic,
-                P::from_bytes(&to_vec::<consts::U48, _>(
+                P::from_bytes(&to_vec::<_, 48>(
                     &StartNextPendingJobExecutionRequest {
                         step_timeout_in_minutes,
                         client_token,
@@ -299,7 +299,7 @@ impl IotJobsData for JobAgent {
         client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
         status_details: Option<
-            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>,
+            heapless::FnvIndexMap<String<8>, String<10>, 4>,
         >,
     ) -> Result<(), JobError> {
         if let Some(ref mut active_job) = self.active_job {
@@ -407,7 +407,7 @@ impl IotJobsData for JobAgent {
                 // ($aws/things/{thingName}/jobs/$next/get/accepted), leaving
                 // tokens 8+ at index 7
                 .splitn(8, '/')
-                .collect::<Vec<&str, consts::U8>>(),
+                .collect::<Vec<&str, 8>>(),
         ) {
             None => {
                 defmt::debug!("Not a job message!");

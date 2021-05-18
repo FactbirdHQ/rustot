@@ -1,5 +1,5 @@
 use embedded_nal::{AddrType, Dns, IpAddr, Ipv4Addr, Ipv6Addr, Mode, SocketAddr, TcpStack};
-use heapless::{consts, String};
+use heapless::String;
 use native_tls::{Certificate, Identity, TlsConnector, TlsStream};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -39,7 +39,7 @@ impl Dns for Network {
             None => Err(()),
         }
     }
-    fn gethostbyaddr(&self, _addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
+    fn gethostbyaddr(&self, _addr: IpAddr) -> Result<String<256>, Self::Error> {
         unimplemented!()
     }
 }
