@@ -832,17 +832,13 @@ mod test {
             &self.client_id
         }
 
-        fn send(
-            &mut self,
-            request: mqttrust::Request<Vec<u8, P>>,
-        ) -> Result<(), mqttrust::MqttError> {
+        fn send(&self, request: mqttrust::Request<Vec<u8, P>>) -> Result<(), mqttrust::MqttError> {
             self.calls
                 .borrow_mut()
                 .push(request)
                 .map_err(|_| mqttrust::MqttError::Full)?;
             Ok(())
         }
-        type Error = mqttrust::MqttError;
     }
 
     #[test]
@@ -889,7 +885,7 @@ mod test {
             Some(
                 &mqttrust::PublishRequest::new(
                     String::from("$aws/things/test_thing/jobs/mini/update"),
-                    to_vec::<512, _>(&UpdateJobExecutionRequest {
+                    to_vec::<_, 512>(&UpdateJobExecutionRequest {
                         execution_number: None,
                         expected_version: 1,
                         include_job_document: Some(true),
@@ -916,7 +912,7 @@ mod test {
                 client_token: String::from("test_client:token"),
             };
             assert_eq!(
-                to_string::<512, _>(&req).unwrap().as_str(),
+                to_string::<_, 512>(&req).unwrap().as_str(),
                 r#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
             );
         }
@@ -926,7 +922,7 @@ mod test {
                 client_token: String::from("test_client:token_pending"),
             };
             assert_eq!(
-                &to_string::<512, _>(&req).unwrap(),
+                &to_string::<_, 512>(&req).unwrap(),
                 r#"{"clientToken":"test_client:token_pending"}"#
             );
         }
@@ -937,7 +933,7 @@ mod test {
                 step_timeout_in_minutes: Some(50),
             };
             assert_eq!(
-                &to_string::<512, _>(&req).unwrap(),
+                &to_string::<_, 512>(&req).unwrap(),
                 r#"{"stepTimeoutInMinutes":50,"clientToken":"test_client:token_next_pending"}"#
             );
             let req_none = StartNextPendingJobExecutionRequest {
@@ -945,7 +941,7 @@ mod test {
                 step_timeout_in_minutes: None,
             };
             assert_eq!(
-                &to_string::<512, _>(&req_none).unwrap(),
+                &to_string::<_, 512>(&req_none).unwrap(),
                 r#"{"clientToken":"test_client:token_next_pending"}"#
             );
         }
@@ -962,7 +958,7 @@ mod test {
                 status: JobStatus::Failed,
             };
             assert_eq!(
-                &to_string::<512, _>(&req).unwrap(),
+                &to_string::<_, 512>(&req).unwrap(),
                 r#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#
             );
         }
