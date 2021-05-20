@@ -12,11 +12,10 @@ use rustot::{
 use common::file_handler::FileHandler;
 use common::network::Network;
 use common::timer::SysTimer;
-use heapless::{spsc::Queue};
+use heapless::spsc::Queue;
 use std::thread;
 
-static mut Q: Queue<Request<heapless::Vec<u8, 512>>, 10, u8> =
-    Queue(heapless::i::Queue::u8());
+static mut Q: Queue<Request<heapless::Vec<u8, 512>>, 10, u8> = Queue(heapless::i::Queue::u8());
 
 fn main() {
     let (p, c) = unsafe { Q.split() };

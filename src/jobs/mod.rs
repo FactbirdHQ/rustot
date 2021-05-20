@@ -274,8 +274,7 @@ pub struct JobExecution {
     // execution.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details:
-        Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+    pub status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -297,8 +296,7 @@ pub struct JobExecutionState {
     /// execution.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details:
-        Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+    pub status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     // The version of the job execution. Job execution versions are incremented
     // each time they are updated by a device.
     #[serde(rename = "versionNumber")]
@@ -442,8 +440,7 @@ struct UpdateJobExecutionRequest<'a> {
     // the job execution. If not specified, the statusDetails are unchanged.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details:
-        Option<&'a heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+    pub status_details: Option<&'a heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     // Specifies the amount of time this device has to finish execution of this
     // job. If the job execution status is not set to a terminal state before
     // this timer expires, or before the timer is reset (by again calling
@@ -617,9 +614,7 @@ pub trait IotJobsData {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
-        status_details: Option<
-            heapless::FnvIndexMap<String<8>, String<10>, 4>,
-        >,
+        status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     ) -> Result<(), JobError>;
 
     /// Subscribe to relevant job topics.
@@ -649,7 +644,7 @@ pub trait IotJobsData {
     fn handle_message<P: mqttrust::PublishPayload>(
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
-        publish: &mqttrust::PublishNotification,
+        publish: &mqttrust_core::PublishNotification,
     ) -> Result<Option<&JobNotification>, JobError>;
 }
 
@@ -808,8 +803,7 @@ pub struct JobNotification {
     pub version_number: i64,
     pub status: JobStatus,
     pub details: JobDetails,
-    pub status_details:
-        Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+    pub status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
 }
 
 #[cfg(test)]
@@ -874,15 +868,14 @@ mod test {
         }
         "#;
 
-        let mut mqtt: MockClient<128, 512> =
-            MockClient::new(String::from(thing_name));
+        let mut mqtt: MockClient<128, 512> = MockClient::new(String::from(thing_name));
         let mut job_agent = JobAgent::new(3);
         let notification = job_agent
             .handle_message(
                 &mut mqtt,
-                &mqttrust::PublishNotification {
+                &mqttrust_core::PublishNotification {
                     dup: false,
-                    qospid: mqttrust::QosPid::AtMostOnce,
+                    qospid: mqttrust_core::QosPid::AtMostOnce,
                     retain: false,
                     topic_name: String::from("$aws/things/test_thing/jobs/notify-next"),
                     payload: Vec::from_slice(payload).unwrap(),

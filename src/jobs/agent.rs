@@ -95,9 +95,7 @@ impl JobAgent {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         execution: JobExecution,
-        status_details: Option<
-            heapless::FnvIndexMap<String<8>, String<10>, 4>,
-        >,
+        status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     ) -> Result<Option<&JobNotification>, JobError> {
         match execution.status {
             JobStatus::Queued if self.active_job.is_none() && execution.job_document.is_some() => {
@@ -256,9 +254,9 @@ impl IotJobsData for JobAgent {
         client
             .publish(
                 topic,
-                P::from_bytes(&to_vec::<_, 48>(
-                    &GetPendingJobExecutionsRequest { client_token },
-                )?),
+                P::from_bytes(&to_vec::<_, 48>(&GetPendingJobExecutionsRequest {
+                    client_token,
+                })?),
                 mqttrust::QoS::AtLeastOnce,
             )
             .map_err(|_| JobError::Mqtt)?;
@@ -281,12 +279,10 @@ impl IotJobsData for JobAgent {
         client
             .publish(
                 topic,
-                P::from_bytes(&to_vec::<_, 48>(
-                    &StartNextPendingJobExecutionRequest {
-                        step_timeout_in_minutes,
-                        client_token,
-                    },
-                )?),
+                P::from_bytes(&to_vec::<_, 48>(&StartNextPendingJobExecutionRequest {
+                    step_timeout_in_minutes,
+                    client_token,
+                })?),
                 mqttrust::QoS::AtLeastOnce,
             )
             .map_err(|_| JobError::Mqtt)?;
@@ -298,9 +294,7 @@ impl IotJobsData for JobAgent {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
-        status_details: Option<
-            heapless::FnvIndexMap<String<8>, String<10>, 4>,
-        >,
+        status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     ) -> Result<(), JobError> {
         if let Some(ref mut active_job) = self.active_job {
             active_job.status = status;
@@ -397,7 +391,7 @@ impl IotJobsData for JobAgent {
     fn handle_message<P: mqttrust::PublishPayload>(
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
-        publish: &mqttrust::PublishNotification,
+        publish: &mqttrust_core::PublishNotification,
     ) -> Result<Option<&JobNotification>, JobError> {
         match JobTopicType::check(
             client.client_id(),

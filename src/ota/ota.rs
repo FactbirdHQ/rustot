@@ -42,7 +42,8 @@ use super::pal::{OtaEvent, OtaPal, OtaPalError};
 use crate::consts::MAX_STREAM_ID_LEN;
 use crate::jobs::{FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
 use heapless::{String, Vec};
-use mqttrust::{Mqtt, MqttError, PublishNotification, QoS, SubscribeTopic};
+use mqttrust::{Mqtt, MqttError, QoS, SubscribeTopic};
+use mqttrust_core::PublishNotification;
 
 use embedded_hal::timer::CountDown;
 
