@@ -26,8 +26,8 @@ embedded-hal = "1.0.0-alpha.4"
 serde-json-core = "0.4.0"
 nb = "^1"
 ufmt = "0.1.0"
-mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "cead68e" }
-mqttrust_core = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "cead68e" }
+mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "b65a70f" }
+mqttrust_core = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "b65a70f" }
 defmt = "^0.2"
 
 [dev-dependencies]
@@ -45,10 +45,3 @@ defmt-debug = []
 defmt-info = []
 defmt-warn = []
 defmt-error = []
-
-# [patch."https://github.com/BlackbirdHQ/mqttrust"]
-# mqttrust = { path = "../mqttrust/mqttrust" }
-# mqttrust_core = { path = "../mqttrust/mqttrust_core" }
-
-[patch.crates-io]
-mqttrs = { path = "../mqttrs" }
