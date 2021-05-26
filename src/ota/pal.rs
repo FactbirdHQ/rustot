@@ -2,8 +2,6 @@
 
 use core::str::FromStr;
 
-use heapless::ArrayLength;
-
 use crate::{jobs::FileDescription, ota::ota::ImageState};
 
 #[derive(Debug, Clone, Copy)]
@@ -59,7 +57,7 @@ impl FromStr for Version {
 }
 
 impl Version {
-    pub fn to_string<L: ArrayLength<u8>>(&self) -> heapless::String<L> {
+    pub fn to_string<const L: usize>(&self) -> heapless::String<L> {
         let mut s = heapless::String::new();
         ufmt::uwrite!(&mut s, "{}.{}.{}", self.major, self.minor, self.patch).unwrap();
         s

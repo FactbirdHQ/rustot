@@ -1,5 +1,5 @@
-use embedded_nal::{AddrType, Dns, IpAddr, Ipv4Addr, Ipv6Addr, Mode, SocketAddr, TcpStack};
-use heapless::{consts, String};
+use embedded_nal::{AddrType, Dns, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpClientStack};
+use heapless::String;
 use native_tls::{Certificate, Identity, TlsConnector, TlsStream};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -8,19 +8,22 @@ pub struct Network;
 
 pub struct TcpSocket {
     pub stream: Option<TlsStream<TcpStream>>,
-    mode: Mode,
 }
 
 impl TcpSocket {
-    pub fn new(mode: Mode) -> Self {
-        TcpSocket { stream: None, mode }
+    pub fn new() -> Self {
+        TcpSocket { stream: None }
     }
 }
 
 impl Dns for Network {
     type Error = ();
 
-    fn gethostbyname(&self, hostname: &str, _addr_type: AddrType) -> Result<IpAddr, Self::Error> {
+    fn get_host_by_name(
+        &mut self,
+        hostname: &str,
+        _addr_type: AddrType,
+    ) -> nb::Result<IpAddr, Self::Error> {
         match hostname.to_socket_addrs().map_err(|_| ())?.next() {
             Some(socketaddr) => match socketaddr {
                 std::net::SocketAddr::V4(socketv4) => {
@@ -36,36 +39,29 @@ impl Dns for Network {
                     )))
                 }
             },
-            None => Err(()),
+            None => Err(nb::Error::Other(())),
         }
     }
-    fn gethostbyaddr(&self, _addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
+    fn get_host_by_address(&mut self, _addr: IpAddr) -> nb::Result<String<256>, Self::Error> {
         unimplemented!()
     }
 }
 
-impl TcpStack for Network {
+impl TcpClientStack for Network {
     type Error = ();
     type TcpSocket = TcpSocket;
 
-    fn open(&self, mode: Mode) -> Result<<Self as TcpStack>::TcpSocket, <Self as TcpStack>::Error> {
-        Ok(TcpSocket::new(mode))
+    fn socket(
+        &mut self,
+    ) -> Result<<Self as TcpClientStack>::TcpSocket, <Self as TcpClientStack>::Error> {
+        Ok(TcpSocket::new())
     }
 
-    fn read_with<F>(&self, network: &mut Self::TcpSocket, f: F) -> nb::Result<usize, Self::Error>
-    where
-        F: FnOnce(&[u8], Option<&[u8]>) -> usize,
-    {
-        let buf = &mut [0u8; 512];
-        let len = self.read(network, buf)?;
-        Ok(f(&buf[..len], None))
-    }
-
-    fn read(
-        &self,
-        network: &mut <Self as TcpStack>::TcpSocket,
+    fn receive(
+        &mut self,
+        network: &mut <Self as TcpClientStack>::TcpSocket,
         buf: &mut [u8],
-    ) -> Result<usize, nb::Error<<Self as TcpStack>::Error>> {
+    ) -> Result<usize, nb::Error<<Self as TcpClientStack>::Error>> {
         if let Some(ref mut stream) = network.stream {
             stream.read(buf).map_err(|e| match e.kind() {
                 ErrorKind::WouldBlock => nb::Error::WouldBlock,
@@ -76,11 +72,11 @@ impl TcpStack for Network {
         }
     }
 
-    fn write(
-        &self,
-        network: &mut <Self as TcpStack>::TcpSocket,
+    fn send(
+        &mut self,
+        network: &mut <Self as TcpClientStack>::TcpSocket,
         buf: &[u8],
-    ) -> Result<usize, nb::Error<<Self as TcpStack>::Error>> {
+    ) -> Result<usize, nb::Error<<Self as TcpClientStack>::Error>> {
         if let Some(ref mut stream) = network.stream {
             Ok(stream.write(buf).map_err(|_| nb::Error::Other(()))?)
         } else {
@@ -89,17 +85,17 @@ impl TcpStack for Network {
     }
 
     fn is_connected(
-        &self,
-        _network: &<Self as TcpStack>::TcpSocket,
-    ) -> Result<bool, <Self as TcpStack>::Error> {
+        &mut self,
+        _network: &<Self as TcpClientStack>::TcpSocket,
+    ) -> Result<bool, <Self as TcpClientStack>::Error> {
         Ok(true)
     }
 
     fn connect(
-        &self,
-        network: <Self as TcpStack>::TcpSocket,
+        &mut self,
+        network: &mut <Self as TcpClientStack>::TcpSocket,
         remote: SocketAddr,
-    ) -> Result<<Self as TcpStack>::TcpSocket, <Self as TcpStack>::Error> {
+    ) -> nb::Result<(), <Self as TcpClientStack>::Error> {
         let connector = TlsConnector::builder()
             .identity(
                 Identity::from_pkcs12(include_bytes!("../secrets_mini_2/identity.pfx"), "")
@@ -112,39 +108,25 @@ impl TcpStack for Network {
             .build()
             .unwrap();
 
-        Ok(match TcpStream::connect(format!("{}", remote)) {
+        match TcpStream::connect(format!("{}", remote)) {
             Ok(stream) => {
-                match network.mode {
-                    Mode::Blocking => {
-                        stream.set_write_timeout(None).unwrap();
-                        stream.set_read_timeout(None).unwrap();
-                    }
-                    Mode::NonBlocking => panic!("Nonblocking socket mode not supported!"),
-                    Mode::Timeout(t) => {
-                        stream
-                            .set_write_timeout(Some(std::time::Duration::from_millis(t as u64)))
-                            .unwrap();
-                        stream
-                            .set_read_timeout(Some(std::time::Duration::from_millis(t as u64)))
-                            .unwrap();
-                    }
-                };
+                stream.set_write_timeout(None).unwrap();
+                stream.set_read_timeout(None).unwrap();
+
                 let tls_stream = connector
                     .connect("a3f8k0ccx04zas.iot.eu-west-1.amazonaws.com", stream)
                     .unwrap();
-                TcpSocket {
-                    stream: Some(tls_stream),
-                    mode: network.mode,
-                }
+                network.stream.replace(tls_stream);
             }
-            Err(_e) => return Err(()),
-        })
+            Err(_e) => return Err(nb::Error::Other(())),
+        }
+        Ok(())
     }
 
     fn close(
-        &self,
-        _network: <Self as TcpStack>::TcpSocket,
-    ) -> Result<(), <Self as TcpStack>::Error> {
+        &mut self,
+        _network: <Self as TcpClientStack>::TcpSocket,
+    ) -> Result<(), <Self as TcpClientStack>::Error> {
         Ok(())
     }
 }

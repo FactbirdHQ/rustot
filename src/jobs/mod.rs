@@ -103,9 +103,9 @@ mod agent;
 pub use agent::{is_job_message, JobAgent};
 
 use crate::consts::{
-    MaxClientTokenLen, MaxJobIdLen, MaxPendingJobs, MaxRunningJobs, MaxThingNameLen,
+    MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_PENDING_JOBS, MAX_RUNNING_JOBS, MAX_THING_NAME_LEN,
 };
-use heapless::{consts, String, Vec};
+use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -181,7 +181,7 @@ struct DescribeJobExecutionRequest {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MaxClientTokenLen>,
+    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
 }
 
 /// Topic: $aws/things/{thingName}/jobs/{jobId}/get/accepted
@@ -197,7 +197,7 @@ pub struct DescribeJobExecutionResponse {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MaxClientTokenLen>,
+    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
 }
 
 /// Gets the list of all jobs for a thing that are not in a terminal state.
@@ -208,7 +208,7 @@ struct GetPendingJobExecutionsRequest {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MaxClientTokenLen>,
+    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/get/accepted \
@@ -218,18 +218,18 @@ pub struct GetPendingJobExecutionsResponse {
     /// A list of JobExecutionSummary objects with status IN_PROGRESS.
     #[serde(rename = "inProgressJobs")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub in_progress_jobs: Option<Vec<JobExecutionSummary, MaxRunningJobs>>,
+    pub in_progress_jobs: Option<Vec<JobExecutionSummary, MAX_RUNNING_JOBS>>,
     /// A list of JobExecutionSummary objects with status QUEUED.
     #[serde(rename = "queuedJobs")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub queued_jobs: Option<Vec<JobExecutionSummary, MaxPendingJobs>>,
+    pub queued_jobs: Option<Vec<JobExecutionSummary, MAX_PENDING_JOBS>>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
     pub timestamp: i64,
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MaxClientTokenLen>,
+    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
 }
 
 /// Contains data about a job execution.
@@ -252,7 +252,7 @@ pub struct JobExecution {
     pub job_document: Option<JobDetails>,
     /// The unique identifier you assigned to this job when it was created.
     #[serde(rename = "jobId")]
-    pub job_id: String<MaxJobIdLen>,
+    pub job_id: String<MAX_JOB_ID_LEN>,
     /// The time, in seconds since the epoch, when the job execution was last
     /// updated.
     #[serde(rename = "lastUpdatedAt")]
@@ -274,12 +274,11 @@ pub struct JobExecution {
     // execution.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details:
-        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>>,
+    pub status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thing_name: Option<String<MaxThingNameLen>>,
+    pub thing_name: Option<String<MAX_THING_NAME_LEN>>,
     /// The version of the job execution. Job execution versions are incremented
     /// each time they are updated by a device.
     #[serde(rename = "versionNumber")]
@@ -297,8 +296,7 @@ pub struct JobExecutionState {
     /// execution.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details:
-        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>>,
+    pub status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     // The version of the job execution. Job execution versions are incremented
     // each time they are updated by a device.
     #[serde(rename = "versionNumber")]
@@ -316,7 +314,7 @@ pub struct JobExecutionSummary {
     /// The unique identifier you assigned to this job when it was created.
     #[serde(rename = "jobId")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<String<MaxJobIdLen>>,
+    pub job_id: Option<String<MAX_JOB_ID_LEN>>,
     /// The time, in seconds since the epoch, when the job execution was last
     /// updated.
     #[serde(rename = "lastUpdatedAt")]
@@ -382,7 +380,7 @@ struct StartNextPendingJobExecutionRequest {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MaxClientTokenLen>,
+    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/start-next/accepted \
@@ -399,7 +397,7 @@ pub struct StartNextPendingJobExecutionResponse {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MaxClientTokenLen>,
+    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
 }
 
 /// Updates the status of a job execution. You can optionally create a step
@@ -442,8 +440,7 @@ struct UpdateJobExecutionRequest<'a> {
     // the job execution. If not specified, the statusDetails are unchanged.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details:
-        Option<&'a heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>>,
+    pub status_details: Option<&'a heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     // Specifies the amount of time this device has to finish execution of this
     // job. If the job execution status is not set to a terminal state before
     // this timer expires, or before the timer is reset (by again calling
@@ -460,7 +457,7 @@ struct UpdateJobExecutionRequest<'a> {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MaxClientTokenLen>,
+    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/{jobId}/update/accepted \
@@ -481,7 +478,7 @@ pub struct UpdateJobExecutionResponse {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MaxClientTokenLen>,
+    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
 }
 
 /// Sent whenever a job execution is added to or removed from the list of
@@ -526,11 +523,11 @@ pub struct Jobs {
     /// Queued jobs.
     #[serde(rename = "QUEUED")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub queued: Option<Vec<JobExecutionSummary, MaxRunningJobs>>,
+    pub queued: Option<Vec<JobExecutionSummary, MAX_RUNNING_JOBS>>,
     /// In-progress jobs.
     #[serde(rename = "IN_PROGRESS")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub in_progress: Option<Vec<JobExecutionSummary, MaxRunningJobs>>,
+    pub in_progress: Option<Vec<JobExecutionSummary, MAX_RUNNING_JOBS>>,
 }
 
 /// Contains information about an error that occurred during an AWS IoT Jobs
@@ -539,12 +536,12 @@ pub struct Jobs {
 pub struct ErrorResponse {
     code: ErrorCode,
     /// An error message string.
-    message: String<consts::U128>,
+    message: String<128>,
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_token: Option<String<MaxClientTokenLen>>,
+    pub client_token: Option<String<MAX_CLIENT_TOKEN_LEN>>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
     pub timestamp: i64,
@@ -617,9 +614,7 @@ pub trait IotJobsData {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
-        status_details: Option<
-            heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>,
-        >,
+        status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     ) -> Result<(), JobError>;
 
     /// Subscribe to relevant job topics.
@@ -649,17 +644,17 @@ pub trait IotJobsData {
     fn handle_message<P: mqttrust::PublishPayload>(
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
-        publish: &mqttrust::PublishNotification,
+        publish: &mqttrust_core::PublishNotification,
     ) -> Result<Option<&JobNotification>, JobError>;
 }
 
 enum JobTopicType {
     Notify,
     NotifyNext,
-    UpdateAccepted(String<MaxJobIdLen>),
-    UpdateRejected(String<MaxJobIdLen>),
-    GetAccepted(String<MaxJobIdLen>),
-    GetRejected(String<MaxJobIdLen>),
+    UpdateAccepted(String<MAX_JOB_ID_LEN>),
+    UpdateRejected(String<MAX_JOB_ID_LEN>),
+    GetAccepted(String<MAX_JOB_ID_LEN>),
+    GetRejected(String<MAX_JOB_ID_LEN>),
     Invalid,
 }
 
@@ -670,13 +665,13 @@ impl JobTopicType {
     /// ```
     /// use heapless::{String, Vec, consts};
     ///
-    /// let topic_path: String<consts::U64> = String::from("$aws/things/SomeThingName/jobs/notify-next");
-    /// let topic_tokens: Vec<&str, consts::U8> = topic_path.splitn(8, '/').collect();
+    /// let topic_path: String<64> = String::from("$aws/things/SomeThingName/jobs/notify-next");
+    /// let topic_tokens: Vec<&str, 8> = topic_path.splitn(8, '/').collect();
     ///
     /// assert!(JobTopicType::check("SomeThingName", &topic_tokens).is_some());
     /// assert_eq!(JobTopicType::check("SomeThingName", &topic_tokens), Some(JobTopicType::NotifyNext));
     /// ```
-    pub fn check<'a, N: heapless::ArrayLength<&'a str>>(
+    pub fn check<'a, const N: usize>(
         expected_thing_name: &str,
         topic_tokens: &Vec<&'a str, N>,
     ) -> Option<Self> {
@@ -738,8 +733,8 @@ impl From<serde_json_core::de::Error> for JobError {
     }
 }
 
-impl From<mqttrust::MqttClientError> for JobError {
-    fn from(_: mqttrust::MqttClientError) -> Self {
+impl From<mqttrust::MqttError> for JobError {
+    fn from(_: mqttrust::MqttError) -> Self {
         JobError::Mqtt
     }
 }
@@ -747,28 +742,28 @@ impl From<mqttrust::MqttClientError> for JobError {
 /// Job document used while developing the module
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct TestJob {
-    operation: String<consts::U128>,
-    somerandomkey: String<consts::U128>,
+    operation: String<128>,
+    somerandomkey: String<128>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct FileDescription {
     #[serde(rename = "filepath")]
-    pub filepath: String<consts::U64>,
+    pub filepath: String<64>,
     #[serde(rename = "filesize")]
     pub filesize: usize,
     #[serde(rename = "fileid")]
     pub fileid: u8,
     #[serde(rename = "certfile")]
-    pub certfile: String<consts::U64>,
+    pub certfile: String<64>,
     #[serde(rename = "update_data_url")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub update_data_url: Option<String<consts::U64>>,
+    pub update_data_url: Option<String<64>>,
     #[serde(rename = "auth_scheme")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_scheme: Option<String<consts::U64>>,
+    pub auth_scheme: Option<String<64>>,
     #[serde(rename = "sig-sha1-rsa")]
-    pub sig_sha1_rsa: String<consts::U64>,
+    pub sig_sha1_rsa: String<64>,
     #[serde(rename = "attr")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attr: Option<u32>,
@@ -785,9 +780,9 @@ pub enum Protocol {
 /// OTA job document, compatible with FreeRTOS OTA process
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct OtaJob {
-    pub protocols: Vec<Protocol, consts::U2>,
-    pub streamname: String<consts::U64>,
-    pub files: Vec<FileDescription, consts::U1>,
+    pub protocols: Vec<Protocol, 2>,
+    pub streamname: String<64>,
+    pub files: Vec<FileDescription, 1>,
 }
 
 /// All known job document that the device knows how to process.
@@ -806,27 +801,26 @@ pub enum JobDetails {
 
 #[derive(Debug, PartialEq)]
 pub struct JobNotification {
-    pub job_id: String<MaxJobIdLen>,
+    pub job_id: String<MAX_JOB_ID_LEN>,
     pub version_number: i64,
     pub status: JobStatus,
     pub details: JobDetails,
-    pub status_details:
-        Option<heapless::FnvIndexMap<String<consts::U8>, String<consts::U10>, consts::U4>>,
+    pub status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use core::cell::RefCell;
-    use heapless::{consts, ArrayLength, Vec};
+    use heapless::Vec;
     use serde_json_core::{from_slice, to_string, to_vec};
 
-    pub struct MockClient<L: ArrayLength<u8>, P: ArrayLength<u8>> {
+    pub struct MockClient<const L: usize, const P: usize> {
         client_id: String<L>,
-        pub calls: RefCell<Vec<mqttrust::Request<Vec<u8, P>>, consts::U15>>,
+        pub calls: RefCell<Vec<mqttrust::Request<Vec<u8, P>>, 15>>,
     }
 
-    impl<L: ArrayLength<u8>, P: ArrayLength<u8>> MockClient<L, P> {
+    impl<const L: usize, const P: usize> MockClient<L, P> {
         pub fn new(client_id: String<L>) -> Self {
             MockClient {
                 client_id,
@@ -835,22 +829,18 @@ mod test {
         }
     }
 
-    impl<L: ArrayLength<u8>, P: ArrayLength<u8>> mqttrust::Mqtt<Vec<u8, P>> for MockClient<L, P> {
+    impl<const L: usize, const P: usize> mqttrust::Mqtt<Vec<u8, P>> for MockClient<L, P> {
         fn client_id(&self) -> &str {
             &self.client_id
         }
 
-        fn send(
-            &mut self,
-            request: mqttrust::Request<Vec<u8, P>>,
-        ) -> Result<(), mqttrust::MqttClientError> {
+        fn send(&self, request: mqttrust::Request<Vec<u8, P>>) -> Result<(), mqttrust::MqttError> {
             self.calls
                 .borrow_mut()
                 .push(request)
-                .map_err(|_| mqttrust::MqttClientError::Full)?;
+                .map_err(|_| mqttrust::MqttError::Full)?;
             Ok(())
         }
-        type Error = mqttrust::MqttClientError;
     }
 
     #[test]
@@ -876,15 +866,14 @@ mod test {
         }
         "#;
 
-        let mut mqtt: MockClient<consts::U128, consts::U512> =
-            MockClient::new(String::from(thing_name));
+        let mut mqtt: MockClient<128, 512> = MockClient::new(String::from(thing_name));
         let mut job_agent = JobAgent::new(3);
         let notification = job_agent
             .handle_message(
                 &mut mqtt,
-                &mqttrust::PublishNotification {
+                &mqttrust_core::PublishNotification {
                     dup: false,
-                    qospid: mqttrust::QosPid::AtMostOnce,
+                    qospid: mqttrust_core::QosPid::AtMostOnce,
                     retain: false,
                     topic_name: String::from("$aws/things/test_thing/jobs/notify-next"),
                     payload: Vec::from_slice(payload).unwrap(),
@@ -898,7 +887,7 @@ mod test {
             Some(
                 &mqttrust::PublishRequest::new(
                     String::from("$aws/things/test_thing/jobs/mini/update"),
-                    to_vec::<consts::U512, _>(&UpdateJobExecutionRequest {
+                    to_vec::<_, 512>(&UpdateJobExecutionRequest {
                         execution_number: None,
                         expected_version: 1,
                         include_job_document: Some(true),
@@ -925,7 +914,7 @@ mod test {
                 client_token: String::from("test_client:token"),
             };
             assert_eq!(
-                to_string::<consts::U512, _>(&req).unwrap().as_str(),
+                to_string::<_, 512>(&req).unwrap().as_str(),
                 r#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
             );
         }
@@ -935,7 +924,7 @@ mod test {
                 client_token: String::from("test_client:token_pending"),
             };
             assert_eq!(
-                &to_string::<consts::U512, _>(&req).unwrap(),
+                &to_string::<_, 512>(&req).unwrap(),
                 r#"{"clientToken":"test_client:token_pending"}"#
             );
         }
@@ -946,7 +935,7 @@ mod test {
                 step_timeout_in_minutes: Some(50),
             };
             assert_eq!(
-                &to_string::<consts::U512, _>(&req).unwrap(),
+                &to_string::<_, 512>(&req).unwrap(),
                 r#"{"stepTimeoutInMinutes":50,"clientToken":"test_client:token_next_pending"}"#
             );
             let req_none = StartNextPendingJobExecutionRequest {
@@ -954,7 +943,7 @@ mod test {
                 step_timeout_in_minutes: None,
             };
             assert_eq!(
-                &to_string::<consts::U512, _>(&req_none).unwrap(),
+                &to_string::<_, 512>(&req_none).unwrap(),
                 r#"{"clientToken":"test_client:token_next_pending"}"#
             );
         }
@@ -971,7 +960,7 @@ mod test {
                 status: JobStatus::Failed,
             };
             assert_eq!(
-                &to_string::<consts::U512, _>(&req).unwrap(),
+                &to_string::<_, 512>(&req).unwrap(),
                 r#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#
             );
         }
@@ -1038,7 +1027,7 @@ mod test {
         assert_eq!(
             response,
             GetPendingJobExecutionsResponse {
-                in_progress_jobs: Some(Vec::<JobExecutionSummary, MaxPendingJobs>::new()),
+                in_progress_jobs: Some(Vec::<JobExecutionSummary, MAX_PENDING_JOBS>::new()),
                 queued_jobs: None,
                 timestamp: 1587381778,
                 client_token: String::from("0:client_name"),
@@ -1060,7 +1049,7 @@ mod test {
                 ]
             }"#;
 
-        let mut queued_jobs: Vec<JobExecutionSummary, MaxPendingJobs> = Vec::new();
+        let mut queued_jobs: Vec<JobExecutionSummary, MAX_PENDING_JOBS> = Vec::new();
         queued_jobs
             .push(JobExecutionSummary {
                 execution_number: Some(1),
@@ -1077,7 +1066,7 @@ mod test {
         assert_eq!(
             response,
             GetPendingJobExecutionsResponse {
-                in_progress_jobs: Some(Vec::<JobExecutionSummary, MaxPendingJobs>::new()),
+                in_progress_jobs: Some(Vec::<JobExecutionSummary, MAX_PENDING_JOBS>::new()),
                 queued_jobs: Some(queued_jobs),
                 timestamp: 1587381778,
                 client_token: String::from("0:client_name"),
