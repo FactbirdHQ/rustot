@@ -18,22 +18,23 @@ name = "rustot"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-heapless = { version = "0.5.5", features = ["serde", "ufmt-impl"] }
+heapless = { version = "0.7", features = ["serde", "ufmt-impl"] }
 serde = { version = "^1", default-features = false, features = ["derive"] }
 serde_cbor = { version = "^0.11", default-features = false }
-bitmaps = { version = "^2", default-features = false }
+bitmaps = { version = "^3.1", default-features = false }
 embedded-hal = "1.0.0-alpha.4"
-serde-json-core = "0.2.0"
+serde-json-core = "0.4.0"
 nb = "^1"
 ufmt = "0.1.0"
-mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "1e387a1" }
-mqttrust_core = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "1e387a1" }
-typenum = "^1"
+mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "b65a70f" }
+mqttrust_core = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "b65a70f" }
 defmt = "^0.2"
 
 [dev-dependencies]
 native-tls = "^0.2"
 rust-crypto = "^0.2"
+embedded-nal = "0.5.0"
+embedded-time = "0.10.1"
 
 [features]
 default = []

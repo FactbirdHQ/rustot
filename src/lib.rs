@@ -4,17 +4,15 @@ pub mod jobs;
 pub mod ota;
 
 pub mod consts {
-
-    use heapless::consts;
     // Jobs:
 
     /// https://docs.aws.amazon.com/iot/latest/apireference/API_DescribeThing.html
-    pub type MaxThingNameLen = consts::U128;
-    pub type MaxClientTokenLen = consts::U30;
-    pub type MaxJobIdLen = consts::U64;
-    pub type MaxStreamIdLen = consts::U64;
-    pub type MaxPendingJobs = consts::U4;
-    pub type MaxRunningJobs = consts::U4;
+    pub const MAX_THING_NAME_LEN: usize = 128;
+    pub const MAX_CLIENT_TOKEN_LEN: usize = 30;
+    pub const MAX_JOB_ID_LEN: usize = 64;
+    pub const MAX_STREAM_ID_LEN: usize = 64;
+    pub const MAX_PENDING_JOBS: usize = 4;
+    pub const MAX_RUNNING_JOBS: usize = 4;
 }
 
 #[cfg(test)]

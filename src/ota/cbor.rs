@@ -2,7 +2,7 @@ use core::ops::{Deref, DerefMut};
 use serde::{Deserialize, Serialize, Serializer};
 
 #[derive(Clone, PartialEq)]
-pub struct Bitmap(bitmaps::Bitmap<typenum::U32>);
+pub struct Bitmap(bitmaps::Bitmap<32>);
 
 impl Bitmap {
     pub fn new(file_size: usize, block_size: usize, block_offset: u32) -> Self {
@@ -17,7 +17,7 @@ impl Bitmap {
 }
 
 impl Deref for Bitmap {
-    type Target = bitmaps::Bitmap<typenum::U32>;
+    type Target = bitmaps::Bitmap<32>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
