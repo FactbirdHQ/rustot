@@ -20,7 +20,7 @@ impl Dns for Network {
     type Error = ();
 
     fn get_host_by_name(
-        &self,
+        &mut self,
         hostname: &str,
         _addr_type: AddrType,
     ) -> nb::Result<IpAddr, Self::Error> {
@@ -42,7 +42,7 @@ impl Dns for Network {
             None => Err(nb::Error::Other(())),
         }
     }
-    fn get_host_by_address(&self, _addr: IpAddr) -> nb::Result<String<256>, Self::Error> {
+    fn get_host_by_address(&mut self, _addr: IpAddr) -> nb::Result<String<256>, Self::Error> {
         unimplemented!()
     }
 }
