@@ -53,6 +53,7 @@ pub enum AgentState {
     Active(OtaState),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum ImageState {
     Unknown,
     Aborted,

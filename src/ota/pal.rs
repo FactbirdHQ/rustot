@@ -10,6 +10,8 @@ pub enum OtaPalError<E> {
     FileCloseFailed,
     BadFileHandle,
     Unsupported,
+    CommitFailed,
+    BadImageState,
     Custom(E),
 }
 
