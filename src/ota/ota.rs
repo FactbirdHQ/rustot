@@ -31,14 +31,18 @@
 //! - CBOR deserializer
 
 use core::cmp::Ordering;
+use core::fmt::Write;
 use core::ops::{Deref, DerefMut};
 use core::str::FromStr;
 
 use serde_cbor;
 
-use super::{cbor::{Bitmap, GetStreamResponse}, pal::{OtaEvent, OtaPal, OtaPalError, Version}};
-use crate::{consts::MAX_STREAM_ID_LEN, ota::cbor::GetStreamRequest};
+use super::{
+    cbor::{Bitmap, GetStreamResponse},
+    pal::{OtaEvent, OtaPal, OtaPalError, Version},
+};
 use crate::jobs::{FileDescription, IotJobsData, JobError, JobStatus, OtaJob};
+use crate::{consts::MAX_STREAM_ID_LEN, ota::cbor::GetStreamRequest};
 use heapless::{String, Vec};
 use mqttrust::{Mqtt, MqttError, QoS, SubscribeTopic};
 use mqttrust_core::PublishNotification;
@@ -51,7 +55,7 @@ pub enum AgentState {
     Active(OtaState),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum ImageState {
     Unknown,
     Aborted,
@@ -178,25 +182,29 @@ impl Default for OtaConfig {
 }
 
 impl OtaConfig {
-    pub fn set_block_size(self, block_size: usize) -> Self {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn block_size(self, block_size: usize) -> Self {
         Self { block_size, ..self }
     }
 
-    pub fn set_max_request_momentum(self, max_request_momentum: u8) -> Self {
+    pub fn max_request_momentum(self, max_request_momentum: u8) -> Self {
         Self {
             max_request_momentum,
             ..self
         }
     }
 
-    pub fn set_request_wait_ms(self, request_wait_ms: u32) -> Self {
+    pub fn request_wait_ms(self, request_wait_ms: u32) -> Self {
         Self {
             request_wait_ms,
             ..self
         }
     }
 
-    pub fn set_max_blocks_per_request(self, max_blocks_per_request: u32) -> Self {
+    pub fn max_blocks_per_request(self, max_blocks_per_request: u32) -> Self {
         assert!(max_blocks_per_request < 32);
 
         Self {
@@ -205,16 +213,16 @@ impl OtaConfig {
         }
     }
 
-    pub fn set_status_update_frequency(self, status_update_frequency: u32) -> Self {
+    pub fn status_update_frequency(self, status_update_frequency: u32) -> Self {
         Self {
             status_update_frequency,
             ..self
         }
     }
 
-    pub fn set_allow_downgrade(self, allow_downgrade: bool) -> Self {
+    pub fn allow_downgrade(self) -> Self {
         Self {
-            allow_downgrade,
+            allow_downgrade: true,
             ..self
         }
     }
@@ -250,7 +258,7 @@ where
     P: OtaPal,
     T: CountDown,
     T::Time: From<u32>,
-    P::Error: Copy
+    P::Error: Copy,
 {
     pub fn new(ota_pal: P, request_timer: T, config: OtaConfig) -> Self {
         OtaAgent {
@@ -274,13 +282,13 @@ where
             AgentState::Active(ref state) => {
                 // Unsubscribe from stream topic
                 let mut topic_path = String::new();
-                ufmt::uwrite!(
-                    &mut topic_path,
-                    "$aws/things/{}/streams/{}/data/cbor",
-                    client.client_id(),
-                    state.stream_name.as_str(),
-                )
-                .map_err(|_| OtaError::Formatting)?;
+                topic_path
+                    .write_fmt(format_args!(
+                        "$aws/things/{}/streams/{}/data/cbor",
+                        client.client_id(),
+                        state.stream_name.as_str(),
+                    ))
+                    .map_err(|_| OtaError::Formatting)?;
 
                 client
                     .unsubscribe(Vec::from_slice(&[topic_path]).map_err(|_| OtaError::Memory)?)
@@ -397,13 +405,12 @@ where
                             match self.ota_pal.close_file(&state.file) {
                                 Ok(()) => {
                                     let mut progress = String::new();
-                                    ufmt::uwrite!(
-                                        &mut progress,
-                                        "{}/{}",
-                                        received_blocks,
-                                        total_blocks
-                                    )
-                                    .map_err(|_| JobError::Formatting)?;
+                                    progress
+                                        .write_fmt(format_args!(
+                                            "{}/{}",
+                                            received_blocks, total_blocks
+                                        ))
+                                        .map_err(|_| JobError::Formatting)?;
 
                                     defmt::debug!(
                                         "File receive complete and signature is valid. {=str}",
@@ -450,13 +457,9 @@ where
                                 == 0
                             {
                                 let mut progress = String::new();
-                                ufmt::uwrite!(
-                                    &mut progress,
-                                    "{}/{}",
-                                    received_blocks,
-                                    total_blocks
-                                )
-                                .map_err(|_| JobError::Formatting)?;
+                                progress
+                                    .write_fmt(format_args!("{}/{}", received_blocks, total_blocks))
+                                    .map_err(|_| JobError::Formatting)?;
 
                                 defmt::info!("OTA Progress: {=str}", progress.as_str());
 
@@ -502,12 +505,8 @@ where
     pub fn finalize_ota_job<M: mqttrust::PublishPayload>(
         &mut self,
         client: &mut impl Mqtt<M>,
-        status: JobStatus,
+        event: OtaEvent,
     ) -> Result<(), OtaError<P::Error>> {
-        let event = match status {
-            JobStatus::Succeeded => OtaEvent::Activate,
-            _ => OtaEvent::Fail,
-        };
         self.close(client)?;
         // TODO: Somehow allow time for mqtt messages to get sent!
         Ok(self.ota_pal.complete_callback(event)?)
@@ -517,26 +516,25 @@ where
         &mut self,
         client: &mut impl Mqtt<M>,
         job: &OtaJob,
-        status_details: Option<
-            heapless::FnvIndexMap<String<8>, String<10>, 4>,
-        >,
+        status_details: Option<&crate::consts::StatusDetails>,
     ) -> Result<(), OtaError<P::Error>> {
+
+        let self_test = status_details
+            .and_then(|details| details.get(&String::from("self_test")));
+
         if let AgentState::Active(OtaState {
             ref stream_name, ..
         }) = self.agent_state
         {
             // Already have an OTA in progress
-            if stream_name.as_str() == job.streamname.as_str() {
-                return Ok(());
-            } else {
+            if stream_name.as_str() != job.streamname.as_str() {
                 // We dont handle parallel OTA jobs!
                 return Err(OtaError::Busy);
+            } else if self_test.is_none() {
+                // We have an active OTA job, but are not running self test yet
+                return Ok(());
             }
         }
-
-        let self_test = status_details
-            .as_ref()
-            .and_then(|details| details.get(&String::from("self_test")));
 
         if self_test.is_some() {
             let ordering = status_details
@@ -551,19 +549,25 @@ where
                 })
                 .unwrap_or(Ordering::Greater);
 
-            if self.config.allow_downgrade || ordering == Ordering::Greater {
+            if self.config.allow_downgrade || matches!(ordering, Ordering::Greater) {
                 defmt::debug!(
                     "Setting image state to Testing for file ID {}",
                     job.streamname.as_str()
                 );
 
-                self.set_image_state_with_reason(ImageState::Testing, Some(OtaPalError::VersionCheck))?;
+                self.set_image_state_with_reason(
+                    ImageState::Testing,
+                    Some(OtaPalError::VersionCheck),
+                )?;
             } else {
                 defmt::debug!(
                     "Downgrade or same version not allowed, rejecting the update & rebooting."
                 );
 
-                self.set_image_state_with_reason(ImageState::Rejected, Some(OtaPalError::VersionCheck))?;
+                self.set_image_state_with_reason(
+                    ImageState::Rejected,
+                    Some(OtaPalError::VersionCheck),
+                )?;
 
                 // All reject cases must reset the device
                 self.ota_pal.reset_device()?;
@@ -574,13 +578,13 @@ where
             defmt::debug!("Accepted a new JOB! {=str}", job.streamname.as_str());
 
             let mut topic_path = String::new();
-            ufmt::uwrite!(
-                &mut topic_path,
-                "$aws/things/{}/streams/{}/data/cbor",
-                client.client_id(),
-                job.streamname.as_str(),
-            )
-            .map_err(|_| OtaError::Formatting)?;
+            topic_path
+                .write_fmt(format_args!(
+                    "$aws/things/{}/streams/{}/data/cbor",
+                    client.client_id(),
+                    job.streamname.as_str(),
+                ))
+                .map_err(|_| OtaError::Formatting)?;
 
             let mut topics = Vec::new();
             topics
@@ -600,6 +604,7 @@ where
 
             if let Err(e) = self.ota_pal.create_file_for_rx(&file) {
                 // Close Ota Context
+                // TODO: Unsubscribe?
                 self.set_image_state_with_reason(ImageState::Aborted, Some(e))?;
                 self.agent_state = AgentState::Ready;
                 Err(e.into())
@@ -653,13 +658,13 @@ where
             .map_err(|_| OtaError::BadData)?;
 
             let mut topic = String::new();
-            ufmt::uwrite!(
-                &mut topic,
-                "$aws/things/{}/streams/{}/get/cbor",
-                client.client_id(),
-                state.stream_name.as_str(),
-            )
-            .map_err(|_| OtaError::Formatting)?;
+            topic
+                .write_fmt(format_args!(
+                    "$aws/things/{}/streams/{}/get/cbor",
+                    client.client_id(),
+                    state.stream_name.as_str(),
+                ))
+                .map_err(|_| OtaError::Formatting)?;
 
             // Each Get Stream Request increases the momentum until a response
             // is received to ANY request. Too much momentum is interpreted as a
@@ -686,21 +691,36 @@ where
         }
     }
 
-    fn set_image_state_with_reason(&mut self, state: ImageState, reason: Option<OtaPalError<P::Error>>) -> Result<(), OtaError<P::Error>> {
+    fn set_image_state_with_reason(
+        &mut self,
+        state: ImageState,
+        reason: Option<OtaPalError<P::Error>>,
+    ) -> Result<(), OtaError<P::Error>> {
         let (new_state, new_reason) = match self.ota_pal.set_platform_image_state(state) {
             Err(e) if state != ImageState::Aborted => {
                 // If the platform image state couldn't be set correctly, force fail the update by setting the
                 // image state to "Rejected" unless it's already in "Aborted".
                 (ImageState::Rejected, Some(reason.unwrap_or(e)))
-            },
+            }
             _ => (state, reason),
         };
 
-        if self.is_active() {
-            if new_state == ImageState::Testing {
-                // We discovered we're ready for test mode, put job status in self_test active.
-            } else {
 
+        if self.is_active() {
+            match new_state {
+                ImageState::Testing => {
+                    // We discovered we're ready for test mode, put job status in self_test active.
+                    defmt::info!("put job status in self_test active!");
+                }
+                ImageState::Accepted => {
+                    // Now that we've accepted the firmware update, we can complete the job.
+                    defmt::info!("complete the job!");
+                }
+                _ => {
+                    defmt::info!("FAILED JOB!");
+                    // The firmware update was either rejected or aborted, complete the job as FAILED (Job service
+                    // doesn't allow us to set REJECTED after the job has been started already).
+                }
             }
         }
 

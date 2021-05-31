@@ -1,3 +1,5 @@
+use core::fmt::Write;
+
 use super::{
     DescribeJobExecutionRequest, DescribeJobExecutionResponse, ErrorResponse,
     GetPendingJobExecutionsRequest, IotJobsData, JobError, JobExecution, JobNotification,
@@ -40,7 +42,8 @@ impl JobAgent {
         thing_name: &str,
     ) -> Result<String<MAX_CLIENT_TOKEN_LEN>, JobError> {
         let mut client_token = String::new();
-        ufmt::uwrite!(&mut client_token, "{}:{}", self.request_cnt, thing_name)
+        client_token
+            .write_fmt(format_args!("{}:{}", self.request_cnt, thing_name))
             .map_err(|_| JobError::Formatting)?;
         self.request_cnt += 1;
         Ok(client_token)
@@ -57,13 +60,13 @@ impl JobAgent {
 
         if let Some(ref mut active_job) = self.active_job {
             let mut topic = String::new();
-            ufmt::uwrite!(
-                &mut topic,
-                "$aws/things/{}/jobs/{}/update",
-                thing_name,
-                active_job.job_id.as_str()
-            )
-            .map_err(|_| JobError::Formatting)?;
+            topic
+                .write_fmt(format_args!(
+                    "$aws/things/{}/jobs/{}/update",
+                    thing_name,
+                    active_job.job_id.as_str()
+                ))
+                .map_err(|_| JobError::Formatting)?;
 
             // Always include job_document, and job_execution_state!
             client
@@ -95,7 +98,6 @@ impl JobAgent {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         execution: JobExecution,
-        status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
     ) -> Result<Option<&JobNotification>, JobError> {
         match execution.status {
             JobStatus::Queued if self.active_job.is_none() && execution.job_document.is_some() => {
@@ -103,12 +105,25 @@ impl JobAgent {
                 // processing a job. Update the status to InProgress, and set it
                 // active in the accepted response
                 // (`$aws/things/{thingName}/jobs/{jobId}/update/accepted`).
+
+                let mut map = execution
+                    .status_details
+                    .unwrap_or_else(|| heapless::IndexMap::new());
+
+                map.insert(String::from("attempt"), String::from("1")).ok();
+                map.insert(String::from("progress"), String::from("0/0"))
+                    .ok();
+
+                for (k, v) in map.iter() {
+                    defmt::debug!("{}: {}", k.as_str(), v.as_str());
+                }
+
                 self.active_job = Some(JobNotification {
                     job_id: execution.job_id,
                     version_number: execution.version_number,
                     status: JobStatus::InProgress,
                     details: execution.job_document.unwrap(),
-                    status_details,
+                    status_details: Some(map),
                 });
                 defmt::debug!("Accepting new job!");
 
@@ -134,10 +149,13 @@ impl JobAgent {
                     .unwrap_or_else(|| 1);
 
                 let status = if attempt < self.max_retries {
-                    defmt::debug!("Retrying existing job! Attempt: {}", attempt);
+                    defmt::debug!("Retrying existing job! Attempt: {}", attempt + 1);
 
                     let mut attempt_str = String::new();
-                    if ufmt::uwrite!(&mut attempt_str, "{}", attempt + 1).is_ok() {
+                    if attempt_str
+                        .write_fmt(format_args!("{}", attempt + 1))
+                        .is_ok()
+                    {
                         map.insert(String::from("attempt"), attempt_str).ok();
                     }
 
@@ -223,7 +241,11 @@ impl IotJobsData for JobAgent {
         let thing_name = client.client_id();
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/{}/get", thing_name, job_id)
+        topic
+            .write_fmt(format_args!(
+                "$aws/things/{}/jobs/{}/get",
+                thing_name, job_id
+            ))
             .map_err(|_| JobError::Formatting)?;
 
         // TODO: This should be possible to optimize, wrt. clones/copies and allocations
@@ -248,7 +270,8 @@ impl IotJobsData for JobAgent {
         let client_token = self.get_client_token(thing_name)?;
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/get", thing_name)
+        topic
+            .write_fmt(format_args!("$aws/things/{}/jobs/get", thing_name))
             .map_err(|_| JobError::Formatting)?;
 
         client
@@ -273,7 +296,8 @@ impl IotJobsData for JobAgent {
         let client_token = self.get_client_token(thing_name)?;
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/start-next", thing_name)
+        topic
+            .write_fmt(format_args!("$aws/things/{}/jobs/start-next", thing_name))
             .map_err(|_| JobError::Formatting)?;
 
         client
@@ -294,7 +318,7 @@ impl IotJobsData for JobAgent {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
-        status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+        status_details: Option<crate::consts::StatusDetails>,
     ) -> Result<(), JobError> {
         if let Some(ref mut active_job) = self.active_job {
             active_job.status = status;
@@ -322,7 +346,8 @@ impl IotJobsData for JobAgent {
         let mut topics = Vec::new();
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/get/+", thing_name)
+        topic
+            .write_fmt(format_args!("$aws/things/{}/jobs/+/get/+", thing_name))
             .map_err(|_| JobError::Formatting)?;
 
         topics
@@ -333,7 +358,8 @@ impl IotJobsData for JobAgent {
             .map_err(|_| JobError::Memory)?;
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/update/+", thing_name)
+        topic
+            .write_fmt(format_args!("$aws/things/{}/jobs/+/update/+", thing_name))
             .map_err(|_| JobError::Formatting)?;
 
         topics
@@ -344,7 +370,8 @@ impl IotJobsData for JobAgent {
             .map_err(|_| JobError::Memory)?;
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/notify-next", thing_name)
+        topic
+            .write_fmt(format_args!("$aws/things/{}/jobs/notify-next", thing_name))
             .map_err(|_| JobError::Formatting)?;
 
         topics
@@ -367,19 +394,22 @@ impl IotJobsData for JobAgent {
         let mut topics = Vec::new();
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/get/+", thing_name)
+        topic
+            .write_fmt(format_args!("$aws/things/{}/jobs/+/get/+", thing_name))
             .map_err(|_| JobError::Formatting)?;
 
         topics.push(topic).map_err(|_| JobError::Memory)?;
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/+/update/+", thing_name)
+        topic
+            .write_fmt(format_args!("$aws/things/{}/jobs/+/update/+", thing_name))
             .map_err(|_| JobError::Formatting)?;
 
         topics.push(topic).map_err(|_| JobError::Memory)?;
 
         let mut topic = String::new();
-        ufmt::uwrite!(&mut topic, "$aws/things/{}/jobs/notify-next", thing_name)
+        topic
+            .write_fmt(format_args!("$aws/things/{}/jobs/notify-next", thing_name))
             .map_err(|_| JobError::Formatting)?;
 
         topics.push(topic).map_err(|_| JobError::Memory)?;
@@ -418,7 +448,7 @@ impl IotJobsData for JobAgent {
                 );
                 if let Some(execution) = response.execution {
                     // Job updated from the cloud!
-                    self.handle_job_execution(client, execution, None)
+                    self.handle_job_execution(client, execution)
                 } else {
                     // Queue is empty! `jobs done`
                     Ok(None)
@@ -439,7 +469,7 @@ impl IotJobsData for JobAgent {
                     from_slice::<DescribeJobExecutionResponse>(&publish.payload)
                 {
                     if let Some(execution) = response.execution {
-                        self.handle_job_execution(client, execution, None)
+                        self.handle_job_execution(client, execution)
                     } else {
                         Ok(None)
                     }
@@ -465,14 +495,12 @@ impl IotJobsData for JobAgent {
                 match from_slice::<UpdateJobExecutionResponse>(&publish.payload) {
                     Ok((
                         UpdateJobExecutionResponse {
-                            execution_state,
-                            job_document,
+                            execution_state: Some(state),
+                            job_document: Some(job_document),
                             ..
                         },
                         _,
-                    )) if execution_state.is_some() && job_document.is_some() => {
-                        let state = execution_state.unwrap();
-
+                    )) => {
                         let version_number = if let Some(ref active) = self.active_job {
                             if state.version_number > active.version_number {
                                 state.version_number
@@ -492,7 +520,7 @@ impl IotJobsData for JobAgent {
                                     job_id,
                                     version_number,
                                     status: state.status,
-                                    details: job_document.unwrap(),
+                                    details: job_document,
                                     status_details: state.status_details,
                                 });
                             }

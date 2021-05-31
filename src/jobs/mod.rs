@@ -274,7 +274,7 @@ pub struct JobExecution {
     // execution.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+    pub status_details: Option<crate::consts::StatusDetails>,
     // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -296,7 +296,7 @@ pub struct JobExecutionState {
     /// execution.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+    pub status_details: Option<crate::consts::StatusDetails>,
     // The version of the job execution. Job execution versions are incremented
     // each time they are updated by a device.
     #[serde(rename = "versionNumber")]
@@ -440,7 +440,7 @@ struct UpdateJobExecutionRequest<'a> {
     // the job execution. If not specified, the statusDetails are unchanged.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<&'a heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+    pub status_details: Option<&'a crate::consts::StatusDetails>,
     // Specifies the amount of time this device has to finish execution of this
     // job. If the job execution status is not set to a terminal state before
     // this timer expires, or before the timer is reset (by again calling
@@ -614,7 +614,7 @@ pub trait IotJobsData {
         &mut self,
         client: &mut impl mqttrust::Mqtt<P>,
         status: JobStatus,
-        status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+        status_details: Option<crate::consts::StatusDetails>,
     ) -> Result<(), JobError>;
 
     /// Subscribe to relevant job topics.
@@ -805,7 +805,7 @@ pub struct JobNotification {
     pub version_number: i64,
     pub status: JobStatus,
     pub details: JobDetails,
-    pub status_details: Option<heapless::FnvIndexMap<String<8>, String<10>, 4>>,
+    pub status_details: Option<crate::consts::StatusDetails>,
 }
 
 #[cfg(test)]
@@ -1179,7 +1179,7 @@ mod test {
                 execution: Some(JobExecution {
                     execution_number: Some(1),
                     job_document: Some(JobDetails::OtaJob(OtaJob {
-                        self_test: None,
+                        // self_test: None,
                         protocols,
                         streamname: String::from("AFR_OTA-9ddd6d15-cefc-494d-9979-688f4571c0b8"),
                         files

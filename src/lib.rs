@@ -13,6 +13,8 @@ pub mod consts {
     pub const MAX_STREAM_ID_LEN: usize = 64;
     pub const MAX_PENDING_JOBS: usize = 4;
     pub const MAX_RUNNING_JOBS: usize = 4;
+
+    pub type StatusDetails = heapless::FnvIndexMap<heapless::String<15>, heapless::String<11>, 4>;
 }
 
 #[cfg(test)]

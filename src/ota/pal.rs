@@ -1,5 +1,6 @@
 //! Platform abstraction trait for OTA updates
 
+use core::fmt::Write;
 use core::str::FromStr;
 
 use crate::{jobs::FileDescription, ota::ota::ImageState};
@@ -57,9 +58,18 @@ impl FromStr for Version {
 }
 
 impl Version {
+    pub fn new(major: u8, minor: u8, patch: u8) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+
     pub fn to_string<const L: usize>(&self) -> heapless::String<L> {
         let mut s = heapless::String::new();
-        ufmt::uwrite!(&mut s, "{}.{}.{}", self.major, self.minor, self.patch).unwrap();
+        s.write_fmt(format_args!("{}.{}.{}", self.major, self.minor, self.patch))
+            .unwrap();
         s
     }
 }
@@ -246,7 +256,8 @@ pub trait OtaPal {
             OtaEvent::StartTest => {
                 // Accept the image since it was a good transfer
                 // and networking and services are all working.
-                self.set_platform_image_state(ImageState::Accepted)
+                self.set_platform_image_state(ImageState::Testing)?;
+                self.reset_device()
             }
         }
     }
