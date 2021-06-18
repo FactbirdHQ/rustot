@@ -3,7 +3,17 @@
 use core::fmt::Write;
 use core::str::FromStr;
 
-use crate::{jobs::FileDescription, ota::ota::ImageState};
+use super::encoding::FileContext;
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageState {
+    Unknown,
+    Aborted,
+    Rejected,
+    Accepted,
+    Testing,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum OtaPalError<E: Copy> {
@@ -19,6 +29,7 @@ pub enum OtaPalError<E: Copy> {
     Custom(E),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PalImageState {
     /// the new firmware image is in the self test phase
     PendingCommit,
@@ -37,11 +48,17 @@ pub enum OtaEvent {
     StartTest,
 }
 
-#[derive(Debug, Eq)]
+#[derive(Debug, Clone, Eq)]
 pub struct Version {
     major: u8,
     minor: u8,
     patch: u8,
+}
+
+impl Default for Version {
+    fn default() -> Self {
+        Self::new(0, 0, 0)
+    }
 }
 
 impl FromStr for Version {
@@ -117,8 +134,8 @@ pub trait OtaPal {
     /// Agent. This callback is used to override the behavior of how a job is
     /// aborted.
     ///
-    /// - `file`: [`FileDescription`] File description of the job being aborted
-    fn abort(&mut self, file: &FileDescription) -> Result<(), OtaPalError<Self::Error>>;
+    /// - `file`: [`FileContext`] File description of the job being aborted
+    fn abort(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Activate the newest MCU image received via OTA.
     ///
@@ -140,11 +157,8 @@ pub trait OtaPal {
     /// Agent. This callback is used to override the behavior of how a new file
     /// is created.
     ///
-    /// - `file`: [`FileDescription`] File description of the job being aborted
-    fn create_file_for_rx(
-        &mut self,
-        file: &FileDescription,
-    ) -> Result<(), OtaPalError<Self::Error>>;
+    /// - `file`: [`FileContext`] File description of the job being aborted
+    fn create_file_for_rx(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Get the state of the OTA update image.
     ///
@@ -161,7 +175,7 @@ pub trait OtaPal {
     /// timer is not started.
     ///
     /// **return** An [`PalImageState`].
-    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError<Self::Error>>;
+    fn get_platform_image_state(&self) -> Result<PalImageState, OtaPalError<Self::Error>>;
 
     /// Attempt to set the state of the OTA update image.
     ///
@@ -195,15 +209,15 @@ pub trait OtaPal {
     /// If the signature verification fails, file close should still be
     /// attempted.
     ///
-    /// - `file`: [`FileDescription`] File description of the job being aborted
+    /// - `file`: [`FileContext`] File description of the job being aborted
     ///
     /// **return** The OTA PAL layer error code combined with the MCU specific
     /// error code.
-    fn close_file(&mut self, file: &FileDescription) -> Result<(), OtaPalError<Self::Error>>;
+    fn close_file(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Write a block of data to the specified file at the given offset.
     ///
-    /// - `file`: [`FileDescription`] File description of the job being aborted.
+    /// - `file`: [`FileContext`] File description of the job being aborted.
     /// - `block_offset`: Byte offset to write to from the beginning of the
     ///   file.
     /// - `block_payload`: Byte array of data to write.
@@ -212,7 +226,7 @@ pub trait OtaPal {
     /// code from the platform abstraction layer.
     fn write_block(
         &mut self,
-        file: &FileDescription,
+        file: &FileContext,
         block_offset: usize,
         block_payload: &[u8],
     ) -> Result<usize, OtaPalError<Self::Error>>;
@@ -232,9 +246,9 @@ pub trait OtaPal {
     ///
     /// The callback function is called with one of the following arguments:
     ///
-    ///      OtaEvent::Activate      OTA update is authenticated and ready to activate.
-    ///      OtaEvent::Fail          OTA update failed. Unable to use this update.
-    ///      OtaEvent::StartTest     OTA job is now ready for optional user self tests.
+    /// - OtaEvent::Activate      OTA update is authenticated and ready to activate.
+    /// - OtaEvent::Fail          OTA update failed. Unable to use this update.
+    /// - OtaEvent::StartTest     OTA job is now ready for optional user self tests.
     ///
     /// When OtaEvent::Activate is received, the job status details have been
     /// updated with the state as ready for Self Test. After reboot, the new
@@ -266,4 +280,12 @@ pub trait OtaPal {
     fn get_active_firmware_version(&self) -> Result<Version, OtaPalError<Self::Error>> {
         Err(OtaPalError::Unsupported)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Platform abstraction layer tests.
+    //!
+    //! These tests utilize the `MockPal` to test that the `OtaPal` trait
+    //! functions are called correctly.
 }
