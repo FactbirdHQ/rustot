@@ -7,7 +7,7 @@ use super::ControlInterface;
 use crate::jobs::data_types::JobStatus;
 use crate::jobs::data_types::MAX_CLIENT_TOKEN_LEN;
 use crate::jobs::Jobs;
-use crate::jobs::Topics;
+use crate::jobs::Topic;
 use crate::ota::config::Config;
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
@@ -20,7 +20,9 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
     /// "get next job" message to the job service.
     fn request_job(&self) -> Result<(), ()> {
         // Subscribe to the OTA job notification topics
-        Jobs::subscribe(self, Topics::NOTIFY_NEXT, None)?;
+        Jobs::subscribe()
+            .topic(Topic::NotifyNext, QoS::AtLeastOnce)
+            .send(self)?;
 
         let request_cnt = REQUEST_CNT.fetch_add(1, Ordering::Relaxed);
 
@@ -31,7 +33,9 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             .write_fmt(format_args!("{}:{}", request_cnt, self.client_id()))
             .map_err(drop)?;
 
-        Jobs::describe_next(self, Some(client_token.as_str()))?;
+        Jobs::describe()
+            .client_token(client_token.as_str())
+            .send(self, QoS::AtLeastOnce)?;
 
         Ok(())
     }
@@ -78,20 +82,16 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             qos = QoS::AtMostOnce;
         }
 
-        Jobs::update(
-            self,
-            file_ctx.stream_name.as_str(),
-            status,
-            Some(&file_ctx.status_details),
-            qos,
-        )?;
+        Jobs::update(file_ctx.stream_name.as_str(), status)
+            .status_details(&file_ctx.status_details)
+            .send(self, qos)?;
 
         Ok(())
     }
 
     /// Perform any cleanup operations required for control plane
     fn cleanup(&self) -> Result<(), ()> {
-        Jobs::unsubscribe(self, Topics::NOTIFY_NEXT, None)?;
+        Jobs::unsubscribe().topic(Topic::NotifyNext).send(self)?;
         Ok(())
     }
 }

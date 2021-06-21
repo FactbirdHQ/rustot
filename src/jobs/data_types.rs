@@ -465,7 +465,7 @@ pub struct UpdateJobExecutionRequest<'a> {
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_token: Option<String<MAX_CLIENT_TOKEN_LEN>>,
+    pub client_token: Option<&'a str>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/{jobId}/update/accepted \
@@ -628,7 +628,7 @@ mod test {
 
         {
             let req = UpdateJobExecutionRequest {
-                client_token: Some(String::from("test_client:token_update")),
+                client_token: Some("test_client:token_update"),
                 step_timeout_in_minutes: Some(50),
                 execution_number: Some(5),
                 expected_version: Some(2),
