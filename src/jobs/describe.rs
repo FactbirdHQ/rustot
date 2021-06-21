@@ -1,11 +1,35 @@
-use core::fmt::Write;
-
 use mqttrust::{Mqtt, QoS};
+use serde::Serialize;
 
-use crate::jobs::data_types::DescribeJobExecutionRequest;
+use crate::jobs::JobTopic;
 
-use super::data_types::{MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
+use super::{MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 
+/// Gets detailed information about a job execution.
+///
+/// You can set the jobId to $next to return the next pending job execution for
+/// a thing (status IN_PROGRESS or QUEUED).
+///
+/// Topic: $aws/things/{thingName}/jobs/{jobId}/get
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DescribeJobExecutionRequest<'a> {
+    /// Optional. A number that identifies a particular job execution on a
+    /// particular device. If not specified, the latest job execution is
+    /// returned.
+    #[serde(rename = "executionNumber")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_number: Option<i64>,
+    /// Optional. When set to true, the response contains the job document. The
+    /// default is false.
+    #[serde(rename = "includeJobDocument")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_job_document: Option<bool>,
+    /// A client token used to correlate requests and responses. Enter an
+    /// arbitrary value here and it is reflected in the response.
+    #[serde(rename = "clientToken")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_token: Option<&'a str>,
+}
 
 #[derive(Default)]
 pub struct Describe<'a> {
@@ -62,15 +86,6 @@ impl<'a> Describe<'a> {
         ),
         (),
     > {
-        let mut topic_path =
-            heapless::String::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 22 }>::new();
-
-        let id = self.job_id.unwrap_or("$next");
-
-        topic_path
-            .write_fmt(format_args!("$aws/things/{}/jobs/{}/get", client_id, id))
-            .map_err(drop)?;
-
         let payload = serde_json_core::to_vec(&DescribeJobExecutionRequest {
             execution_number: self.execution_number,
             include_job_document: self.include_job_document.then(|| true),
@@ -78,7 +93,13 @@ impl<'a> Describe<'a> {
         })
         .map_err(drop)?;
 
-        Ok((topic_path, payload))
+        Ok((
+            self.job_id
+                .map(JobTopic::Get)
+                .unwrap_or(JobTopic::GetNext)
+                .format(client_id)?,
+            payload,
+        ))
     }
 
     pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), ()> {
@@ -87,5 +108,62 @@ impl<'a> Describe<'a> {
         mqtt.publish(topic.as_str(), &payload, qos).map_err(drop)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use serde_json_core::to_string;
+
+    #[test]
+    fn serialize_requests() {
+        let req = DescribeJobExecutionRequest {
+            execution_number: Some(1),
+            include_job_document: Some(true),
+            client_token: Some("test_client:token"),
+        };
+        assert_eq!(
+            to_string::<_, 512>(&req).unwrap().as_str(),
+            r#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
+        );
+    }
+
+    #[test]
+    fn topic_payload() {
+        let (topic, payload) = Describe::new()
+            .include_job_document()
+            .execution_number(1)
+            .client_token("test_client:token")
+            .topic_payload("test_client")
+            .unwrap();
+
+        assert_eq!(
+            payload,
+            br#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
+        );
+
+        assert_eq!(topic.as_str(), "$aws/things/test_client/jobs/$next/get");
+    }
+
+    #[test]
+    fn topic_job_id() {
+        let (topic, payload) = Describe::new()
+            .include_job_document()
+            .execution_number(1)
+            .job_id("test_job_id")
+            .client_token("test_client:token")
+            .topic_payload("test_client")
+            .unwrap();
+
+        assert_eq!(
+            payload,
+            br#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
+        );
+
+        assert_eq!(
+            topic.as_str(),
+            "$aws/things/test_client/jobs/test_job_id/get"
+        );
     }
 }

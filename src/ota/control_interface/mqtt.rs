@@ -5,9 +5,9 @@ use mqttrust::QoS;
 
 use super::ControlInterface;
 use crate::jobs::data_types::JobStatus;
-use crate::jobs::data_types::MAX_CLIENT_TOKEN_LEN;
+use crate::jobs::MAX_CLIENT_TOKEN_LEN;
 use crate::jobs::Jobs;
-use crate::jobs::Topic;
+use crate::jobs::subscribe::Topic;
 use crate::ota::config::Config;
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;

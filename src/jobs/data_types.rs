@@ -1,115 +1,10 @@
-//! # Iot Jobs Data
-//!
-//! ## Programming Devices to Work with Jobs
-//!
-//! The examples in this section use MQTT to illustrate how a device works with
-//! the AWS IoT Jobs service. Alternatively, you could use the corresponding API
-//! or CLI commands. For these examples, we assume a device called MyThing
-//! subscribes to the following MQTT topics:
-//!
-//! $aws/things/{MyThing}/jobs/notify (or
-//! $aws/things/{MyThing}/jobs/notify-next)
-//!
-//! $aws/things/{MyThing}/jobs/get/accepted
-//!
-//! $aws/things/{MyThing}/jobs/get/rejected
-//!
-//! $aws/things/{MyThing}/jobs/{jobId}/get/accepted
-//!
-//! $aws/things/{MyThing}/jobs/{jobId}/get/rejected
-//!
-//! If you are using Code-signing for AWS IoT your device code must verify the
-//! signature of your code file. The signature is in the job document in the
-//! codesign property.
-//!
-//! ## Workflow:
-//! 1. When a device first comes online, it should subscribe to the device's
-//!    notify-next topic.
-//! 2. Call the DescribeJobExecution MQTT API with jobId $next to get the next
-//!    job, its job document, and other details, including any state saved in
-//!    statusDetails. If the job document has a code file signature, you must
-//!    verify the signature before proceeding with processing the job request.
-//! 3. Call the UpdateJobExecution MQTT API to update the job status. Or, to
-//!    combine this and the previous step in one call, the device can call
-//!    StartNextPendingJobExecution.
-//! 4. (Optional) You can add a step timer by setting a value for
-//!    stepTimeoutInMinutes when you call either UpdateJobExecution or
-//!    StartNextPendingJobExecution.
-//! 5. Perform the actions specified by the job document using the
-//!    UpdateJobExecution MQTT API to report on the progress of the job.
-//! 6. Continue to monitor the job execution by calling the DescribeJobExecution
-//!    MQTT API with this jobId. If the job execution is canceled or deleted
-//!    while the device is running the job, the device should be capable of
-//!    recovering to a valid state.
-//! 7. Call the UpdateJobExecution MQTT API when finished with the job to update
-//!    the job status and report success or failure.
-//! 8. Because this job's execution status has been changed to a terminal state,
-//!    the next job available for execution (if any) changes. The device is
-//!    notified that the next pending job execution has changed. At this point,
-//!    the device should continue as described in step 2.
-//!
-//! If the device remains online, it continues to receive a notifications of the
-//! next pending job execution, including its job execution data, when it
-//! completes a job or a new pending job execution is added. When this occurs,
-//! the device continues as described in step 2.
-//!
-//! If the device is unable to execute the job, it should call the
-//! UpdateJobExecution MQTT API to update the job status to REJECTED.
-//!
-//!
-//! ## Jobs Notifications
-//! The AWS IoT Jobs service publishes MQTT messages to reserved topics when
-//! jobs are pending or when the first job execution in the list changes.
-//! Devices can keep track of pending jobs by subscribing to these topics.
-//!
-//! Job notifications are published to MQTT topics as JSON payloads. There are
-//! two kinds of notifications:
-//!
-//! A ListNotification contains a list of no more than 10 pending job
-//! executions. The job executions in this list have status values of either
-//! IN_PROGRESS or QUEUED. They are sorted by status (IN_PROGRESS job executions
-//! before QUEUED job executions) and then by the times when they were queued.
-//!
-//! A ListNotification is published whenever one of the following criteria is
-//! met.
-//!
-//! A new job execution is queued or changes to a non-terminal status
-//! (IN_PROGRESS or QUEUED).
-//!
-//! An old job execution changes to a terminal status (FAILED, SUCCEEDED,
-//! CANCELED, TIMED_OUT, REJECTED, or REMOVED).
-//!
-//! A NextNotification contains summary information about the one job execution
-//! that is next in the queue.
-//!
-//! A NextNotification is published whenever the first job execution in the list
-//! changes.
-//!
-//! A new job execution is added to the list as QUEUED, and it is the first one
-//! in the list.
-//!
-//! The status of an existing job execution that was not the first one in the
-//! list changes from QUEUED to IN_PROGRESS and becomes the first one in the
-//! list. (This happens when there are no other IN_PROGRESS job executions in
-//! the list or when the job execution whose status changes from QUEUED to
-//! IN_PROGRESS was queued earlier than any other IN_PROGRESS job execution in
-//! the list.)
-//!
-//! The status of the job execution that is first in the list changes to a
-//! terminal status and is removed from the list.
-
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 
-/// https://docs.aws.amazon.com/iot/latest/apireference/API_DescribeThing.html
-pub const MAX_THING_NAME_LEN: usize = 128;
-pub const MAX_CLIENT_TOKEN_LEN: usize = MAX_THING_NAME_LEN + 10;
-pub const MAX_JOB_ID_LEN: usize = 64;
-pub const MAX_STREAM_ID_LEN: usize = 64;
-pub const MAX_PENDING_JOBS: usize = 4;
-pub const MAX_RUNNING_JOBS: usize = 1;
-
-pub type StatusDetails = heapless::FnvIndexMap<heapless::String<15>, heapless::String<11>, 4>;
+use super::{
+    StatusDetails, MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_PENDING_JOBS, MAX_RUNNING_JOBS,
+    MAX_THING_NAME_LEN,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum JobStatus {
@@ -162,32 +57,6 @@ pub enum ErrorCode {
     TerminalStateReached,
 }
 
-/// Gets detailed information about a job execution.
-///
-/// You can set the jobId to $next to return the next pending job execution for
-/// a thing (status IN_PROGRESS or QUEUED).
-///
-/// Topic: $aws/things/{thingName}/jobs/{jobId}/get
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct DescribeJobExecutionRequest<'a> {
-    /// Optional. A number that identifies a particular job execution on a
-    /// particular device. If not specified, the latest job execution is
-    /// returned.
-    #[serde(rename = "executionNumber")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_number: Option<i64>,
-    /// Optional. When set to true, the response contains the job document. The
-    /// default is false.
-    #[serde(rename = "includeJobDocument")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_job_document: Option<bool>,
-    /// A client token used to correlate requests and responses. Enter an
-    /// arbitrary value here and it is reflected in the response.
-    #[serde(rename = "clientToken")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_token: Option<&'a str>,
-}
-
 /// Topic: $aws/things/{thingName}/jobs/{jobId}/get/accepted
 #[derive(Debug, PartialEq, Deserialize)]
 pub struct DescribeJobExecutionResponse<'a, J> {
@@ -202,18 +71,6 @@ pub struct DescribeJobExecutionResponse<'a, J> {
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
     pub client_token: &'a str,
-}
-
-/// Gets the list of all jobs for a thing that are not in a terminal state.
-///
-/// Topic: $aws/things/{thingName}/jobs/get
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct GetPendingJobExecutionsRequest<'a> {
-    /// A client token used to correlate requests and responses. Enter an
-    /// arbitrary value here and it is reflected in the response.
-    #[serde(rename = "clientToken")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_token: Option<&'a str>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/get/accepted \
@@ -340,54 +197,6 @@ pub struct JobExecutionSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_number: Option<i64>,
 }
-/// Gets and starts the next pending job execution for a thing (status
-/// IN_PROGRESS or QUEUED).
-///
-/// Any job executions with status IN_PROGRESS are returned first.
-///
-/// Job executions are returned in the order in which they were created.
-///
-/// If the next pending job execution is QUEUED, its state is changed to
-/// IN_PROGRESS and the job execution's status details are set as specified.
-///
-/// If the next pending job execution is already IN_PROGRESS, its status details
-/// are not changed.
-///
-/// If no job executions are pending, the response does not include the
-/// execution field.
-///
-/// You can optionally create a step timer by setting a value for the
-/// stepTimeoutInMinutes property. If you don't update the value of this
-/// property by running UpdateJobExecution, the job execution times out when the
-/// step timer expires.
-///
-/// Topic: $aws/things/{thingName}/jobs/start-next
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct StartNextPendingJobExecutionRequest<'a> {
-    // / A collection of name/value pairs that describe the status of the job
-    // execution. If not specified, the statusDetails are unchanged.
-    // #[serde(rename = "statusDetails")] #[serde(skip_serializing_if =
-    // "Option::is_none")] pub status_details:
-    // Option<::std::collections::HashMap<String, String>>, Specifies the amount
-    // of time this device has to finish execution of this job. If the job
-    // execution status is not set to a terminal state before this timer
-    // expires, or before the timer is reset (by calling
-    // <code>UpdateJobExecution</code>, setting the status to
-    // <code>IN_PROGRESS</code> and specifying a new timeout value in field
-    // <code>stepTimeoutInMinutes</code>) the job execution status will be
-    // automatically set to <code>TIMED_OUT</code>. Note that setting this
-    // timeout has no effect on that job execution timeout which may have been
-    // specified when the job was created (<code>CreateJob</code> using field
-    // <code>timeoutConfig</code>).
-    #[serde(rename = "stepTimeoutInMinutes")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub step_timeout_in_minutes: Option<i64>,
-    /// A client token used to correlate requests and responses. Enter an
-    /// arbitrary value here and it is reflected in the response.
-    #[serde(rename = "clientToken")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_token: Option<&'a str>,
-}
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/start-next/accepted \
 /// Topic (rejected): $aws/things/{thingName}/jobs/start-next/rejected
@@ -404,68 +213,6 @@ pub struct StartNextPendingJobExecutionResponse<'a, J> {
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
     pub client_token: &'a str,
-}
-
-/// Updates the status of a job execution. You can optionally create a step
-/// timer by setting a value for the stepTimeoutInMinutes property. If you don't
-/// update the value of this property by running UpdateJobExecution again, the
-/// job execution times out when the step timer expires.
-///
-/// Topic: $aws/things/{thingName}/jobs/{jobId}/update
-#[derive(Debug, PartialEq, Serialize)]
-pub struct UpdateJobExecutionRequest<'a> {
-    /// Optional. A number that identifies a particular job execution on a
-    /// particular device.
-    #[serde(rename = "executionNumber")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_number: Option<i64>,
-    /// Optional. The expected current version of the job execution. Each time
-    /// you update the job execution, its version is incremented. If the version
-    /// of the job execution stored in Jobs does not match, the update is
-    /// rejected with a VersionMismatch error, and an ErrorResponse that
-    /// contains the current job execution status data is returned. (This makes
-    /// it unnecessary to perform a separate DescribeJobExecution request in
-    /// order to obtain the job execution status data.)
-    #[serde(rename = "expectedVersion")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_version: Option<i64>,
-    /// Optional. When set to true, the response contains the job document. The
-    /// default is false.
-    #[serde(rename = "includeJobDocument")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_job_document: Option<bool>,
-    /// Optional. When included and set to true, the response contains the
-    /// JobExecutionState data. The default is false.
-    #[serde(rename = "includeJobExecutionState")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_job_execution_state: Option<bool>,
-    /// The new status for the job execution (IN_PROGRESS, FAILED, SUCCESS, or
-    /// REJECTED). This must be specified on every update.
-    #[serde(rename = "status")]
-    pub status: JobStatus,
-    // /  Optional. A collection of name/value pairs that describe the status of
-    // the job execution. If not specified, the statusDetails are unchanged.
-    #[serde(rename = "statusDetails")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<&'a StatusDetails>,
-    // Specifies the amount of time this device has to finish execution of this
-    // job. If the job execution status is not set to a terminal state before
-    // this timer expires, or before the timer is reset (by again calling
-    // <code>UpdateJobExecution</code>, setting the status to
-    // <code>IN_PROGRESS</code> and specifying a new timeout value in this
-    // field) the job execution status will be automatically set to
-    // <code>TIMED_OUT</code>. Note that setting or resetting this timeout has
-    // no effect on that job execution timeout which may have been specified
-    // when the job was created (<code>CreateJob</code> using field
-    // <code>timeoutConfig</code>).
-    #[serde(rename = "stepTimeoutInMinutes")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub step_timeout_in_minutes: Option<i64>,
-    /// A client token used to correlate requests and responses. Enter an
-    /// arbitrary value here and it is reflected in the response.
-    #[serde(rename = "clientToken")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_token: Option<&'a str>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/{jobId}/update/accepted \
@@ -563,7 +310,7 @@ pub struct ErrorResponse {
 mod test {
     use super::*;
     use heapless::Vec;
-    use serde_json_core::{from_slice, to_string};
+    use serde_json_core::from_slice;
 
     /// Job document used while developing the module
     #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -581,67 +328,6 @@ mod test {
 
         #[serde(other)]
         Unknown,
-    }
-
-    #[test]
-    fn serialize_requests() {
-        {
-            let req = DescribeJobExecutionRequest {
-                execution_number: Some(1),
-                include_job_document: Some(true),
-                client_token: Some("test_client:token"),
-            };
-            assert_eq!(
-                to_string::<_, 512>(&req).unwrap().as_str(),
-                r#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
-            );
-        }
-
-        {
-            let req = GetPendingJobExecutionsRequest {
-                client_token: Some("test_client:token_pending"),
-            };
-            assert_eq!(
-                &to_string::<_, 512>(&req).unwrap(),
-                r#"{"clientToken":"test_client:token_pending"}"#
-            );
-        }
-
-        {
-            let req = StartNextPendingJobExecutionRequest {
-                client_token: Some("test_client:token_next_pending"),
-                step_timeout_in_minutes: Some(50),
-            };
-            assert_eq!(
-                &to_string::<_, 512>(&req).unwrap(),
-                r#"{"stepTimeoutInMinutes":50,"clientToken":"test_client:token_next_pending"}"#
-            );
-            let req_none = StartNextPendingJobExecutionRequest {
-                client_token: Some("test_client:token_next_pending"),
-                step_timeout_in_minutes: None,
-            };
-            assert_eq!(
-                &to_string::<_, 512>(&req_none).unwrap(),
-                r#"{"clientToken":"test_client:token_next_pending"}"#
-            );
-        }
-
-        {
-            let req = UpdateJobExecutionRequest {
-                client_token: Some("test_client:token_update"),
-                step_timeout_in_minutes: Some(50),
-                execution_number: Some(5),
-                expected_version: Some(2),
-                include_job_document: Some(true),
-                include_job_execution_state: Some(true),
-                status_details: None,
-                status: JobStatus::Failed,
-            };
-            assert_eq!(
-                &to_string::<_, 512>(&req).unwrap(),
-                r#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#
-            );
-        }
     }
 
     #[test]

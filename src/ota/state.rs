@@ -12,9 +12,7 @@ use super::pal::OtaPalError;
 
 use crate::rustot_log;
 use crate::{
-    jobs::{
-        data_types::{JobStatus, StatusDetails},
-    },
+    jobs::{data_types::JobStatus, StatusDetails},
     ota::pal::Version,
 };
 

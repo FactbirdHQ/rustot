@@ -1,24 +1,138 @@
+//! # Iot Jobs Data
+//!
+//! ## Programming Devices to Work with Jobs
+//!
+//! The examples in this section use MQTT to illustrate how a device works with
+//! the AWS IoT Jobs service. Alternatively, you could use the corresponding API
+//! or CLI commands. For these examples, we assume a device called MyThing
+//! subscribes to the following MQTT topics:
+//!
+//! $aws/things/{MyThing}/jobs/notify (or
+//! $aws/things/{MyThing}/jobs/notify-next)
+//!
+//! $aws/things/{MyThing}/jobs/get/accepted
+//!
+//! $aws/things/{MyThing}/jobs/get/rejected
+//!
+//! $aws/things/{MyThing}/jobs/{jobId}/get/accepted
+//!
+//! $aws/things/{MyThing}/jobs/{jobId}/get/rejected
+//!
+//! If you are using Code-signing for AWS IoT your device code must verify the
+//! signature of your code file. The signature is in the job document in the
+//! codesign property.
+//!
+//! ## Workflow:
+//! 1. When a device first comes online, it should subscribe to the device's
+//!    notify-next topic.
+//! 2. Call the DescribeJobExecution MQTT API with jobId $next to get the next
+//!    job, its job document, and other details, including any state saved in
+//!    statusDetails. If the job document has a code file signature, you must
+//!    verify the signature before proceeding with processing the job request.
+//! 3. Call the UpdateJobExecution MQTT API to update the job status. Or, to
+//!    combine this and the previous step in one call, the device can call
+//!    StartNextPendingJobExecution.
+//! 4. (Optional) You can add a step timer by setting a value for
+//!    stepTimeoutInMinutes when you call either UpdateJobExecution or
+//!    StartNextPendingJobExecution.
+//! 5. Perform the actions specified by the job document using the
+//!    UpdateJobExecution MQTT API to report on the progress of the job.
+//! 6. Continue to monitor the job execution by calling the DescribeJobExecution
+//!    MQTT API with this jobId. If the job execution is canceled or deleted
+//!    while the device is running the job, the device should be capable of
+//!    recovering to a valid state.
+//! 7. Call the UpdateJobExecution MQTT API when finished with the job to update
+//!    the job status and report success or failure.
+//! 8. Because this job's execution status has been changed to a terminal state,
+//!    the next job available for execution (if any) changes. The device is
+//!    notified that the next pending job execution has changed. At this point,
+//!    the device should continue as described in step 2.
+//!
+//! If the device remains online, it continues to receive a notifications of the
+//! next pending job execution, including its job execution data, when it
+//! completes a job or a new pending job execution is added. When this occurs,
+//! the device continues as described in step 2.
+//!
+//! If the device is unable to execute the job, it should call the
+//! UpdateJobExecution MQTT API to update the job status to REJECTED.
+//!
+//!
+//! ## Jobs Notifications
+//! The AWS IoT Jobs service publishes MQTT messages to reserved topics when
+//! jobs are pending or when the first job execution in the list changes.
+//! Devices can keep track of pending jobs by subscribing to these topics.
+//!
+//! Job notifications are published to MQTT topics as JSON payloads. There are
+//! two kinds of notifications:
+//!
+//! A ListNotification contains a list of no more than 10 pending job
+//! executions. The job executions in this list have status values of either
+//! IN_PROGRESS or QUEUED. They are sorted by status (IN_PROGRESS job executions
+//! before QUEUED job executions) and then by the times when they were queued.
+//!
+//! A ListNotification is published whenever one of the following criteria is
+//! met.
+//!
+//! A new job execution is queued or changes to a non-terminal status
+//! (IN_PROGRESS or QUEUED).
+//!
+//! An old job execution changes to a terminal status (FAILED, SUCCEEDED,
+//! CANCELED, TIMED_OUT, REJECTED, or REMOVED).
+//!
+//! A NextNotification contains summary information about the one job execution
+//! that is next in the queue.
+//!
+//! A NextNotification is published whenever the first job execution in the list
+//! changes.
+//!
+//! A new job execution is added to the list as QUEUED, and it is the first one
+//! in the list.
+//!
+//! The status of an existing job execution that was not the first one in the
+//! list changes from QUEUED to IN_PROGRESS and becomes the first one in the
+//! list. (This happens when there are no other IN_PROGRESS job executions in
+//! the list or when the job execution whose status changes from QUEUED to
+//! IN_PROGRESS was queued earlier than any other IN_PROGRESS job execution in
+//! the list.)
+//!
+//! The status of the job execution that is first in the list changes to a
+//! terminal status and is removed from the list.
 pub mod data_types;
 pub mod describe;
+pub mod get_pending;
+pub mod start_next;
 pub mod subscribe;
 pub mod unsubscribe;
 pub mod update;
 
 use core::fmt::Write;
-use mqttrust::{Mqtt, QoS};
 
 use self::{
-    data_types::JobStatus, describe::Describe, subscribe::Subscribe, unsubscribe::Unsubscribe,
-    update::Update,
+    data_types::JobStatus, describe::Describe, get_pending::GetPending, start_next::StartNext,
+    subscribe::Subscribe, unsubscribe::Unsubscribe, update::Update,
 };
-use crate::jobs::data_types::{
-    GetPendingJobExecutionsRequest, StartNextPendingJobExecutionRequest, MAX_CLIENT_TOKEN_LEN,
-    MAX_THING_NAME_LEN,
-};
+pub use subscribe::Topic;
 
+/// https://docs.aws.amazon.com/iot/latest/apireference/API_DescribeThing.html
+pub const MAX_THING_NAME_LEN: usize = 128;
+pub const MAX_CLIENT_TOKEN_LEN: usize = MAX_THING_NAME_LEN + 10;
+pub const MAX_JOB_ID_LEN: usize = 64;
+pub const MAX_STREAM_ID_LEN: usize = 64;
+pub const MAX_PENDING_JOBS: usize = 4;
+pub const MAX_RUNNING_JOBS: usize = 1;
+
+pub type StatusDetails = heapless::FnvIndexMap<heapless::String<15>, heapless::String<11>, 4>;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Topic<'a> {
+enum JobTopic<'a> {
+    // Outgoing Topics
+    GetNext,
+    GetPending,
+    StartNext,
+    Get(&'a str),
+    Update(&'a str),
+
+    // Incoming Topics
     Notify,
     NotifyNext,
     GetAccepted,
@@ -31,43 +145,61 @@ pub enum Topic<'a> {
     UpdateRejected(&'a str),
 }
 
-impl<'a> Topic<'a> {
+impl<'a> JobTopic<'a> {
     pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, ()> {
         let mut topic_path = heapless::String::new();
         match self {
-            Topic::Notify => {
+            Self::GetNext => {
+                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/$next/get", client_id))
+            }
+            Self::GetPending => {
+                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/get", client_id))
+            }
+            Self::StartNext => {
+                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/start-next", client_id))
+            }
+            Self::Get(job_id) => topic_path.write_fmt(format_args!(
+                "$aws/things/{}/jobs/{}/get",
+                client_id, job_id
+            )),
+            Self::Update(job_id) => topic_path.write_fmt(format_args!(
+                "$aws/things/{}/jobs/{}/update",
+                client_id, job_id
+            )),
+
+            Self::Notify => {
                 topic_path.write_fmt(format_args!("$aws/things/{}/jobs/notify", client_id))
             }
-            Topic::NotifyNext => {
+            Self::NotifyNext => {
                 topic_path.write_fmt(format_args!("$aws/things/{}/jobs/notify-next", client_id))
             }
-            Topic::GetAccepted => {
+            Self::GetAccepted => {
                 topic_path.write_fmt(format_args!("$aws/things/{}/jobs/get/accepted", client_id))
             }
-            Topic::GetRejected => {
+            Self::GetRejected => {
                 topic_path.write_fmt(format_args!("$aws/things/{}/jobs/get/rejected", client_id))
             }
-            Topic::StartNextAccepted => topic_path.write_fmt(format_args!(
+            Self::StartNextAccepted => topic_path.write_fmt(format_args!(
                 "$aws/things/{}/jobs/start-next/accepted",
                 client_id
             )),
-            Topic::StartNextRejected => topic_path.write_fmt(format_args!(
+            Self::StartNextRejected => topic_path.write_fmt(format_args!(
                 "$aws/things/{}/jobs/start-next/rejected",
                 client_id
             )),
-            Topic::DescribeAccepted(job_id) => topic_path.write_fmt(format_args!(
+            Self::DescribeAccepted(job_id) => topic_path.write_fmt(format_args!(
                 "$aws/things/{}/jobs/{}/get/accepted",
                 client_id, job_id
             )),
-            Topic::DescribeRejected(job_id) => topic_path.write_fmt(format_args!(
+            Self::DescribeRejected(job_id) => topic_path.write_fmt(format_args!(
                 "$aws/things/{}/jobs/{}/get/rejected",
                 client_id, job_id
             )),
-            Topic::UpdateAccepted(job_id) => topic_path.write_fmt(format_args!(
+            Self::UpdateAccepted(job_id) => topic_path.write_fmt(format_args!(
                 "$aws/things/{}/jobs/{}/update/accepted",
                 client_id, job_id
             )),
-            Topic::UpdateRejected(job_id) => topic_path.write_fmt(format_args!(
+            Self::UpdateRejected(job_id) => topic_path.write_fmt(format_args!(
                 "$aws/things/{}/jobs/{}/update/rejected",
                 client_id, job_id
             )),
@@ -81,48 +213,12 @@ impl<'a> Topic<'a> {
 pub struct Jobs;
 
 impl Jobs {
-    pub fn get_pending<M: Mqtt>(mqtt: &M) -> Result<(), ()> {
-        let mut topic = heapless::String::<{ MAX_THING_NAME_LEN + 21 }>::new();
-
-        topic
-            .write_fmt(format_args!("$aws/things/{}/jobs/get", mqtt.client_id()))
-            .map_err(drop)?;
-
-        let buf = &mut [0u8; MAX_CLIENT_TOKEN_LEN];
-        let len =
-            serde_json_core::to_slice(&GetPendingJobExecutionsRequest { client_token: None }, buf)
-                .map_err(drop)?;
-
-        mqtt.publish(topic.as_str(), &buf[..len], QoS::AtLeastOnce)
-            .map_err(drop)?;
-
-        Ok(())
+    pub fn get_pending<'a>() -> GetPending<'a> {
+        GetPending::new()
     }
 
-    pub fn start_next<M: Mqtt>(mqtt: &M) -> Result<(), ()> {
-        let mut topic = heapless::String::<{ MAX_THING_NAME_LEN + 28 }>::new();
-
-        topic
-            .write_fmt(format_args!(
-                "$aws/things/{}/jobs/start-next",
-                mqtt.client_id()
-            ))
-            .map_err(drop)?;
-
-        let buf = &mut [0u8; MAX_CLIENT_TOKEN_LEN];
-        let len = serde_json_core::to_slice(
-            &StartNextPendingJobExecutionRequest {
-                step_timeout_in_minutes: None,
-                client_token: None,
-            },
-            buf,
-        )
-        .map_err(drop)?;
-
-        mqtt.publish(topic.as_str(), &buf[..len], QoS::AtLeastOnce)
-            .map_err(drop)?;
-
-        Ok(())
+    pub fn start_next<'a>() -> StartNext<'a> {
+        StartNext::new()
     }
 
     pub fn describe<'a>() -> Describe<'a> {
@@ -139,156 +235,5 @@ impl Jobs {
 
     pub fn unsubscribe<'a>() -> Unsubscribe<'a> {
         Unsubscribe::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use mqttrust::{SubscribeRequest, SubscribeTopic, UnsubscribeRequest};
-
-    use super::*;
-
-    use crate::test::{MockMqtt, MqttRequest};
-
-    #[test]
-    fn splits_subscribe_all() {
-        let mqtt = &MockMqtt::new();
-
-        Jobs::subscribe()
-            .topic(Topic::Notify, QoS::AtLeastOnce)
-            .topic(Topic::NotifyNext, QoS::AtLeastOnce)
-            .topic(Topic::GetAccepted, QoS::AtLeastOnce)
-            .topic(Topic::GetRejected, QoS::AtLeastOnce)
-            .topic(Topic::StartNextAccepted, QoS::AtLeastOnce)
-            .topic(Topic::StartNextRejected, QoS::AtLeastOnce)
-            .topic(Topic::DescribeAccepted("test_job"), QoS::AtLeastOnce)
-            .topic(Topic::DescribeRejected("test_job"), QoS::AtLeastOnce)
-            .topic(Topic::UpdateAccepted("test_job"), QoS::AtLeastOnce)
-            .topic(Topic::UpdateRejected("test_job"), QoS::AtLeastOnce)
-            .send(mqtt)
-            .unwrap();
-
-        assert_eq!(mqtt.tx.borrow_mut().len(), 2);
-        assert_eq!(
-            mqtt.tx.borrow_mut().pop_front(),
-            Some(MqttRequest::Subscribe(SubscribeRequest {
-                topics: heapless::Vec::from_slice(&[
-                    SubscribeTopic {
-                        topic_path: heapless::String::from("$aws/things/test_client/jobs/notify"),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/notify-next"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/get/accepted"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/get/rejected"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/start-next/accepted"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    }
-                ])
-                .unwrap()
-            }))
-        );
-        assert_eq!(
-            mqtt.tx.borrow_mut().pop_front(),
-            Some(MqttRequest::Subscribe(SubscribeRequest {
-                topics: heapless::Vec::from_slice(&[
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/start-next/rejected"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/test_job/get/accepted"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/test_job/get/rejected"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/test_job/update/accepted"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/test_job/update/rejected"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    }
-                ])
-                .unwrap()
-            }))
-        );
-    }
-
-    #[test]
-    fn splits_unsubscribe_all() {
-        let mqtt = &MockMqtt::new();
-
-        Jobs::unsubscribe()
-            .topic(Topic::Notify)
-            .topic(Topic::NotifyNext)
-            .topic(Topic::GetAccepted)
-            .topic(Topic::GetRejected)
-            .topic(Topic::StartNextAccepted)
-            .topic(Topic::StartNextRejected)
-            .topic(Topic::DescribeAccepted("test_job"))
-            .topic(Topic::DescribeRejected("test_job"))
-            .topic(Topic::UpdateAccepted("test_job"))
-            .topic(Topic::UpdateRejected("test_job"))
-            .send(mqtt)
-            .unwrap();
-
-        assert_eq!(mqtt.tx.borrow_mut().len(), 2);
-        assert_eq!(
-            mqtt.tx.borrow_mut().pop_front(),
-            Some(MqttRequest::Unsubscribe(UnsubscribeRequest {
-                topics: heapless::Vec::from_slice(&[
-                    heapless::String::from("$aws/things/test_client/jobs/notify"),
-                    heapless::String::from("$aws/things/test_client/jobs/notify-next"),
-                    heapless::String::from("$aws/things/test_client/jobs/get/accepted"),
-                    heapless::String::from("$aws/things/test_client/jobs/get/rejected"),
-                    heapless::String::from("$aws/things/test_client/jobs/start-next/accepted"),
-                ])
-                .unwrap()
-            }))
-        );
-        assert_eq!(
-            mqtt.tx.borrow_mut().pop_front(),
-            Some(MqttRequest::Unsubscribe(UnsubscribeRequest {
-                topics: heapless::Vec::from_slice(&[
-                    heapless::String::from("$aws/things/test_client/jobs/start-next/rejected"),
-                    heapless::String::from("$aws/things/test_client/jobs/test_job/get/accepted"),
-                    heapless::String::from("$aws/things/test_client/jobs/test_job/get/rejected"),
-                    heapless::String::from("$aws/things/test_client/jobs/test_job/update/accepted"),
-                    heapless::String::from("$aws/things/test_client/jobs/test_job/update/rejected")
-                ])
-                .unwrap()
-            }))
-        );
     }
 }

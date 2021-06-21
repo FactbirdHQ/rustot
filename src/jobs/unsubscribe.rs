@@ -1,8 +1,10 @@
 use mqttrust::Mqtt;
 
+use crate::jobs::JobTopic;
+
 use super::{
-    data_types::{MAX_JOB_ID_LEN, MAX_THING_NAME_LEN},
-    Topic,
+    subscribe::Topic,
+    {MAX_JOB_ID_LEN, MAX_THING_NAME_LEN},
 };
 
 #[derive(Default)]
@@ -38,7 +40,7 @@ impl<'a> Unsubscribe<'a> {
 
         self.topics
             .iter()
-            .map(|topic| topic.format(client_id))
+            .map(|topic| JobTopic::from(topic).format(client_id))
             .collect()
     }
 
@@ -51,5 +53,59 @@ impl<'a> Unsubscribe<'a> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test::{MockMqtt, MqttRequest};
+    use mqttrust::UnsubscribeRequest;
+
+    #[test]
+    fn splits_unsubscribe_all() {
+        let mqtt = &MockMqtt::new();
+
+        Unsubscribe::new()
+            .topic(Topic::Notify)
+            .topic(Topic::NotifyNext)
+            .topic(Topic::GetAccepted)
+            .topic(Topic::GetRejected)
+            .topic(Topic::StartNextAccepted)
+            .topic(Topic::StartNextRejected)
+            .topic(Topic::DescribeAccepted("test_job"))
+            .topic(Topic::DescribeRejected("test_job"))
+            .topic(Topic::UpdateAccepted("test_job"))
+            .topic(Topic::UpdateRejected("test_job"))
+            .send(mqtt)
+            .unwrap();
+
+        assert_eq!(mqtt.tx.borrow_mut().len(), 2);
+        assert_eq!(
+            mqtt.tx.borrow_mut().pop_front(),
+            Some(MqttRequest::Unsubscribe(UnsubscribeRequest {
+                topics: heapless::Vec::from_slice(&[
+                    heapless::String::from("$aws/things/test_client/jobs/notify"),
+                    heapless::String::from("$aws/things/test_client/jobs/notify-next"),
+                    heapless::String::from("$aws/things/test_client/jobs/get/accepted"),
+                    heapless::String::from("$aws/things/test_client/jobs/get/rejected"),
+                    heapless::String::from("$aws/things/test_client/jobs/start-next/accepted"),
+                ])
+                .unwrap()
+            }))
+        );
+        assert_eq!(
+            mqtt.tx.borrow_mut().pop_front(),
+            Some(MqttRequest::Unsubscribe(UnsubscribeRequest {
+                topics: heapless::Vec::from_slice(&[
+                    heapless::String::from("$aws/things/test_client/jobs/start-next/rejected"),
+                    heapless::String::from("$aws/things/test_client/jobs/test_job/get/accepted"),
+                    heapless::String::from("$aws/things/test_client/jobs/test_job/get/rejected"),
+                    heapless::String::from("$aws/things/test_client/jobs/test_job/update/accepted"),
+                    heapless::String::from("$aws/things/test_client/jobs/test_job/update/rejected")
+                ])
+                .unwrap()
+            }))
+        );
     }
 }

@@ -1,6 +1,5 @@
 use embedded_hal::timer;
 
-use crate::jobs::data_types::StatusDetails;
 use super::{
     builder,
     control_interface::ControlInterface,
@@ -9,6 +8,7 @@ use super::{
     pal::OtaPal,
     state::{Error, Events, SmContext, StateMachine, States},
 };
+use crate::jobs::StatusDetails;
 
 // OTA Agent driving the FSM of an OTA update
 pub struct OtaAgent<'a, C, DP, DS, T, PAL>
@@ -69,7 +69,11 @@ where
     T::Time: From<u32>,
     PAL: OtaPal,
 {
-    pub fn job_update(&mut self, ota_document: OtaJob, status_details: Option<StatusDetails>) -> Result<&States, Error> {
+    pub fn job_update(
+        &mut self,
+        ota_document: OtaJob,
+        status_details: Option<StatusDetails>,
+    ) -> Result<&States, Error> {
         self.state
             .process_event(Events::ReceivedJobDocument((ota_document, status_details)))
     }
@@ -85,11 +89,7 @@ where
         Ok(self.state.state())
     }
 
-    pub fn handle_message<const L: usize>(
-        &mut self,
-        _topic_parts: &heapless::Vec<&str, L>,
-        payload: &mut [u8],
-    ) -> Result<&States, Error> {
+    pub fn handle_message(&mut self, topic: &str, payload: &mut [u8]) -> Result<&States, Error> {
         // TODO: Handle topic parts / make sure this function is suitable for
         // http data as well?
         self.state.process_event(Events::ReceivedFileBlock(payload))
