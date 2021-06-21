@@ -1,5 +1,5 @@
 use heapless::Vec;
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
 
 use crate::ota::data_interface::Protocol;
 
@@ -32,4 +32,22 @@ pub struct FileDescription {
     #[serde(rename = "attr")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_attributes: Option<u32>,
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum JobStatusReason {
+    #[serde(rename = "")]
+    Receiving, /* Update progress status. */
+    #[serde(rename = "ready")]
+    SigCheckPassed, /* Set status details to Self Test Ready. */
+    #[serde(rename = "active")]
+    SelfTestActive, /* Set status details to Self Test Active. */
+    #[serde(rename = "accepted")]
+    Accepted, /* Set job state to Succeeded. */
+    #[serde(rename = "rejected")]
+    Rejected, /* Set job state to Failed. */
+    #[serde(rename = "aborted")]
+    Aborted, /* Set job state to Failed. */
+    Pal(u32),
 }

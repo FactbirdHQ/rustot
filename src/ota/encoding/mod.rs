@@ -6,7 +6,7 @@ use core::ops::{Deref, DerefMut};
 use core::str::FromStr;
 use serde::{Serialize, Serializer};
 
-use crate::job::data_types::StatusDetails;
+use crate::jobs::data_types::StatusDetails;
 
 use self::json::OtaJob;
 

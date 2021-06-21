@@ -21,7 +21,7 @@ impl embedded_hal::timer::CountDown for MockTimer {
 
     type Time = u32;
 
-    fn try_start<T>(&mut self, count: T) -> Result<(), Self::Error>
+    fn try_start<T>(&mut self, _count: T) -> Result<(), Self::Error>
     where
         T: Into<Self::Time>,
     {
@@ -50,11 +50,11 @@ pub struct MockPal {}
 impl OtaPal for MockPal {
     type Error = ();
 
-    fn abort(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>> {
+    fn abort(&mut self, _file: &FileContext) -> Result<(), OtaPalError<Self::Error>> {
         Ok(())
     }
 
-    fn create_file_for_rx(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>> {
+    fn create_file_for_rx(&mut self, _file: &FileContext) -> Result<(), OtaPalError<Self::Error>> {
         Ok(())
     }
 
@@ -64,7 +64,7 @@ impl OtaPal for MockPal {
 
     fn set_platform_image_state(
         &mut self,
-        image_state: ImageState,
+        _image_state: ImageState,
     ) -> Result<(), OtaPalError<Self::Error>> {
         Ok(())
     }
@@ -73,14 +73,14 @@ impl OtaPal for MockPal {
         Ok(())
     }
 
-    fn close_file(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>> {
+    fn close_file(&mut self, _file: &FileContext) -> Result<(), OtaPalError<Self::Error>> {
         Ok(())
     }
 
     fn write_block(
         &mut self,
-        file: &FileContext,
-        block_offset: usize,
+        _file: &FileContext,
+        _block_offset: usize,
         block_payload: &[u8],
     ) -> Result<usize, OtaPalError<Self::Error>> {
         Ok(block_payload.len())

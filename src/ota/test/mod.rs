@@ -263,6 +263,7 @@ pub mod ota_tests {
             ota_agent.process_event().ok();
             assert!(ota_agent.state.context().request_timer.is_started);
             ota_agent.timer_callback();
+            // assert!(!ota_agent.state.context().request_timer.is_started);
             assert!(matches!(ota_agent.state.state(), &States::RequestingJob));
         }
 

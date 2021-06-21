@@ -1,6 +1,9 @@
-use crate::job::{data_types::JobStatus, JobStatusReason};
+use crate::jobs::data_types::JobStatus;
 
-use super::{config::Config, encoding::FileContext};
+use super::{
+    config::Config,
+    encoding::{json::JobStatusReason, FileContext},
+};
 
 pub mod mqtt;
 

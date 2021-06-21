@@ -1,7 +1,6 @@
 use embedded_hal::timer;
 
-use crate::job::data_types::StatusDetails;
-
+use crate::jobs::data_types::StatusDetails;
 use super::{
     builder,
     control_interface::ControlInterface,
@@ -24,6 +23,8 @@ where
     pub(crate) state: StateMachine<SmContext<'a, C, DP, DS, T, PAL, 2>>,
 }
 
+// Make sure any active OTA session is cleaned up, and the topics are
+// unsubscribed on drop.
 impl<'a, C, DP, DS, T, PAL> Drop for OtaAgent<'a, C, DP, DS, T, PAL>
 where
     C: ControlInterface,

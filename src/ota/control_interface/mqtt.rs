@@ -1,18 +1,16 @@
 use core::fmt::Write;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use mqttrust::{QoS, SubscribeTopic};
+use mqttrust::QoS;
 
 use super::ControlInterface;
-use crate::job::data_types::UpdateJobExecutionRequest;
+use crate::jobs::data_types::JobStatus;
+use crate::jobs::data_types::MAX_CLIENT_TOKEN_LEN;
+use crate::jobs::Jobs;
+use crate::jobs::Topics;
 use crate::ota::config::Config;
+use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
-use crate::{
-    job::{
-        data_types::{DescribeJobExecutionRequest, JobStatus},
-        JobStatusReason,
-    },
-};
 
 // FIXME: This can cause unit-tests to sometimes fail, due to parallel execution
 static REQUEST_CNT: AtomicU32 = AtomicU32::new(0);
@@ -21,43 +19,20 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
     /// Check for next available OTA job from the job service by publishing a
     /// "get next job" message to the job service.
     fn request_job(&self) -> Result<(), ()> {
-        let thing_name = self.client_id();
-
         // Subscribe to the OTA job notification topics
-        let mut topic_path = heapless::String::new();
-        topic_path
-            .write_fmt(format_args!("$aws/things/{}/jobs/notify-next", thing_name))
-            .map_err(drop)?;
-
-        self.subscribe(SubscribeTopic {
-            topic_path,
-            qos: QoS::AtLeastOnce,
-        })
-        .map_err(drop)?;
+        Jobs::subscribe(self, Topics::NOTIFY_NEXT, None)?;
 
         let request_cnt = REQUEST_CNT.fetch_add(1, Ordering::Relaxed);
 
         // Obtains a unique client token on the form
         // `{requestNumber}:{thingName}`, and increments the request counter
-        let mut client_token = heapless::String::new();
+        let mut client_token = heapless::String::<MAX_CLIENT_TOKEN_LEN>::new();
         client_token
-            .write_fmt(format_args!("{}:{}", request_cnt, thing_name))
+            .write_fmt(format_args!("{}:{}", request_cnt, self.client_id()))
             .map_err(drop)?;
 
-        let mut topic_path = heapless::String::<64>::new();
-        topic_path
-            .write_fmt(format_args!("$aws/things/{}/jobs/$next/get", thing_name))
-            .map_err(drop)?;
+        Jobs::describe_next(self, client_token.as_str())?;
 
-        let p = serde_json_core::to_vec::<_, 128>(&DescribeJobExecutionRequest {
-            execution_number: None,
-            include_job_document: None,
-            client_token,
-        })
-        .map_err(drop)?;
-
-        self.publish(topic_path.as_str(), &p, QoS::AtLeastOnce)
-            .map_err(drop)?;
         Ok(())
     }
 
@@ -103,45 +78,20 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             qos = QoS::AtMostOnce;
         }
 
-        let payload = serde_json_core::to_vec::<_, 512>(&UpdateJobExecutionRequest {
-            execution_number: None,
-            expected_version: None,
-            include_job_document: None,
-            include_job_execution_state: None,
+        Jobs::update(
+            self,
+            file_ctx.stream_name.as_str(),
             status,
-            status_details: Some(&file_ctx.status_details),
-            step_timeout_in_minutes: None,
-            client_token: None,
-        })
-        .map_err(drop)?;
-
-        // Publish the string created above
-        let mut topic_path = heapless::String::<64>::new();
-        topic_path
-            .write_fmt(format_args!(
-                "$aws/things/{}/jobs/{}/update",
-                self.client_id(),
-                file_ctx.stream_name.as_str()
-            ))
-            .map_err(drop)?;
-
-        self.publish(topic_path.as_str(), &payload, qos)
-            .map_err(drop)?;
+            Some(&file_ctx.status_details),
+            qos,
+        )?;
 
         Ok(())
     }
 
     /// Perform any cleanup operations required for control plane
     fn cleanup(&self) -> Result<(), ()> {
-        let mut topic_path = heapless::String::new();
-        topic_path
-            .write_fmt(format_args!(
-                "$aws/things/{}/jobs/notify-next",
-                self.client_id(),
-            ))
-            .map_err(drop)?;
-
-        self.unsubscribe(topic_path).map_err(drop)?;
+        Jobs::unsubscribe(self, Topics::NOTIFY_NEXT, None)?;
         Ok(())
     }
 }

@@ -4,6 +4,7 @@ use smlang::statemachine;
 use super::config::Config;
 use super::control_interface::ControlInterface;
 use super::data_interface::{DataInterface, Protocol};
+use super::encoding::json::JobStatusReason;
 use super::encoding::json::OtaJob;
 use super::encoding::FileContext;
 use super::pal::OtaPal;
@@ -11,9 +12,8 @@ use super::pal::OtaPalError;
 
 use crate::rustot_log;
 use crate::{
-    job::{
+    jobs::{
         data_types::{JobStatus, StatusDetails},
-        JobStatusReason,
     },
     ota::pal::Version,
 };

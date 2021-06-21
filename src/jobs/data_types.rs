@@ -103,7 +103,7 @@ use serde::{Deserialize, Serialize};
 
 /// https://docs.aws.amazon.com/iot/latest/apireference/API_DescribeThing.html
 pub const MAX_THING_NAME_LEN: usize = 128;
-pub const MAX_CLIENT_TOKEN_LEN: usize = 30;
+pub const MAX_CLIENT_TOKEN_LEN: usize = MAX_THING_NAME_LEN + 10;
 pub const MAX_JOB_ID_LEN: usize = 64;
 pub const MAX_STREAM_ID_LEN: usize = 64;
 pub const MAX_PENDING_JOBS: usize = 4;
@@ -169,7 +169,7 @@ pub enum ErrorCode {
 ///
 /// Topic: $aws/things/{thingName}/jobs/{jobId}/get
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct DescribeJobExecutionRequest {
+pub struct DescribeJobExecutionRequest<'a> {
     /// Optional. A number that identifies a particular job execution on a
     /// particular device. If not specified, the latest job execution is
     /// returned.
@@ -184,12 +184,13 @@ pub struct DescribeJobExecutionRequest {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_token: Option<&'a str>,
 }
 
 /// Topic: $aws/things/{thingName}/jobs/{jobId}/get/accepted
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct DescribeJobExecutionResponse<J> {
+pub struct DescribeJobExecutionResponse<'a, J> {
     /// Contains data about a job execution.
     #[serde(rename = "execution")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -200,24 +201,25 @@ pub struct DescribeJobExecutionResponse<J> {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
+    pub client_token: &'a str,
 }
 
 /// Gets the list of all jobs for a thing that are not in a terminal state.
 ///
 /// Topic: $aws/things/{thingName}/jobs/get
 #[derive(Debug, Clone, PartialEq, Serialize)]
-struct GetPendingJobExecutionsRequest {
+pub struct GetPendingJobExecutionsRequest<'a> {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_token: Option<&'a str>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/get/accepted \
 /// Topic (rejected): $aws/things/{thingName}/jobs/get/rejected
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct GetPendingJobExecutionsResponse {
+pub struct GetPendingJobExecutionsResponse<'a> {
     /// A list of JobExecutionSummary objects with status IN_PROGRESS.
     #[serde(rename = "inProgressJobs")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -232,7 +234,7 @@ pub struct GetPendingJobExecutionsResponse {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
+    pub client_token: &'a str,
 }
 
 /// Contains data about a job execution.
@@ -361,7 +363,7 @@ pub struct JobExecutionSummary {
 ///
 /// Topic: $aws/things/{thingName}/jobs/start-next
 #[derive(Debug, Clone, PartialEq, Serialize)]
-struct StartNextPendingJobExecutionRequest {
+pub struct StartNextPendingJobExecutionRequest<'a> {
     // / A collection of name/value pairs that describe the status of the job
     // execution. If not specified, the statusDetails are unchanged.
     // #[serde(rename = "statusDetails")] #[serde(skip_serializing_if =
@@ -383,13 +385,14 @@ struct StartNextPendingJobExecutionRequest {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_token: Option<&'a str>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/start-next/accepted \
 /// Topic (rejected): $aws/things/{thingName}/jobs/start-next/rejected
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct StartNextPendingJobExecutionResponse<J> {
+pub struct StartNextPendingJobExecutionResponse<'a, J> {
     /// A JobExecution object.
     #[serde(rename = "execution")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -400,7 +403,7 @@ pub struct StartNextPendingJobExecutionResponse<J> {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
+    pub client_token: &'a str,
 }
 
 /// Updates the status of a job execution. You can optionally create a step
@@ -468,7 +471,7 @@ pub struct UpdateJobExecutionRequest<'a> {
 /// Topic (accepted): $aws/things/{thingName}/jobs/{jobId}/update/accepted \
 /// Topic (rejected): $aws/things/{thingName}/jobs/{jobId}/update/rejected
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct UpdateJobExecutionResponse<J> {
+pub struct UpdateJobExecutionResponse<'a, J> {
     /// A JobExecutionState object.
     #[serde(rename = "executionState")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -483,7 +486,7 @@ pub struct UpdateJobExecutionResponse<J> {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: String<MAX_CLIENT_TOKEN_LEN>,
+    pub client_token: &'a str,
 }
 
 /// Sent whenever a job execution is added to or removed from the list of
@@ -586,7 +589,7 @@ mod test {
             let req = DescribeJobExecutionRequest {
                 execution_number: Some(1),
                 include_job_document: Some(true),
-                client_token: String::from("test_client:token"),
+                client_token: Some("test_client:token"),
             };
             assert_eq!(
                 to_string::<_, 512>(&req).unwrap().as_str(),
@@ -596,7 +599,7 @@ mod test {
 
         {
             let req = GetPendingJobExecutionsRequest {
-                client_token: String::from("test_client:token_pending"),
+                client_token: Some("test_client:token_pending"),
             };
             assert_eq!(
                 &to_string::<_, 512>(&req).unwrap(),
@@ -606,7 +609,7 @@ mod test {
 
         {
             let req = StartNextPendingJobExecutionRequest {
-                client_token: String::from("test_client:token_next_pending"),
+                client_token: Some("test_client:token_next_pending"),
                 step_timeout_in_minutes: Some(50),
             };
             assert_eq!(
@@ -614,7 +617,7 @@ mod test {
                 r#"{"stepTimeoutInMinutes":50,"clientToken":"test_client:token_next_pending"}"#
             );
             let req_none = StartNextPendingJobExecutionRequest {
-                client_token: String::from("test_client:token_next_pending"),
+                client_token: Some("test_client:token_next_pending"),
                 step_timeout_in_minutes: None,
             };
             assert_eq!(
@@ -705,7 +708,7 @@ mod test {
                 in_progress_jobs: Some(Vec::<JobExecutionSummary, MAX_RUNNING_JOBS>::new()),
                 queued_jobs: None,
                 timestamp: 1587381778,
-                client_token: String::from("0:client_name"),
+                client_token: "0:client_name",
             }
         );
 
@@ -744,7 +747,7 @@ mod test {
                 in_progress_jobs: Some(Vec::<JobExecutionSummary, MAX_RUNNING_JOBS>::new()),
                 queued_jobs: Some(queued_jobs),
                 timestamp: 1587381778,
-                client_token: String::from("0:client_name"),
+                client_token: "0:client_name",
             }
         );
     }
@@ -793,7 +796,7 @@ mod test {
                     thing_name: None,
                 }),
                 timestamp: 1587381778,
-                client_token: String::from("0:client_name"),
+                client_token: "0:client_name",
             }
         );
     }

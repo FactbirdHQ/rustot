@@ -27,6 +27,7 @@ serde = { version = "1.0.126", default-features = false, features = ["derive"] }
 serde_cbor = { version = "^0.11", default-features = false, optional = true }
 serde-json-core = { version = "0.4.0" }
 smlang = "0.3.5"
+bitflags = "1.2.1"
 
 log = { version = "^0.4", default-features = false, optional = true }
 defmt = { version = "^0.2", optional = true }
