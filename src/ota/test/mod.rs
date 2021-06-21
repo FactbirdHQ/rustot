@@ -35,15 +35,15 @@ pub fn test_file_ctx(config: &Config) -> FileContext {
 
 pub mod ota_tests {
     use crate::ota::state::{Error, Events, States};
-    use crate::ota::test::mock::{MqttRequest, OwnedPublishRequest};
     use crate::ota::test::test_job_doc;
     use crate::ota::{
         agent::OtaAgent,
         control_interface::ControlInterface,
         data_interface::{DataInterface, NoInterface},
         pal::OtaPal,
-        test::mock::{MockMqtt, MockPal, MockTimer},
+        test::mock::{MockPal, MockTimer},
     };
+    use crate::test::{MockMqtt, MqttRequest, OwnedPublishRequest};
     use embedded_hal::timer;
     use mqttrust::{QoS, SubscribeRequest, SubscribeTopic};
 

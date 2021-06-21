@@ -2,3 +2,6 @@
 
 pub mod jobs;
 pub mod ota;
+
+#[cfg(test)]
+pub mod test;

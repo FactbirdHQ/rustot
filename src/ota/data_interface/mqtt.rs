@@ -103,10 +103,9 @@ mod tests {
     use mqttrust::{SubscribeRequest, SubscribeTopic, UnsubscribeRequest};
 
     use super::*;
-    use crate::ota::test::{
-        mock::{MockMqtt, MqttRequest, OwnedPublishRequest},
+    use crate::{ota::test::{
         test_file_ctx,
-    };
+    }, test::{MockMqtt, MqttRequest, OwnedPublishRequest}};
 
     #[test]
     fn protocol_fits() {

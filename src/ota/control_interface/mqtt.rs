@@ -31,7 +31,7 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             .write_fmt(format_args!("{}:{}", request_cnt, self.client_id()))
             .map_err(drop)?;
 
-        Jobs::describe_next(self, client_token.as_str())?;
+        Jobs::describe_next(self, Some(client_token.as_str()))?;
 
         Ok(())
     }

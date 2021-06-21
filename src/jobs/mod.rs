@@ -88,12 +88,15 @@ impl Jobs {
         Ok(())
     }
 
-    pub fn describe_next<M: Mqtt>(mqtt: &M, client_token: &str) -> Result<(), ()> {
+    pub fn describe_next<M: Mqtt>(mqtt: &M, client_token: Option<&str>) -> Result<(), ()> {
         Self::describe(mqtt, "$next", client_token)
     }
 
-    pub fn describe<M: Mqtt>(mqtt: &M, job_id: &str, client_token: &str) -> Result<(), ()> {
-        if client_token.len() > MAX_CLIENT_TOKEN_LEN {
+    pub fn describe<M: Mqtt>(mqtt: &M, job_id: &str, client_token: Option<&str>) -> Result<(), ()> {
+        if client_token
+            .map(|c| c.len() > MAX_CLIENT_TOKEN_LEN)
+            .unwrap_or(false)
+        {
             return Err(());
         }
 
@@ -113,7 +116,7 @@ impl Jobs {
             &DescribeJobExecutionRequest {
                 execution_number: None,
                 include_job_document: None,
-                client_token: Some(client_token),
+                client_token,
             },
             buf,
         )
@@ -180,109 +183,129 @@ impl Jobs {
             return Err(());
         }
 
-        // TODO: Check if more bits are set in `topic_mask` than
+        // Check if more bits are set in `topic_mask` than
         // `subscribe_many` supports per invocation. If so, split into multiple
         // `subscribe_many` calls.
 
         let mut topics = heapless::Vec::new();
 
         if topic_mask.contains(Topics::NOTIFY) {
-            topics
-                .push(SubscribeTopic {
-                    topic_path: topic!("$aws/things/{}/jobs/notify", mqtt.client_id()),
-                    qos: QoS::AtLeastOnce,
-                })
-                .map_err(drop)?;
+            if let Err(t) = topics.push(SubscribeTopic {
+                topic_path: topic!("$aws/things/{}/jobs/notify", mqtt.client_id()),
+                qos: QoS::AtLeastOnce,
+            }) {
+                mqtt.subscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::NOTIFY_NEXT) {
-            topics
-                .push(SubscribeTopic {
-                    topic_path: topic!("$aws/things/{}/jobs/notify-next", mqtt.client_id()),
-                    qos: QoS::AtLeastOnce,
-                })
-                .map_err(drop)?;
+            if let Err(t) = topics.push(SubscribeTopic {
+                topic_path: topic!("$aws/things/{}/jobs/notify-next", mqtt.client_id()),
+                qos: QoS::AtLeastOnce,
+            }) {
+                mqtt.subscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::GET_ACCEPTED) {
-            topics
-                .push(SubscribeTopic {
-                    topic_path: topic!("$aws/things/{}/jobs/get/accepted", mqtt.client_id()),
-                    qos: QoS::AtLeastOnce,
-                })
-                .map_err(drop)?;
+            if let Err(t) = topics.push(SubscribeTopic {
+                topic_path: topic!("$aws/things/{}/jobs/get/accepted", mqtt.client_id()),
+                qos: QoS::AtLeastOnce,
+            }) {
+                mqtt.subscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::GET_REJECTED) {
-            topics
-                .push(SubscribeTopic {
-                    topic_path: topic!("$aws/things/{}/jobs/get/rejected", mqtt.client_id()),
-                    qos: QoS::AtLeastOnce,
-                })
-                .map_err(drop)?;
+            if let Err(t) = topics.push(SubscribeTopic {
+                topic_path: topic!("$aws/things/{}/jobs/get/rejected", mqtt.client_id()),
+                qos: QoS::AtLeastOnce,
+            }) {
+                mqtt.subscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::START_NEXT_ACCEPTED) {
-            topics
-                .push(SubscribeTopic {
-                    topic_path: topic!("$aws/things/{}/jobs/start-next/accepted", mqtt.client_id()),
-                    qos: QoS::AtLeastOnce,
-                })
-                .map_err(drop)?;
+            if let Err(t) = topics.push(SubscribeTopic {
+                topic_path: topic!("$aws/things/{}/jobs/start-next/accepted", mqtt.client_id()),
+                qos: QoS::AtLeastOnce,
+            }) {
+                mqtt.subscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::START_NEXT_REJECTED) {
-            topics
-                .push(SubscribeTopic {
-                    topic_path: topic!("$aws/things/{}/jobs/start-next/rejected", mqtt.client_id()),
-                    qos: QoS::AtLeastOnce,
-                })
-                .map_err(drop)?;
+            if let Err(t) = topics.push(SubscribeTopic {
+                topic_path: topic!("$aws/things/{}/jobs/start-next/rejected", mqtt.client_id()),
+                qos: QoS::AtLeastOnce,
+            }) {
+                mqtt.subscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
 
         if let Some(job_id) = job_id {
             if topic_mask.contains(Topics::DESCRIBE_SUCCESS) {
-                topics
-                    .push(SubscribeTopic {
-                        topic_path: topic!(
-                            "$aws/things/{}/jobs/{}/get/accepted",
-                            mqtt.client_id(),
-                            job_id
-                        ),
-                        qos: QoS::AtLeastOnce,
-                    })
-                    .map_err(drop)?;
+                if let Err(t) = topics.push(SubscribeTopic {
+                    topic_path: topic!(
+                        "$aws/things/{}/jobs/{}/get/accepted",
+                        mqtt.client_id(),
+                        job_id
+                    ),
+                    qos: QoS::AtLeastOnce,
+                }) {
+                    mqtt.subscribe_many(topics).map_err(drop)?;
+                    topics = heapless::Vec::new();
+                    topics.push(t).map_err(drop)?;
+                }
             }
             if topic_mask.contains(Topics::DESCRIBE_FAILED) {
-                topics
-                    .push(SubscribeTopic {
-                        topic_path: topic!(
-                            "$aws/things/{}/jobs/{}/get/rejected",
-                            mqtt.client_id(),
-                            job_id
-                        ),
-                        qos: QoS::AtLeastOnce,
-                    })
-                    .map_err(drop)?;
+                if let Err(t) = topics.push(SubscribeTopic {
+                    topic_path: topic!(
+                        "$aws/things/{}/jobs/{}/get/rejected",
+                        mqtt.client_id(),
+                        job_id
+                    ),
+                    qos: QoS::AtLeastOnce,
+                }) {
+                    mqtt.subscribe_many(topics).map_err(drop)?;
+                    topics = heapless::Vec::new();
+                    topics.push(t).map_err(drop)?;
+                }
             }
             if topic_mask.contains(Topics::UPDATE_SUCCESS) {
-                topics
-                    .push(SubscribeTopic {
-                        topic_path: topic!(
-                            "$aws/things/{}/jobs/{}/update/accepted",
-                            mqtt.client_id(),
-                            job_id
-                        ),
-                        qos: QoS::AtLeastOnce,
-                    })
-                    .map_err(drop)?;
+                if let Err(t) = topics.push(SubscribeTopic {
+                    topic_path: topic!(
+                        "$aws/things/{}/jobs/{}/update/accepted",
+                        mqtt.client_id(),
+                        job_id
+                    ),
+                    qos: QoS::AtLeastOnce,
+                }) {
+                    mqtt.subscribe_many(topics).map_err(drop)?;
+                    topics = heapless::Vec::new();
+                    topics.push(t).map_err(drop)?;
+                }
             }
             if topic_mask.contains(Topics::UPDATE_FAILED) {
-                topics
-                    .push(SubscribeTopic {
-                        topic_path: topic!(
-                            "$aws/things/{}/jobs/{}/update/rejected",
-                            mqtt.client_id(),
-                            job_id
-                        ),
-                        qos: QoS::AtLeastOnce,
-                    })
-                    .map_err(drop)?;
+                if let Err(t) = topics.push(SubscribeTopic {
+                    topic_path: topic!(
+                        "$aws/things/{}/jobs/{}/update/rejected",
+                        mqtt.client_id(),
+                        job_id
+                    ),
+                    qos: QoS::AtLeastOnce,
+                }) {
+                    mqtt.subscribe_many(topics).map_err(drop)?;
+                    topics = heapless::Vec::new();
+                    topics.push(t).map_err(drop)?;
+                }
             }
         }
 
@@ -306,90 +329,269 @@ impl Jobs {
             return Err(());
         }
 
-        // TODO: Check if more bits are set in `topic_mask` than
+        // Check if more bits are set in `topic_mask` than
         // `unsubscribe_many` supports per invocation. If so, split into multiple
         // `unsubscribe_many` calls.
 
         let mut topics = heapless::Vec::new();
 
         if topic_mask.contains(Topics::NOTIFY) {
-            topics
-                .push(topic!("$aws/things/{}/jobs/notify", mqtt.client_id()))
-                .map_err(drop)?;
+            if let Err(t) = topics.push(topic!("$aws/things/{}/jobs/notify", mqtt.client_id())) {
+                mqtt.unsubscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::NOTIFY_NEXT) {
-            topics
-                .push(topic!("$aws/things/{}/jobs/notify-next", mqtt.client_id()))
-                .map_err(drop)?;
+            if let Err(t) = topics.push(topic!("$aws/things/{}/jobs/notify-next", mqtt.client_id()))
+            {
+                mqtt.unsubscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::GET_ACCEPTED) {
-            topics
-                .push(topic!("$aws/things/{}/jobs/get/accepted", mqtt.client_id()))
-                .map_err(drop)?;
+            if let Err(t) =
+                topics.push(topic!("$aws/things/{}/jobs/get/accepted", mqtt.client_id()))
+            {
+                mqtt.unsubscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::GET_REJECTED) {
-            topics
-                .push(topic!("$aws/things/{}/jobs/get/rejected", mqtt.client_id()))
-                .map_err(drop)?;
+            if let Err(t) =
+                topics.push(topic!("$aws/things/{}/jobs/get/rejected", mqtt.client_id()))
+            {
+                mqtt.unsubscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::START_NEXT_ACCEPTED) {
-            topics
-                .push(topic!(
-                    "$aws/things/{}/jobs/start-next/accepted",
-                    mqtt.client_id()
-                ))
-                .map_err(drop)?;
+            if let Err(t) = topics.push(topic!(
+                "$aws/things/{}/jobs/start-next/accepted",
+                mqtt.client_id()
+            )) {
+                mqtt.unsubscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
         if topic_mask.contains(Topics::START_NEXT_REJECTED) {
-            topics
-                .push(topic!(
-                    "$aws/things/{}/jobs/start-next/rejected",
-                    mqtt.client_id()
-                ))
-                .map_err(drop)?;
+            if let Err(t) = topics.push(topic!(
+                "$aws/things/{}/jobs/start-next/rejected",
+                mqtt.client_id()
+            )) {
+                mqtt.unsubscribe_many(topics).map_err(drop)?;
+                topics = heapless::Vec::new();
+                topics.push(t).map_err(drop)?;
+            }
         }
 
         if let Some(job_id) = job_id {
             if topic_mask.contains(Topics::DESCRIBE_SUCCESS) {
-                topics
-                    .push(topic!(
-                        "$aws/things/{}/jobs/{}/get/accepted",
-                        mqtt.client_id(),
-                        job_id
-                    ))
-                    .map_err(drop)?;
+                if let Err(t) = topics.push(topic!(
+                    "$aws/things/{}/jobs/{}/get/accepted",
+                    mqtt.client_id(),
+                    job_id
+                )) {
+                    mqtt.unsubscribe_many(topics).map_err(drop)?;
+                    topics = heapless::Vec::new();
+                    topics.push(t).map_err(drop)?;
+                }
             }
             if topic_mask.contains(Topics::DESCRIBE_FAILED) {
-                topics
-                    .push(topic!(
-                        "$aws/things/{}/jobs/{}/get/rejected",
-                        mqtt.client_id(),
-                        job_id
-                    ))
-                    .map_err(drop)?;
+                if let Err(t) = topics.push(topic!(
+                    "$aws/things/{}/jobs/{}/get/rejected",
+                    mqtt.client_id(),
+                    job_id
+                )) {
+                    mqtt.unsubscribe_many(topics).map_err(drop)?;
+                    topics = heapless::Vec::new();
+                    topics.push(t).map_err(drop)?;
+                }
             }
             if topic_mask.contains(Topics::UPDATE_SUCCESS) {
-                topics
-                    .push(topic!(
-                        "$aws/things/{}/jobs/{}/update/accepted",
-                        mqtt.client_id(),
-                        job_id
-                    ))
-                    .map_err(drop)?;
+                if let Err(t) = topics.push(topic!(
+                    "$aws/things/{}/jobs/{}/update/accepted",
+                    mqtt.client_id(),
+                    job_id
+                )) {
+                    mqtt.unsubscribe_many(topics).map_err(drop)?;
+                    topics = heapless::Vec::new();
+                    topics.push(t).map_err(drop)?;
+                }
             }
             if topic_mask.contains(Topics::UPDATE_FAILED) {
-                topics
-                    .push(topic!(
-                        "$aws/things/{}/jobs/{}/update/rejected",
-                        mqtt.client_id(),
-                        job_id
-                    ))
-                    .map_err(drop)?;
+                if let Err(t) = topics.push(topic!(
+                    "$aws/things/{}/jobs/{}/update/rejected",
+                    mqtt.client_id(),
+                    job_id
+                )) {
+                    mqtt.unsubscribe_many(topics).map_err(drop)?;
+                    topics = heapless::Vec::new();
+                    topics.push(t).map_err(drop)?;
+                }
             }
         }
 
         mqtt.unsubscribe_many(topics).map_err(drop)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mqttrust::{SubscribeRequest, UnsubscribeRequest};
+
+    use super::*;
+
+    use crate::test::{MockMqtt, MqttRequest};
+
+    #[test]
+    fn splits_subscribe_all() {
+        let mqtt = &MockMqtt::new();
+
+        Jobs::subscribe(mqtt, Topics::all(), Some("test_job")).unwrap();
+
+        assert_eq!(mqtt.tx.borrow_mut().len(), 2);
+        assert_eq!(
+            mqtt.tx.borrow_mut().pop_front(),
+            Some(MqttRequest::Subscribe(SubscribeRequest {
+                topics: heapless::Vec::from_slice(&[
+                    SubscribeTopic {
+                        topic_path: heapless::String::from("$aws/things/test_client/jobs/notify"),
+                        qos: QoS::AtLeastOnce
+                    },
+                    SubscribeTopic {
+                        topic_path: heapless::String::from(
+                            "$aws/things/test_client/jobs/notify-next"
+                        ),
+                        qos: QoS::AtLeastOnce
+                    },
+                    SubscribeTopic {
+                        topic_path: heapless::String::from(
+                            "$aws/things/test_client/jobs/get/accepted"
+                        ),
+                        qos: QoS::AtLeastOnce
+                    },
+                    SubscribeTopic {
+                        topic_path: heapless::String::from(
+                            "$aws/things/test_client/jobs/get/rejected"
+                        ),
+                        qos: QoS::AtLeastOnce
+                    },
+                    SubscribeTopic {
+                        topic_path: heapless::String::from(
+                            "$aws/things/test_client/jobs/start-next/accepted"
+                        ),
+                        qos: QoS::AtLeastOnce
+                    }
+                ])
+                .unwrap()
+            }))
+        );
+        assert_eq!(
+            mqtt.tx.borrow_mut().pop_front(),
+            Some(MqttRequest::Subscribe(SubscribeRequest {
+                topics: heapless::Vec::from_slice(&[
+                    SubscribeTopic {
+                        topic_path: heapless::String::from(
+                            "$aws/things/test_client/jobs/start-next/rejected"
+                        ),
+                        qos: QoS::AtLeastOnce
+                    },
+                    SubscribeTopic {
+                        topic_path: heapless::String::from(
+                            "$aws/things/test_client/jobs/test_job/get/accepted"
+                        ),
+                        qos: QoS::AtLeastOnce
+                    },
+                    SubscribeTopic {
+                        topic_path: heapless::String::from(
+                            "$aws/things/test_client/jobs/test_job/get/rejected"
+                        ),
+                        qos: QoS::AtLeastOnce
+                    },
+                    SubscribeTopic {
+                        topic_path: heapless::String::from(
+                            "$aws/things/test_client/jobs/test_job/update/accepted"
+                        ),
+                        qos: QoS::AtLeastOnce
+                    },
+                    SubscribeTopic {
+                        topic_path: heapless::String::from(
+                            "$aws/things/test_client/jobs/test_job/update/rejected"
+                        ),
+                        qos: QoS::AtLeastOnce
+                    }
+                ])
+                .unwrap()
+            }))
+        );
+    }
+
+    #[test]
+    fn splits_unsubscribe_all() {
+        let mqtt = &MockMqtt::new();
+
+        Jobs::unsubscribe(mqtt, Topics::all(), Some("test_job")).unwrap();
+
+        assert_eq!(mqtt.tx.borrow_mut().len(), 2);
+        assert_eq!(
+            mqtt.tx.borrow_mut().pop_front(),
+            Some(MqttRequest::Unsubscribe(UnsubscribeRequest {
+                topics: heapless::Vec::from_slice(&[
+                    heapless::String::from("$aws/things/test_client/jobs/notify"),
+                    heapless::String::from("$aws/things/test_client/jobs/notify-next"),
+                    heapless::String::from("$aws/things/test_client/jobs/get/accepted"),
+                    heapless::String::from("$aws/things/test_client/jobs/get/rejected"),
+                    heapless::String::from("$aws/things/test_client/jobs/start-next/accepted"),
+                ])
+                .unwrap()
+            }))
+        );
+        assert_eq!(
+            mqtt.tx.borrow_mut().pop_front(),
+            Some(MqttRequest::Unsubscribe(UnsubscribeRequest {
+                topics: heapless::Vec::from_slice(&[
+                    heapless::String::from("$aws/things/test_client/jobs/start-next/rejected"),
+                    heapless::String::from("$aws/things/test_client/jobs/test_job/get/accepted"),
+                    heapless::String::from("$aws/things/test_client/jobs/test_job/get/rejected"),
+                    heapless::String::from("$aws/things/test_client/jobs/test_job/update/accepted"),
+                    heapless::String::from("$aws/things/test_client/jobs/test_job/update/rejected")
+                ])
+                .unwrap()
+            }))
+        );
+    }
+
+    #[test]
+    fn unnecessary_job_id() {
+        let mqtt = &MockMqtt::new();
+        Jobs::subscribe(mqtt, Topics::NOTIFY_NEXT, Some("test_job")).unwrap();
+        assert_eq!(mqtt.tx.borrow_mut().len(), 1);
+
+        Jobs::unsubscribe(mqtt, Topics::NOTIFY_NEXT, Some("test_job")).unwrap();
+        assert_eq!(mqtt.tx.borrow_mut().len(), 2);
+    }
+
+    #[test]
+    fn no_job_id() {
+        let mqtt = &MockMqtt::new();
+        Jobs::subscribe(mqtt, Topics::NOTIFY_NEXT, None).unwrap();
+        assert_eq!(mqtt.tx.borrow_mut().len(), 1);
+
+        Jobs::unsubscribe(mqtt, Topics::NOTIFY_NEXT, None).unwrap();
+        assert_eq!(mqtt.tx.borrow_mut().len(), 2);
+    }
+
+    #[test]
+    fn missing_job_id() {
+        let mqtt = &MockMqtt::new();
+        assert!(Jobs::subscribe(mqtt, Topics::DESCRIBE_SUCCESS, None).is_err());
+        assert!(Jobs::unsubscribe(mqtt, Topics::DESCRIBE_SUCCESS, None).is_err());
     }
 }
