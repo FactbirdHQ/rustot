@@ -32,8 +32,17 @@ bitflags = "1.2.1"
 log = { version = "^0.4", default-features = false, optional = true }
 defmt = { version = "^0.2", optional = true }
 
+[dev-dependencies]
+native-tls = { version = "^0.2", features = ["alpn"] }
+rust-crypto = "^0.2"
+embedded-nal = "0.6.0"
+embedded-time = "0.11.0"
+dns-lookup = "1.0.3"
+mqttrust_core = { path = "../mqttrust/mqttrust_core" }
+env_logger = "0.8.4"
+
 [features]
-default = ["ota_mqtt_data"]
+default = ["ota_mqtt_data", "log"]
 
 ota_mqtt_data = ["serde_cbor"]
 ota_http_data = []

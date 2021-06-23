@@ -21,8 +21,11 @@ pub fn test_job_doc() -> OtaJob {
             certfile: heapless::String::from("cert"),
             update_data_url: None,
             auth_scheme: None,
-            sig_sha1_rsa: heapless::String::from(""),
+            sha1_rsa: Some(heapless::String::from("")),
             file_attributes: Some(0),
+            sha256_rsa: None,
+            sha1_ecdsa: None,
+            sha256_ecdsa: None,
         }])
         .unwrap(),
     }
@@ -30,10 +33,21 @@ pub fn test_job_doc() -> OtaJob {
 
 pub fn test_file_ctx(config: &Config) -> FileContext {
     let ota_job = test_job_doc();
-    FileContext::new_from(&ota_job, None, 0, config, Version::default()).unwrap()
+    FileContext::new_from(
+        heapless::String::from("Job-name"),
+        &ota_job,
+        None,
+        0,
+        config,
+        Version::default(),
+    )
+    .unwrap()
 }
 
 pub mod ota_tests {
+    use crate::jobs::data_types::{DescribeJobExecutionResponse, JobExecution, JobStatus};
+    use crate::ota::data_interface::Protocol;
+    use crate::ota::encoding::json::{FileDescription, OtaJob};
     use crate::ota::state::{Error, Events, States};
     use crate::ota::test::test_job_doc;
     use crate::ota::{
@@ -46,6 +60,18 @@ pub mod ota_tests {
     use crate::test::{MockMqtt, MqttRequest, OwnedPublishRequest};
     use embedded_hal::timer;
     use mqttrust::{QoS, SubscribeRequest, SubscribeTopic};
+    use serde::Deserialize;
+    use serde_json_core::from_slice;
+
+    /// All known job document that the device knows how to process.
+    #[derive(Debug, PartialEq, Deserialize)]
+    pub enum JobDetails {
+        #[serde(rename = "afr_ota")]
+        Ota(OtaJob),
+
+        #[serde(other)]
+        Unknown,
+    }
 
     fn new_agent(
         mqtt: &MockMqtt,
@@ -87,7 +113,7 @@ pub mod ota_tests {
                 run_to_state(agent, States::WaitingForJob);
 
                 let job_doc = test_job_doc();
-                agent.job_update(job_doc, None).unwrap();
+                agent.job_update("Test-job", job_doc, None).unwrap();
                 agent.state.context_mut().events.dequeue();
             }
             States::RequestingFileBlock => {
@@ -361,5 +387,80 @@ pub mod ota_tests {
         // - subscription to
         //   `$aws/things/test_client/streams/test_stream/data/cbor`
         assert_eq!(mqtt.tx.borrow_mut().len(), 3);
+    }
+
+    #[test]
+    fn deserialize_describe_job_execution_response_ota() {
+        let payload = br#"{
+            "clientToken":"0:rustot-test",
+            "timestamp":1624445100,
+            "execution":{
+                "jobId":"AFR_OTA-rustot_test_1",
+                "status":"QUEUED",
+                "queuedAt":1624440618,
+                "lastUpdatedAt":1624440618,
+                "versionNumber":1,
+                "executionNumber":1,
+                "jobDocument":{
+                    "afr_ota":{
+                        "protocols":["MQTT"],
+                        "streamname":"AFR_OTA-0ba01295-9417-4ba7-9a99-4b31fb03d252",
+                        "files":[{
+                            "filepath":"IMG_test.jpg",
+                            "filesize":2674792,
+                            "fileid":0,
+                            "certfile":"nope",
+                            "fileType":0,
+                            "sig-sha256-ecdsa":"This is my signature! Better believe it!"
+                        }]
+                    }
+                }
+            }
+        }"#;
+
+        let (response, _) =
+            from_slice::<DescribeJobExecutionResponse<JobDetails>>(payload).unwrap();
+
+        assert_eq!(
+            response,
+            DescribeJobExecutionResponse {
+                execution: Some(JobExecution {
+                    execution_number: Some(1),
+                    job_document: Some(JobDetails::Ota(OtaJob {
+                        protocols: heapless::Vec::from_slice(&[Protocol::Mqtt]).unwrap(),
+                        streamname: heapless::String::from(
+                            "AFR_OTA-0ba01295-9417-4ba7-9a99-4b31fb03d252"
+                        ),
+                        files: heapless::Vec::from_slice(&[FileDescription {
+                            filepath: heapless::String::from("IMG_test.jpg"),
+                            filesize: 2674792,
+                            fileid: 0,
+                            certfile: heapless::String::from("nope"),
+                            update_data_url: None,
+                            auth_scheme: None,
+                            sha1_rsa: None,
+                            sha256_rsa: None,
+                            sha1_ecdsa: None,
+                            sha256_ecdsa: Some(heapless::String::from(
+                                "This is my signature! Better believe it!"
+                            )),
+                            file_attributes: None,
+                        }])
+                        .unwrap(),
+                    })),
+                    job_id: heapless::String::from("AFR_OTA-rustot_test_1"),
+                    last_updated_at: 1624440618,
+                    queued_at: 1624440618,
+                    status_details: None,
+                    status: JobStatus::Queued,
+                    version_number: 1,
+                    approximate_seconds_before_timed_out: None,
+                    started_at: None,
+                    thing_name: None,
+                }),
+                timestamp: 1624445100,
+                client_token: "0:rustot-test",
+            }
+        );
     }
 }

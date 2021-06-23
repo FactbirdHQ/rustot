@@ -57,7 +57,8 @@ pub enum ErrorCode {
     TerminalStateReached,
 }
 
-/// Topic: $aws/things/{thingName}/jobs/{jobId}/get/accepted
+/// Topic (accepted): $aws/things/{thingName}/jobs/{jobId}/get/accepted \
+/// Topic (rejected): $aws/things/{thingName}/jobs/{jobId}/get/rejected
 #[derive(Debug, PartialEq, Deserialize)]
 pub struct DescribeJobExecutionResponse<'a, J> {
     /// Contains data about a job execution.
@@ -273,6 +274,12 @@ pub struct NextJobExecutionChanged<J> {
     pub timestamp: i64,
 }
 
+impl<'de, J: Deserialize<'de>> NextJobExecutionChanged<J> {
+    pub fn from_payload(payload: &'de [u8]) -> Result<Self, serde_json_core::de::Error> {
+        Ok(serde_json_core::from_slice(payload)?.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Jobs {
     /// Queued jobs.
@@ -320,9 +327,8 @@ mod test {
     }
 
     /// All known job document that the device knows how to process.
-    #[derive(Debug, Clone, PartialEq, Deserialize)]
+    #[derive(Debug, PartialEq, Deserialize)]
     pub enum JobDetails {
-        #[cfg(test)]
         #[serde(rename = "test_job")]
         TestJob(TestJob),
 

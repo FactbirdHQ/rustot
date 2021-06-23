@@ -10,6 +10,7 @@ use super::encoding::FileContext;
 use super::pal::OtaPal;
 use super::pal::OtaPalError;
 
+use crate::ota::encoding::Bitmap;
 use crate::rustot_log;
 use crate::{
     jobs::{data_types::JobStatus, StatusDetails},
@@ -35,7 +36,7 @@ statemachine! {
     *Ready + Start [start_handler] = RequestingJob,
     RequestingJob + RequestJobDocument [request_job_handler] = WaitingForJob,
     RequestingJob + RequestTimer [request_job_handler] = WaitingForJob,
-    WaitingForJob + ReceivedJobDocument((OtaJob, Option<StatusDetails>)) [process_job_handler] = CreatingFile,
+    WaitingForJob + ReceivedJobDocument((heapless::String<64>, OtaJob, Option<StatusDetails>)) [process_job_handler] = CreatingFile,
     CreatingFile + StartSelfTest [in_self_test_handler] = WaitingForJob,
     CreatingFile + CreateFile [init_file_handler] = RequestingFileBlock,
     CreatingFile + RequestTimer [init_file_handler] = RequestingFileBlock,
@@ -45,7 +46,7 @@ statemachine! {
     WaitingForFileBlock + RequestTimer [request_data_handler] = WaitingForFileBlock,
     WaitingForFileBlock + RequestFileBlock [request_data_handler] = WaitingForFileBlock,
     WaitingForFileBlock + RequestJobDocument [request_job_handler] = WaitingForJob,
-    WaitingForFileBlock + ReceivedJobDocument((OtaJob, Option<StatusDetails>)) [job_notification_handler] = RequestingJob,
+    WaitingForFileBlock + ReceivedJobDocument((heapless::String<64>, OtaJob, Option<StatusDetails>)) [job_notification_handler] = RequestingJob,
     WaitingForFileBlock + CloseFile [close_file_handler] = WaitingForJob,
     Suspended + Resume = RequestingJob,
     Ready + Suspend = Suspended,
@@ -140,6 +141,7 @@ where
     /// Called to update the filecontext structure from the job
     fn get_file_context_from_job(
         &mut self,
+        job_name: heapless::String<64>,
         ota_document: &OtaJob,
         status_details: Option<StatusDetails>,
     ) -> Result<FileContext, ()> {
@@ -175,6 +177,7 @@ where
 
                 // Set new active job
                 Ok(FileContext::new_from(
+                    job_name,
                     ota_document,
                     status_details,
                     file_idx,
@@ -194,6 +197,7 @@ where
             }
         } else {
             Ok(FileContext::new_from(
+                job_name,
                 ota_document,
                 status_details,
                 file_idx,
@@ -418,6 +422,7 @@ where
 
     fn ingest_data_block(&mut self, payload: &mut [u8]) -> Result<bool, ()> {
         let block = data_interface!(self.decode_file_block, payload)?;
+
         let file_ctx = self.active_interface.as_mut().unwrap().mut_file_ctx();
 
         if block.validate(self.config.block_size, file_ctx.filesize) {
@@ -571,6 +576,8 @@ where
 
                 // TODO: Reset the OTA statistics
 
+                rustot_log!(info, "Initialized file handler! Requesting file blocks");
+
                 self.events.enqueue(Events::RequestFileBlock).ok();
                 // .map_err(|_| Error::SignalEventFailed)?;
 
@@ -614,11 +621,14 @@ where
     }
 
     /// Update file context from job document
-    fn process_job_handler(&mut self, data: &(OtaJob, Option<StatusDetails>)) -> bool {
-        let (ota_document, status_details) = data;
+    fn process_job_handler(
+        &mut self,
+        data: &(heapless::String<64>, OtaJob, Option<StatusDetails>),
+    ) -> bool {
+        let (job_name, ota_document, status_details) = data;
 
         let file_ctx = self
-            .get_file_context_from_job(ota_document, status_details.clone())
+            .get_file_context_from_job(job_name.clone(), ota_document, status_details.clone())
             .unwrap();
 
         // A null context here could either mean we didn't receive a valid job
@@ -654,7 +664,7 @@ where
         } else {
             // Received a job that is not in self-test but platform is, so
             // reboot the device to allow roll back to previous image.
-            rustot_log!(error,"Rejecting new image and rebooting: The platform is in the self-test state while the job is not.");
+            rustot_log!(error, "Rejecting new image and rebooting: The platform is in the self-test state while the job is not.");
             self.pal.reset_device().ok();
             false
         }
@@ -664,12 +674,18 @@ where
     fn request_data_handler(&mut self) -> bool {
         let file_ctx = self.active_interface.as_ref().unwrap().file_ctx();
         if file_ctx.blocks_remaining > 0 {
+            rustot_log!(
+                debug,
+                "Requesting data! Remaining: {:?}. momentum: {}",
+                file_ctx.blocks_remaining,
+                self.request_momentum
+            );
             // Start the request timer
             self.request_timer
                 .try_start(self.config.request_wait_ms)
                 .ok();
 
-            if self.request_momentum < self.config.max_request_momentum {
+            if self.request_momentum <= self.config.max_request_momentum {
                 // Each request increases the momentum until a response is
                 // received. Too much momentum is interpreted as a failure to
                 // communicate and will cause us to abort the OTA.
@@ -701,7 +717,10 @@ where
 
     /// Upon receiving a new job document cancel current job if present and
     /// initiate new download
-    fn job_notification_handler(&mut self, _data: &(OtaJob, Option<StatusDetails>)) -> bool {
+    fn job_notification_handler(
+        &mut self,
+        _data: &(heapless::String<64>, OtaJob, Option<StatusDetails>),
+    ) -> bool {
         // Stop the request timer
         self.request_timer.try_cancel().ok();
 
@@ -775,6 +794,17 @@ where
                 if file_ctx.request_block_remaining > 1 {
                     file_ctx.request_block_remaining -= 1;
                 } else {
+                    file_ctx.block_offset += self.config.max_blocks_per_request;
+                    file_ctx.bitmap = Bitmap::new(
+                        file_ctx.filesize,
+                        self.config.block_size,
+                        file_ctx.block_offset,
+                    );
+                    file_ctx.request_block_remaining = core::cmp::min(
+                        self.config.max_blocks_per_request,
+                        file_ctx.blocks_remaining as u32,
+                    );
+
                     // Start the request timer.
                     self.request_timer
                         .try_start(self.config.request_wait_ms)

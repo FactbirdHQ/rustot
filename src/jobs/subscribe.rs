@@ -1,5 +1,7 @@
 use mqttrust::{Mqtt, QoS, SubscribeTopic};
 
+use crate::rustot_log;
+
 use super::{
     JobTopic, {MAX_JOB_ID_LEN, MAX_THING_NAME_LEN},
 };
@@ -19,9 +21,9 @@ pub enum Topic<'a> {
 }
 
 impl<'a> Topic<'a> {
-    pub fn from_string(s: &'a str) -> Result<Self, ()> {
+    pub fn from_str(s: &'a str) -> Option<Self> {
         let tt = s.splitn(8, '/').collect::<heapless::Vec<&str, 8>>();
-        Ok(match (tt.get(0), tt.get(1), tt.get(2), tt.get(3)) {
+        Some(match (tt.get(0), tt.get(1), tt.get(2), tt.get(3)) {
             (Some(&"$aws"), Some(&"things"), _, Some(&"jobs")) => {
                 // This is a job topic! Figure out which
                 match (tt.get(4), tt.get(5), tt.get(6), tt.get(7)) {
@@ -47,10 +49,10 @@ impl<'a> Topic<'a> {
                     (Some(job_id), Some(&"get"), Some(&"rejected"), None) => {
                         Topic::DescribeRejected(job_id)
                     }
-                    _ => return Err(()),
+                    _ => return None,
                 }
             }
-            _ => return Err(()),
+            _ => return None,
         })
     }
 }
@@ -116,6 +118,8 @@ impl<'a> Subscribe<'a> {
 
     pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), ()> {
         let topics = self.topics(mqtt.client_id())?;
+
+        rustot_log!(debug, "Subscribing to: {:?}", topics);
 
         for t in topics.chunks(5) {
             mqtt.subscribe_many(heapless::Vec::from_slice(t).map_err(drop)?)

@@ -117,7 +117,7 @@ pub use subscribe::Topic;
 pub const MAX_THING_NAME_LEN: usize = 128;
 pub const MAX_CLIENT_TOKEN_LEN: usize = MAX_THING_NAME_LEN + 10;
 pub const MAX_JOB_ID_LEN: usize = 64;
-pub const MAX_STREAM_ID_LEN: usize = 64;
+pub const MAX_STREAM_ID_LEN: usize = MAX_JOB_ID_LEN;
 pub const MAX_PENDING_JOBS: usize = 4;
 pub const MAX_RUNNING_JOBS: usize = 1;
 

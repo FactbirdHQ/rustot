@@ -2,7 +2,6 @@ use std::{cell::RefCell, collections::VecDeque};
 
 use mqttrust::{Mqtt, PublishRequest, QoS, SubscribeRequest, UnsubscribeRequest};
 
-
 #[derive(Debug, PartialEq)]
 pub enum MqttRequest {
     Publish(OwnedPublishRequest),
@@ -44,7 +43,7 @@ impl MockMqtt {
     pub fn new() -> Self {
         Self {
             tx: RefCell::new(VecDeque::new()),
-            publish_fail: false
+            publish_fail: false,
         }
     }
 
@@ -61,7 +60,7 @@ impl Mqtt for MockMqtt {
                     return Err(mqttrust::MqttError::Full);
                 }
                 MqttRequest::Publish(p.into())
-            },
+            }
             mqttrust::Request::Subscribe(s) => MqttRequest::Subscribe(s),
             mqttrust::Request::Unsubscribe(u) => MqttRequest::Unsubscribe(u),
             mqttrust::Request::Disconnect => MqttRequest::Disconnect,

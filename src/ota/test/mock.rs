@@ -1,4 +1,7 @@
-use crate::ota::{encoding::FileContext, pal::{ImageState, OtaPal, OtaPalError, PalImageState, Version}};
+use crate::ota::{
+    encoding::FileContext,
+    pal::{ImageState, OtaPal, OtaPalError, PalImageState, Version},
+};
 
 ///
 /// Mock timer used for unit tests. Implements `embedded_hal::timer::CountDown`

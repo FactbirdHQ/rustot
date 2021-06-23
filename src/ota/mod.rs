@@ -42,5 +42,8 @@ pub mod state;
 #[macro_use]
 pub mod logging;
 
+#[cfg(feature = "ota_mqtt_data")]
+pub use data_interface::mqtt::{Encoding, Topic};
+
 #[cfg(test)]
 pub mod test;

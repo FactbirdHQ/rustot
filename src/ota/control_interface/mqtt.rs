@@ -5,12 +5,13 @@ use mqttrust::QoS;
 
 use super::ControlInterface;
 use crate::jobs::data_types::JobStatus;
-use crate::jobs::MAX_CLIENT_TOKEN_LEN;
-use crate::jobs::Jobs;
 use crate::jobs::subscribe::Topic;
+use crate::jobs::Jobs;
+use crate::jobs::MAX_CLIENT_TOKEN_LEN;
 use crate::ota::config::Config;
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
+use crate::rustot_log;
 
 // FIXME: This can cause unit-tests to sometimes fail, due to parallel execution
 static REQUEST_CNT: AtomicU32 = AtomicU32::new(0);
@@ -72,6 +73,8 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
                 .write_fmt(format_args!("{}/{}", received_blocks, total_blocks))
                 .map_err(drop)?;
 
+            rustot_log!(info, "Updating progress: {}", progress);
+
             file_ctx
                 .status_details
                 .insert(heapless::String::from("progress"), progress)
@@ -82,7 +85,7 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             qos = QoS::AtMostOnce;
         }
 
-        Jobs::update(file_ctx.stream_name.as_str(), status)
+        Jobs::update(file_ctx.job_name.as_str(), status)
             .status_details(&file_ctx.status_details)
             .send(self, qos)?;
 

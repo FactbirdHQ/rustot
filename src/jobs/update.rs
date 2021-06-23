@@ -219,6 +219,9 @@ mod test {
 
         assert_eq!(payload, br#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#);
 
-        assert_eq!(topic.as_str(), "$aws/things/test_client/jobs/test_job_id/update");
+        assert_eq!(
+            topic.as_str(),
+            "$aws/things/test_client/jobs/test_job_id/update"
+        );
     }
 }

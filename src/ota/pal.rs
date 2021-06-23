@@ -5,7 +5,6 @@ use core::str::FromStr;
 
 use super::encoding::FileContext;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageState {
     Unknown,
@@ -277,9 +276,7 @@ pub trait OtaPal {
     }
 
     ///
-    fn get_active_firmware_version(&self) -> Result<Version, OtaPalError<Self::Error>> {
-        Err(OtaPalError::Unsupported)
-    }
+    fn get_active_firmware_version(&self) -> Result<Version, OtaPalError<Self::Error>>;
 }
 
 #[cfg(test)]

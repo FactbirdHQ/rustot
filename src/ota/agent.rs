@@ -20,7 +20,7 @@ where
     T::Time: From<u32>,
     PAL: OtaPal,
 {
-    pub(crate) state: StateMachine<SmContext<'a, C, DP, DS, T, PAL, 2>>,
+    pub(crate) state: StateMachine<SmContext<'a, C, DP, DS, T, PAL, 10>>,
 }
 
 // Make sure any active OTA session is cleaned up, and the topics are
@@ -69,17 +69,27 @@ where
     T::Time: From<u32>,
     PAL: OtaPal,
 {
+    pub fn init(&mut self) {
+        self.state.process_event(Events::Start).ok();
+    }
+
     pub fn job_update(
         &mut self,
+        job_name: &str,
         ota_document: OtaJob,
         status_details: Option<StatusDetails>,
     ) -> Result<&States, Error> {
-        self.state
-            .process_event(Events::ReceivedJobDocument((ota_document, status_details)))
+        self.state.process_event(Events::ReceivedJobDocument((
+            heapless::String::from(job_name),
+            ota_document,
+            status_details,
+        )))
     }
 
     pub fn timer_callback(&mut self) {
-        self.state.process_event(Events::RequestTimer).ok();
+        if self.state.context_mut().request_timer.try_wait().is_ok() {
+            self.state.process_event(Events::RequestTimer).ok();
+        }
     }
 
     pub fn process_event(&mut self) -> Result<&States, Error> {
@@ -89,9 +99,7 @@ where
         Ok(self.state.state())
     }
 
-    pub fn handle_message(&mut self, topic: &str, payload: &mut [u8]) -> Result<&States, Error> {
-        // TODO: Handle topic parts / make sure this function is suitable for
-        // http data as well?
+    pub fn handle_message(&mut self, payload: &mut [u8]) -> Result<&States, Error> {
         self.state.process_event(Events::ReceivedFileBlock(payload))
     }
 

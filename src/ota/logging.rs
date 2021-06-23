@@ -1,4 +1,3 @@
-
 #[cfg(feature = "log")]
 #[macro_export]
 macro_rules! rustot_log {

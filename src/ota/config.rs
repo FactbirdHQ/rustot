@@ -13,8 +13,8 @@ impl Default for Config {
         Self {
             block_size: 256,
             max_request_momentum: 3,
-            request_wait_ms: 4500,
-            max_blocks_per_request: 128,
+            request_wait_ms: 8000,
+            max_blocks_per_request: 31,
             status_update_frequency: 24,
             allow_downgrade: false,
             unsubscribe_on_shutdown: true,

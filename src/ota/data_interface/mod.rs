@@ -5,7 +5,7 @@ pub mod mqtt;
 
 use serde::Deserialize;
 
-use crate::ota::{config::Config};
+use crate::ota::config::Config;
 
 use super::encoding::FileContext;
 
@@ -17,6 +17,7 @@ pub enum Protocol {
     Http,
 }
 
+#[derive(Debug)]
 pub struct FileBlock<'a> {
     pub client_token: Option<&'a str>,
     pub file_id: u8,

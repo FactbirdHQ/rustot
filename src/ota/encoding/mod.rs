@@ -8,7 +8,7 @@ use serde::{Serialize, Serializer};
 
 use crate::jobs::StatusDetails;
 
-use self::json::OtaJob;
+use self::json::{OtaJob, Signature};
 
 use super::{config::Config, pal::Version};
 
@@ -50,32 +50,32 @@ impl Serialize for Bitmap {
     }
 }
 
-
-
 /// A `FileContext` denotes an active context of a single file. An ota job can
 /// contain multiple files, each with their own `FileContext` built from a
 /// corresponding `FileDescription`.
 #[derive(Clone)]
 pub struct FileContext {
-    pub(crate) filepath: heapless::String<64>,
-    pub(crate) filesize: usize,
-    pub(crate) fileid: u8,
-    pub(crate) certfile: heapless::String<64>,
-    pub(crate) update_data_url: Option<heapless::String<64>>,
-    pub(crate) auth_scheme: Option<heapless::String<64>>,
-    pub(crate) sig_sha1_rsa: heapless::String<64>,
-    pub(crate) file_attributes: Option<u32>,
+    pub filepath: heapless::String<64>,
+    pub filesize: usize,
+    pub fileid: u8,
+    pub certfile: heapless::String<64>,
+    pub update_data_url: Option<heapless::String<64>>,
+    pub auth_scheme: Option<heapless::String<64>>,
+    pub signature: Signature,
+    pub file_attributes: Option<u32>,
 
-    pub(crate) status_details: StatusDetails,
-    pub(crate) block_offset: u32,
-    pub(crate) blocks_remaining: usize,
-    pub(crate) request_block_remaining: u32,
-    pub(crate) stream_name: heapless::String<64>,
-    pub(crate) bitmap: Bitmap,
+    pub status_details: StatusDetails,
+    pub block_offset: u32,
+    pub blocks_remaining: usize,
+    pub request_block_remaining: u32,
+    pub job_name: heapless::String<64>,
+    pub stream_name: heapless::String<64>,
+    pub bitmap: Bitmap,
 }
 
 impl FileContext {
     pub fn new_from(
+        job_name: heapless::String<64>,
         ota_job: &OtaJob,
         status_details: Option<StatusDetails>,
         file_idx: usize,
@@ -98,6 +98,13 @@ impl FileContext {
             )
             .map_err(drop)?;
 
+        let signature = file_desc.signature();
+
+        let number_of_blocks = core::cmp::min(
+            config.max_blocks_per_request,
+            128 * 1024 / config.block_size as u32,
+        );
+
         Ok(FileContext {
             filepath: file_desc.filepath,
             filesize: file_desc.filesize,
@@ -105,13 +112,14 @@ impl FileContext {
             certfile: file_desc.certfile,
             update_data_url: file_desc.update_data_url,
             auth_scheme: file_desc.auth_scheme,
-            sig_sha1_rsa: file_desc.sig_sha1_rsa,
+            signature,
             file_attributes: file_desc.file_attributes,
 
             status_details: status,
 
+            job_name,
             block_offset: 0,
-            request_block_remaining: config.max_blocks_per_request,
+            request_block_remaining: number_of_blocks,
             blocks_remaining: (file_desc.filesize + config.block_size - 1) / config.block_size,
             stream_name: ota_job.streamname.clone(),
             bitmap: Bitmap::new(file_desc.filesize, config.block_size, 0),

@@ -109,7 +109,6 @@ impl<'a> StartNext<'a> {
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -143,7 +142,10 @@ mod test {
             .topic_payload("test_client")
             .unwrap();
 
-        assert_eq!(payload, br#"{"stepTimeoutInMinutes":43,"clientToken":"test_client:token_next_pending"}"#);
+        assert_eq!(
+            payload,
+            br#"{"stepTimeoutInMinutes":43,"clientToken":"test_client:token_next_pending"}"#
+        );
 
         assert_eq!(topic.as_str(), "$aws/things/test_client/jobs/start-next");
     }
