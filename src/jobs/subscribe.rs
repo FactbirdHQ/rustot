@@ -1,6 +1,6 @@
 use mqttrust::{Mqtt, QoS, SubscribeTopic};
 
-use crate::rustot_log;
+use crate::{jobs::JobError, rustot_log};
 
 use super::{
     JobTopic, {MAX_JOB_ID_LEN, MAX_THING_NAME_LEN},
@@ -102,7 +102,7 @@ impl<'a> Subscribe<'a> {
         Self { topics }
     }
 
-    pub fn topics(self, client_id: &str) -> Result<heapless::Vec<SubscribeTopic, 10>, ()> {
+    pub fn topics(self, client_id: &str) -> Result<heapless::Vec<SubscribeTopic, 10>, JobError> {
         assert!(client_id.len() <= MAX_THING_NAME_LEN);
 
         self.topics
@@ -116,14 +116,13 @@ impl<'a> Subscribe<'a> {
             .collect()
     }
 
-    pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), ()> {
+    pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), JobError> {
         let topics = self.topics(mqtt.client_id())?;
 
         rustot_log!(debug, "Subscribing to: {:?}", topics);
 
         for t in topics.chunks(5) {
-            mqtt.subscribe_many(heapless::Vec::from_slice(t).map_err(drop)?)
-                .map_err(drop)?;
+            mqtt.subscribe_many(heapless::Vec::from_slice(t).map_err(|_|JobError::Overflow)?)?;
         }
 
         Ok(())

@@ -11,6 +11,7 @@ use crate::jobs::MAX_CLIENT_TOKEN_LEN;
 use crate::ota::config::Config;
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
+use crate::ota::error::OtaError;
 use crate::rustot_log;
 
 // FIXME: This can cause unit-tests to sometimes fail, due to parallel execution
@@ -19,7 +20,7 @@ static REQUEST_CNT: AtomicU32 = AtomicU32::new(0);
 impl<T: mqttrust::Mqtt> ControlInterface for T {
     /// Check for next available OTA job from the job service by publishing a
     /// "get next job" message to the job service.
-    fn request_job(&self) -> Result<(), ()> {
+    fn request_job(&self) -> Result<(), OtaError> {
         // Subscribe to the OTA job notification topics
         Jobs::subscribe()
             .topic(Topic::NotifyNext, QoS::AtLeastOnce)
@@ -31,8 +32,7 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
         // `{requestNumber}:{thingName}`, and increments the request counter
         let mut client_token = heapless::String::<MAX_CLIENT_TOKEN_LEN>::new();
         client_token
-            .write_fmt(format_args!("{}:{}", request_cnt, self.client_id()))
-            .map_err(drop)?;
+            .write_fmt(format_args!("{}:{}", request_cnt, self.client_id())).map_err(|_|OtaError::Overflow)?;
 
         Jobs::describe()
             .client_token(client_token.as_str())
@@ -48,14 +48,13 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
         config: &Config,
         status: JobStatus,
         reason: JobStatusReason,
-    ) -> Result<(), ()> {
+    ) -> Result<(), OtaError> {
         file_ctx
             .status_details
             .insert(
                 heapless::String::from("self_test"),
-                serde_json_core::to_string(&reason).map_err(drop)?,
-            )
-            .map_err(drop)?;
+                serde_json_core::to_string(&reason).map_err(|_| OtaError::Encoding)?,
+            ).map_err(|_| OtaError::Overflow)?;
 
         let mut qos = QoS::AtLeastOnce;
 
@@ -71,14 +70,14 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             let mut progress = heapless::String::new();
             progress
                 .write_fmt(format_args!("{}/{}", received_blocks, total_blocks))
-                .map_err(drop)?;
+                .map_err(|_| OtaError::Overflow)?;
 
             rustot_log!(info, "Updating progress: {}", progress);
 
             file_ctx
                 .status_details
                 .insert(heapless::String::from("progress"), progress)
-                .map_err(drop)?;
+                .map_err(|_| OtaError::Overflow)?;
 
             // Downgrade Progress updates to QOS 0 to avoid overloading MQTT
             // buffers during active streaming
@@ -93,7 +92,7 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
     }
 
     /// Perform any cleanup operations required for control plane
-    fn cleanup(&self) -> Result<(), ()> {
+    fn cleanup(&self) -> Result<(), OtaError> {
         Jobs::unsubscribe().topic(Topic::NotifyNext).send(self)?;
         Ok(())
     }

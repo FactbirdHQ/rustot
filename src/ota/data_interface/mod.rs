@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::ota::config::Config;
 
-use super::encoding::FileContext;
+use super::{encoding::FileContext, error::OtaError};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub enum Protocol {
@@ -44,14 +44,14 @@ impl<'a> FileBlock<'a> {
 pub trait DataInterface {
     const PROTOCOL: Protocol;
 
-    fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), ()>;
-    fn request_file_block(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), ()>;
+    fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError>;
+    fn request_file_block(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), OtaError>;
     fn decode_file_block<'a>(
         &self,
         file_ctx: &mut FileContext,
         payload: &'a mut [u8],
-    ) -> Result<FileBlock<'a>, ()>;
-    fn cleanup(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), ()>;
+    ) -> Result<FileBlock<'a>, OtaError>;
+    fn cleanup(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), OtaError>;
 }
 
 pub struct NoInterface;
@@ -59,11 +59,11 @@ pub struct NoInterface;
 impl DataInterface for NoInterface {
     const PROTOCOL: Protocol = Protocol::Mqtt;
 
-    fn init_file_transfer(&self, _file_ctx: &mut FileContext) -> Result<(), ()> {
+    fn init_file_transfer(&self, _file_ctx: &mut FileContext) -> Result<(), OtaError> {
         unreachable!()
     }
 
-    fn request_file_block(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), ()> {
+    fn request_file_block(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), OtaError> {
         unreachable!()
     }
 
@@ -71,11 +71,11 @@ impl DataInterface for NoInterface {
         &self,
         _file_ctx: &mut FileContext,
         _payload: &'a mut [u8],
-    ) -> Result<FileBlock<'a>, ()> {
+    ) -> Result<FileBlock<'a>, OtaError> {
         unreachable!()
     }
 
-    fn cleanup(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), ()> {
+    fn cleanup(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), OtaError> {
         unreachable!()
     }
 }

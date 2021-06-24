@@ -3,6 +3,7 @@ use core::str::FromStr;
 
 use mqttrust::{Mqtt, QoS, SubscribeTopic};
 
+use crate::ota::error::OtaError;
 use crate::rustot_log;
 use crate::{
     jobs::{MAX_STREAM_ID_LEN, MAX_THING_NAME_LEN},
@@ -90,7 +91,7 @@ enum OtaTopic<'a> {
 }
 
 impl<'a> OtaTopic<'a> {
-    pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, ()> {
+    pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, OtaError> {
         let mut topic_path = heapless::String::new();
         match self {
             Self::Data(encoding, stream_name) => topic_path.write_fmt(format_args!(
@@ -110,7 +111,7 @@ impl<'a> OtaTopic<'a> {
                 client_id, stream_name, encoding
             )),
         }
-        .map_err(drop)?;
+        .map_err(|_| OtaError::Overflow)?;
 
         Ok(topic_path)
     }
@@ -123,7 +124,7 @@ where
     const PROTOCOL: Protocol = Protocol::Mqtt;
 
     /// Init file transfer by subscribing to the OTA data stream topic
-    fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), ()> {
+    fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError> {
         let topic = SubscribeTopic {
             topic_path: OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
                 .format(self.client_id())?,
@@ -132,15 +133,20 @@ where
 
         rustot_log!(debug, "Subscribing to: [{:?}]", topic);
 
-        self.subscribe(topic).map_err(drop)?;
+        self.subscribe(topic)?;
 
         Ok(())
     }
 
     /// Request file block by publishing to the get stream topic
-    fn request_file_block(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), ()> {
+    fn request_file_block(
+        &self,
+        file_ctx: &mut FileContext,
+        config: &Config,
+    ) -> Result<(), OtaError> {
         // Reset number of blocks requested
         file_ctx.request_block_remaining = config.max_blocks_per_request;
+        rustot_log!(trace, "Requesting data! Offset: {}", file_ctx.block_offset);
 
         let buf = &mut [0u8; 32];
         let len = cbor::to_slice(
@@ -156,7 +162,7 @@ where
             },
             buf,
         )
-        .map_err(drop)?;
+        .map_err(|_| OtaError::Encoding)?;
 
         self.publish(
             OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())
@@ -164,8 +170,7 @@ where
                 .as_str(),
             &buf[..len],
             QoS::AtMostOnce,
-        )
-        .map_err(drop)?;
+        )?;
 
         Ok(())
     }
@@ -175,23 +180,22 @@ where
         &self,
         _file_ctx: &mut FileContext,
         payload: &'c mut [u8],
-    ) -> Result<FileBlock<'c>, ()> {
+    ) -> Result<FileBlock<'c>, OtaError> {
         Ok(
             serde_cbor::de::from_mut_slice::<cbor::GetStreamResponse>(payload)
-                .map_err(drop)?
+                .map_err(|_| OtaError::Encoding)?
                 .into(),
         )
     }
 
     /// Perform any cleanup operations required for data plane
-    fn cleanup(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), ()> {
+    fn cleanup(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), OtaError> {
         if config.unsubscribe_on_shutdown {
             // Unsubscribe from data stream topics
             self.unsubscribe(
                 OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
                     .format(self.client_id())?,
-            )
-            .map_err(drop)?;
+            )?;
         }
         Ok(())
     }

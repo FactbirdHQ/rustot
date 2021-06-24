@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::jobs::JobTopic;
 
-use super::{MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
+use super::{JobError, MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 
 /// Gets detailed information about a job execution.
 ///
@@ -84,14 +84,14 @@ impl<'a> Describe<'a> {
             heapless::String<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 22 }>,
             heapless::Vec<u8, { MAX_CLIENT_TOKEN_LEN + 2 }>,
         ),
-        (),
+        JobError,
     > {
         let payload = serde_json_core::to_vec(&DescribeJobExecutionRequest {
             execution_number: self.execution_number,
             include_job_document: self.include_job_document.then(|| true),
             client_token: self.client_token,
         })
-        .map_err(drop)?;
+        .map_err(|_| JobError::Encoding)?;
 
         Ok((
             self.job_id
@@ -102,10 +102,10 @@ impl<'a> Describe<'a> {
         ))
     }
 
-    pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), ()> {
+    pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), JobError> {
         let (topic, payload) = self.topic_payload(mqtt.client_id())?;
 
-        mqtt.publish(topic.as_str(), &payload, qos).map_err(drop)?;
+        mqtt.publish(topic.as_str(), &payload, qos)?;
 
         Ok(())
     }

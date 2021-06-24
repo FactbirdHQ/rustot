@@ -112,10 +112,15 @@ where
     }
 
     pub fn suspend(&mut self) -> Result<&States, Error> {
+        // Stop the request timer
+        self.state.context_mut().request_timer.try_cancel().ok();
+
+        // Send event to OTA agent task.
         self.state.process_event(Events::Suspend)
     }
 
     pub fn resume(&mut self) -> Result<&States, Error> {
+        // Send event to OTA agent task
         self.state.process_event(Events::Resume)
     }
 }

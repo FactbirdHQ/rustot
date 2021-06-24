@@ -48,6 +48,7 @@ pub mod ota_tests {
     use crate::jobs::data_types::{DescribeJobExecutionResponse, JobExecution, JobStatus};
     use crate::ota::data_interface::Protocol;
     use crate::ota::encoding::json::{FileDescription, OtaJob};
+    use crate::ota::error::OtaError;
     use crate::ota::state::{Error, Events, States};
     use crate::ota::test::test_job_doc;
     use crate::ota::{
@@ -59,7 +60,7 @@ pub mod ota_tests {
     };
     use crate::test::{MockMqtt, MqttRequest, OwnedPublishRequest};
     use embedded_hal::timer;
-    use mqttrust::{QoS, SubscribeRequest, SubscribeTopic};
+    use mqttrust::{MqttError, QoS, SubscribeRequest, SubscribeTopic};
     use serde::Deserialize;
     use serde_json_core::from_slice;
 
@@ -182,10 +183,10 @@ pub mod ota_tests {
         run_to_state(&mut ota_agent, States::Ready);
         assert_eq!(ota_agent.state.context().events.len(), 0);
 
-        assert!(matches!(
-            ota_agent.abort().err().unwrap(),
-            Error::GuardFailed
-        ));
+        assert_eq!(
+            ota_agent.abort().err(),
+            Some(Error::GuardFailed(OtaError::NoActiveJob))
+        );
         ota_agent.process_event().unwrap();
         assert!(matches!(ota_agent.state.state(), &States::Ready));
         assert_eq!(mqtt.tx.borrow_mut().len(), 0);
@@ -279,10 +280,10 @@ pub mod ota_tests {
         assert!(matches!(ota_agent.state.state(), &States::RequestingJob));
         assert_eq!(ota_agent.state.context().events.len(), 0);
 
-        assert!(matches!(
+        assert_eq!(
             ota_agent.check_for_update().err(),
-            Some(Error::GuardFailed)
-        ));
+            Some(Error::GuardFailed(OtaError::Mqtt(MqttError::Full)))
+        );
 
         // Fail the maximum number of attempts to request a job document
         for _ in 0..ota_agent.state.context().config.max_request_momentum {

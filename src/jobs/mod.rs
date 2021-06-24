@@ -123,6 +123,19 @@ pub const MAX_RUNNING_JOBS: usize = 1;
 
 pub type StatusDetails = heapless::FnvIndexMap<heapless::String<15>, heapless::String<11>, 4>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobError {
+    Overflow,
+    Encoding,
+    Mqtt(mqttrust::MqttError),
+}
+
+impl From<mqttrust::MqttError> for JobError {
+    fn from(e: mqttrust::MqttError) -> Self {
+        Self::Mqtt(e)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum JobTopic<'a> {
     // Outgoing Topics
@@ -146,7 +159,7 @@ enum JobTopic<'a> {
 }
 
 impl<'a> JobTopic<'a> {
-    pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, ()> {
+    pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, JobError> {
         let mut topic_path = heapless::String::new();
         match self {
             Self::GetNext => {
@@ -204,7 +217,7 @@ impl<'a> JobTopic<'a> {
                 client_id, job_id
             )),
         }
-        .map_err(drop)?;
+        .map_err(|_| JobError::Overflow)?;
 
         Ok(topic_path)
     }

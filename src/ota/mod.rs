@@ -39,6 +39,7 @@ pub mod data_interface;
 pub mod encoding;
 pub mod pal;
 pub mod state;
+pub mod error;
 #[macro_use]
 pub mod logging;
 

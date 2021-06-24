@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::jobs::JobTopic;
 
-use super::{MAX_CLIENT_TOKEN_LEN, MAX_THING_NAME_LEN};
+use super::{JobError, MAX_CLIENT_TOKEN_LEN, MAX_THING_NAME_LEN};
 
 /// Gets the list of all jobs for a thing that are not in a terminal state.
 ///
@@ -44,20 +44,20 @@ impl<'a> GetPending<'a> {
             heapless::String<{ MAX_THING_NAME_LEN + 21 }>,
             heapless::Vec<u8, { MAX_CLIENT_TOKEN_LEN + 2 }>,
         ),
-        (),
+        JobError,
     > {
         let payload = serde_json_core::to_vec(&&GetPendingJobExecutionsRequest {
             client_token: self.client_token,
         })
-        .map_err(drop)?;
+        .map_err(|_|JobError::Encoding)?;
 
         Ok((JobTopic::GetPending.format(client_id)?, payload))
     }
 
-    pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), ()> {
+    pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), JobError> {
         let (topic, payload) = self.topic_payload(mqtt.client_id())?;
 
-        mqtt.publish(topic.as_str(), &payload, qos).map_err(drop)?;
+        mqtt.publish(topic.as_str(), &payload, qos)?;
 
         Ok(())
     }

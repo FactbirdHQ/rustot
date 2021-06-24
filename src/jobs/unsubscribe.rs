@@ -4,7 +4,7 @@ use crate::jobs::JobTopic;
 
 use super::{
     subscribe::Topic,
-    {MAX_JOB_ID_LEN, MAX_THING_NAME_LEN},
+    JobError, {MAX_JOB_ID_LEN, MAX_THING_NAME_LEN},
 };
 
 #[derive(Default)]
@@ -35,7 +35,10 @@ impl<'a> Unsubscribe<'a> {
         Self { topics }
     }
 
-    pub fn topics(self, client_id: &str) -> Result<heapless::Vec<heapless::String<256>, 10>, ()> {
+    pub fn topics(
+        self,
+        client_id: &str,
+    ) -> Result<heapless::Vec<heapless::String<256>, 10>, JobError> {
         assert!(client_id.len() <= MAX_THING_NAME_LEN);
 
         self.topics
@@ -44,12 +47,11 @@ impl<'a> Unsubscribe<'a> {
             .collect()
     }
 
-    pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), ()> {
+    pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), JobError> {
         let topics = self.topics(mqtt.client_id())?;
 
         for t in topics.chunks(5) {
-            mqtt.unsubscribe_many(heapless::Vec::from_slice(t).map_err(drop)?)
-                .map_err(drop)?;
+            mqtt.unsubscribe_many(heapless::Vec::from_slice(t).map_err(|_| JobError::Overflow)?)?;
         }
 
         Ok(())

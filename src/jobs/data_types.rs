@@ -274,12 +274,6 @@ pub struct NextJobExecutionChanged<J> {
     pub timestamp: i64,
 }
 
-impl<'de, J: Deserialize<'de>> NextJobExecutionChanged<J> {
-    pub fn from_payload(payload: &'de [u8]) -> Result<Self, serde_json_core::de::Error> {
-        Ok(serde_json_core::from_slice(payload)?.0)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Jobs {
     /// Queued jobs.

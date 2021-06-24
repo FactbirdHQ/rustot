@@ -10,6 +10,7 @@ use crate::jobs::StatusDetails;
 
 use self::json::{OtaJob, Signature};
 
+use super::error::OtaError;
 use super::{config::Config, pal::Version};
 
 #[derive(Clone, PartialEq)]
@@ -81,8 +82,8 @@ impl FileContext {
         file_idx: usize,
         config: &Config,
         current_version: Version,
-    ) -> Result<Self, ()> {
-        let file_desc = ota_job.files.get(file_idx).ok_or(())?.clone();
+    ) -> Result<Self, OtaError> {
+        let file_desc = ota_job.files.get(file_idx).ok_or(OtaError::InvalidFile)?.clone();
 
         // Initialize new `status_details' if not already present
         let mut status = if let Some(details) = status_details {
@@ -96,7 +97,7 @@ impl FileContext {
                 heapless::String::from("updated_by"),
                 current_version.to_string(),
             )
-            .map_err(drop)?;
+            .map_err(|_| OtaError::Overflow)?;
 
         let signature = file_desc.signature();
 

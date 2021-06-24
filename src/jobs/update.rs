@@ -6,6 +6,8 @@ use crate::jobs::{
     MAX_THING_NAME_LEN,
 };
 
+use super::JobError;
+
 /// Updates the status of a job execution. You can optionally create a step
 /// timer by setting a value for the stepTimeoutInMinutes property. If you don't
 /// update the value of this property by running UpdateJobExecution again, the
@@ -156,7 +158,7 @@ impl<'a> Update<'a> {
             heapless::String<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>,
             heapless::Vec<u8, 512>,
         ),
-        (),
+        JobError,
     > {
         let payload = serde_json_core::to_vec(&UpdateJobExecutionRequest {
             execution_number: self.execution_number,
@@ -168,15 +170,15 @@ impl<'a> Update<'a> {
             step_timeout_in_minutes: self.step_timeout_in_minutes,
             client_token: self.client_token,
         })
-        .map_err(drop)?;
+        .map_err(|_|JobError::Encoding)?;
 
         Ok((JobTopic::Update(self.job_id).format(client_id)?, payload))
     }
 
-    pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), ()> {
+    pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), JobError> {
         let (topic, payload) = self.topic_payload(mqtt.client_id())?;
 
-        mqtt.publish(topic.as_str(), &payload, qos).map_err(drop)?;
+        mqtt.publish(topic.as_str(), &payload, qos)?;
 
         Ok(())
     }

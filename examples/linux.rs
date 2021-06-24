@@ -1,7 +1,9 @@
 mod common;
 
 use jobs::data_types::NextJobExecutionChanged;
-use mqttrust_core::{Client, EventLoop, MqttOptions, Notification, OwnedRequest};
+use mqttrust_core::{
+    Client, EventLoop, MqttOptions, Notification, OwnedRequest, PublishNotification,
+};
 use serde::Deserialize;
 
 use common::file_handler::FileHandler;
@@ -9,9 +11,8 @@ use common::network::Network;
 use common::timer::SysClock;
 use heapless::spsc::Queue;
 use ota::encoding::json::OtaJob;
-use rustot::jobs;
 use rustot::jobs::data_types::DescribeJobExecutionResponse;
-use rustot::jobs::data_types::JobExecution;
+use rustot::jobs::{self, StatusDetails, MAX_JOB_ID_LEN};
 use rustot::ota;
 use rustot::ota::agent::OtaAgent;
 use std::thread;
@@ -22,6 +23,61 @@ static mut Q: Queue<OwnedRequest<128, 512>, 10> = Queue::new();
 pub enum Jobs {
     #[serde(rename = "afr_ota")]
     Ota(OtaJob),
+}
+
+impl Jobs {
+    pub fn ota_job(self) -> Option<OtaJob> {
+        match self {
+            Jobs::Ota(ota_job) => Some(ota_job),
+        }
+    }
+}
+
+enum OtaUpdate {
+    JobUpdate(
+        heapless::String<MAX_JOB_ID_LEN>,
+        OtaJob,
+        Option<StatusDetails>,
+    ),
+    Data,
+}
+
+fn handle_ota(publish: &PublishNotification) -> Result<OtaUpdate, ()> {
+    match jobs::Topic::from_str(publish.topic_name.as_str()) {
+        Some(jobs::Topic::NotifyNext) => {
+            let (execution_changed, _) =
+                serde_json_core::from_slice::<NextJobExecutionChanged<Jobs>>(&publish.payload)
+                    .map_err(drop)?;
+            let job = execution_changed.execution.ok_or(())?;
+            let ota_job = job.job_document.ok_or(())?.ota_job().ok_or(())?;
+            return Ok(OtaUpdate::JobUpdate(
+                job.job_id,
+                ota_job,
+                job.status_details,
+            ));
+        }
+        Some(jobs::Topic::DescribeAccepted(_)) => {
+            let (execution_changed, _) =
+                serde_json_core::from_slice::<DescribeJobExecutionResponse<Jobs>>(&publish.payload)
+                    .map_err(drop)?;
+            let job = execution_changed.execution.ok_or(())?;
+            let ota_job = job.job_document.ok_or(())?.ota_job().ok_or(())?;
+            return Ok(OtaUpdate::JobUpdate(
+                job.job_id,
+                ota_job,
+                job.status_details,
+            ));
+        }
+        _ => {}
+    }
+
+    match ota::Topic::from_str(publish.topic_name.as_str()) {
+        Some(ota::Topic::Data(_, _)) => {
+            return Ok(OtaUpdate::Data);
+        }
+        _ => {}
+    }
+    Err(())
 }
 
 fn main() {
@@ -58,6 +114,9 @@ fn main() {
 
             ota_agent.init();
 
+            let mut cnt = 0;
+            let mut suspended = false;
+
             loop {
                 ota_agent.timer_callback();
 
@@ -65,75 +124,39 @@ fn main() {
                     Ok(Notification::Publish(mut publish)) => {
                         // Check if the received file is a jobs topic, that we
                         // want to react to.
-                        match jobs::Topic::from_str(publish.topic_name.as_str()) {
-                            Some(jobs::Topic::NotifyNext) => {
-                                log::debug!("Got job update!");
-                                if let Ok(NextJobExecutionChanged {
-                                    execution:
-                                        Some(JobExecution {
-                                            job_id,
-                                            job_document: Some(Jobs::Ota(job_doc)),
-                                            status_details,
-                                            ..
-                                        }),
-                                    ..
-                                }) =
-                                    NextJobExecutionChanged::<Jobs>::from_payload(&publish.payload)
-                                {
-                                    ota_agent
-                                        .job_update(job_id.as_str(), job_doc, status_details)
-                                        .expect("Failed to start OTA job");
-                                }
-                            }
-                            Some(jobs::Topic::DescribeAccepted(_)) => {
-                                if let Ok((
-                                    DescribeJobExecutionResponse {
-                                        execution:
-                                            Some(JobExecution {
-                                                job_document: Some(Jobs::Ota(job_doc)),
-                                                status_details,
-                                                job_id,
-                                                ..
-                                            }),
-                                        ..
-                                    },
-                                    _,
-                                )) = serde_json_core::from_slice(&publish.payload)
-                                {
-                                    log::debug!(
-                                        "Received job! Starting OTA! {:?}",
-                                        job_doc.streamname
-                                    );
-                                    ota_agent
-                                        .job_update(job_id.as_str(), job_doc, status_details)
-                                        .expect("Failed to start OTA job");
-                                }
-                            }
-                            Some(topic) => {
-                                log::debug!("Got some other job update! {:?}", topic);
-                                log::debug!("{}", unsafe {
-                                    core::str::from_utf8_unchecked(&publish.payload)
-                                });
-                            }
-                            _ => {}
-                        }
-
-                        match ota::Topic::from_str(publish.topic_name.as_str()) {
-                            Some(ota::Topic::Data(_, _)) => {
+                        match handle_ota(&publish) {
+                            Ok(OtaUpdate::JobUpdate(job_id, job_doc, status_details)) => {
+                                log::debug!("Received job! Starting OTA! {:?}", job_doc.streamname);
                                 ota_agent
-                                    .handle_message(&mut publish.payload)
-                                    .expect("Failed to handle stream data");
+                                    .job_update(job_id.as_str(), job_doc, status_details)
+                                    .expect("Failed to start OTA job");
                             }
-                            Some(topic) => {
-                                log::debug!("Got some other ota update! {:?}", topic);
+                            Ok(OtaUpdate::Data) => {
+                                ota_agent.handle_message(&mut publish.payload).ok();
+                                cnt += 1;
+
+                                if cnt > 1000 && !suspended {
+                                    log::info!("Suspending current OTA Job");
+                                    ota_agent.suspend().ok();
+                                    suspended = true;
+                                }
                             }
-                            _ => {}
+                            Err(_) => {}
                         }
                     }
                     Ok(n) => {
                         log::trace!("{:?}", n);
                     }
                     _ => {}
+                }
+
+                if suspended && cnt < 1200 {
+                    cnt += 1;
+                    thread::sleep(std::time::Duration::from_millis(200));
+                    if cnt >= 1200 {
+                        log::info!("Resuming OTA Job");
+                        ota_agent.resume().ok();
+                    }
                 }
                 ota_agent.process_event().ok();
             }
