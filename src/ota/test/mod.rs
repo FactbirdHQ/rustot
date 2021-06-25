@@ -292,9 +292,9 @@ pub mod ota_tests {
 
         // Fail the maximum number of attempts to request a job document
         for _ in 0..ota_agent.state.context().config.max_request_momentum {
-            ota_agent.process_event().ok();
+            ota_agent.process_event().unwrap();
             assert!(ota_agent.state.context().request_timer.is_started);
-            ota_agent.timer_callback();
+            ota_agent.timer_callback().unwrap();
             // assert!(!ota_agent.state.context().request_timer.is_started);
             assert!(matches!(ota_agent.state.state(), &States::RequestingJob));
         }

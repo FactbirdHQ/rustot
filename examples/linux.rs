@@ -118,7 +118,7 @@ fn main() {
             let mut suspended = false;
 
             loop {
-                ota_agent.timer_callback();
+                ota_agent.timer_callback().expect("Failed timer callback!");
 
                 match mqtt_eventloop.yield_event(&mut network) {
                     Ok(Notification::Publish(mut publish)) => {

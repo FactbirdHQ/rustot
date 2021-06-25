@@ -1,7 +1,14 @@
 use embedded_hal::timer;
 
-use super::{builder::{self, NoTimer}, control_interface::ControlInterface, data_interface::{DataInterface, NoInterface}, encoding::json::OtaJob, pal::OtaPal, state::{Error, Events, SmContext, StateMachine, States}};
-use crate::jobs::StatusDetails;
+use super::{
+    builder::{self, NoTimer},
+    control_interface::ControlInterface,
+    data_interface::{DataInterface, NoInterface},
+    encoding::json::OtaJob,
+    pal::OtaPal,
+    state::{Error, Events, SmContext, StateMachine, States},
+};
+use crate::{jobs::StatusDetails, rustot_log};
 
 // OTA Agent driving the FSM of an OTA update
 pub struct OtaAgent<'a, C, DP, DS, T, ST, PAL>
@@ -85,10 +92,23 @@ where
         )))
     }
 
-    pub fn timer_callback(&mut self) {
-        if self.state.context_mut().request_timer.try_wait().is_ok() {
-            self.state.process_event(Events::RequestTimer).ok();
+    pub fn timer_callback(&mut self) -> Result<(), Error> {
+        let ctx = self.state.context_mut();
+        if ctx.request_timer.try_wait().is_ok() {
+            return self.state.process_event(Events::RequestTimer).map(drop);
         }
+
+        if let Some(ref mut self_test_timer) = ctx.self_test_timer {
+            if self_test_timer.try_wait().is_ok() {
+                rustot_log!(
+                    error,
+                    "Self test failed to complete within {} ms",
+                    ctx.config.self_test_timeout_ms
+                );
+                ctx.pal.reset_device().ok();
+            }
+        }
+        Ok(())
     }
 
     pub fn process_event(&mut self) -> Result<&States, Error> {
