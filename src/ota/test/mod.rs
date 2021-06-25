@@ -294,8 +294,7 @@ pub mod ota_tests {
         for _ in 0..ota_agent.state.context().config.max_request_momentum {
             ota_agent.process_event().unwrap();
             assert!(ota_agent.state.context().request_timer.is_started);
-            ota_agent.timer_callback().unwrap();
-            // assert!(!ota_agent.state.context().request_timer.is_started);
+            ota_agent.timer_callback().ok();
             assert!(matches!(ota_agent.state.state(), &States::RequestingJob));
         }
 
