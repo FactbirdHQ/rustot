@@ -1,37 +1,34 @@
 use embedded_hal::timer;
 
-use super::{
-    builder,
-    control_interface::ControlInterface,
-    data_interface::{DataInterface, NoInterface},
-    encoding::json::OtaJob,
-    pal::OtaPal,
-    state::{Error, Events, SmContext, StateMachine, States},
-};
+use super::{builder::{self, NoTimer}, control_interface::ControlInterface, data_interface::{DataInterface, NoInterface}, encoding::json::OtaJob, pal::OtaPal, state::{Error, Events, SmContext, StateMachine, States}};
 use crate::jobs::StatusDetails;
 
 // OTA Agent driving the FSM of an OTA update
-pub struct OtaAgent<'a, C, DP, DS, T, PAL>
+pub struct OtaAgent<'a, C, DP, DS, T, ST, PAL>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
     T: timer::CountDown + timer::Cancel,
     T::Time: From<u32>,
+    ST: timer::CountDown + timer::Cancel,
+    ST::Time: From<u32>,
     PAL: OtaPal,
 {
-    pub(crate) state: StateMachine<SmContext<'a, C, DP, DS, T, PAL, 10>>,
+    pub(crate) state: StateMachine<SmContext<'a, C, DP, DS, T, ST, PAL, 10>>,
 }
 
 // Make sure any active OTA session is cleaned up, and the topics are
 // unsubscribed on drop.
-impl<'a, C, DP, DS, T, PAL> Drop for OtaAgent<'a, C, DP, DS, T, PAL>
+impl<'a, C, DP, DS, T, ST, PAL> Drop for OtaAgent<'a, C, DP, DS, T, ST, PAL>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
     T: timer::CountDown + timer::Cancel,
     T::Time: From<u32>,
+    ST: timer::CountDown + timer::Cancel,
+    ST::Time: From<u32>,
     PAL: OtaPal,
 {
     fn drop(&mut self) {
@@ -41,7 +38,7 @@ where
     }
 }
 
-impl<'a, C, DP, T, PAL> OtaAgent<'a, C, DP, NoInterface, T, PAL>
+impl<'a, C, DP, T, PAL> OtaAgent<'a, C, DP, NoInterface, T, NoTimer, PAL>
 where
     C: ControlInterface,
     DP: DataInterface,
@@ -54,19 +51,21 @@ where
         data_primary: DP,
         request_timer: T,
         pal: PAL,
-    ) -> builder::OtaAgentBuilder<'a, C, DP, NoInterface, T, PAL> {
+    ) -> builder::OtaAgentBuilder<'a, C, DP, NoInterface, T, NoTimer, PAL> {
         builder::OtaAgentBuilder::new(control_interface, data_primary, request_timer, pal)
     }
 }
 
 /// Public interface of the OTA Agent
-impl<'a, C, DP, DS, T, PAL> OtaAgent<'a, C, DP, DS, T, PAL>
+impl<'a, C, DP, DS, T, ST, PAL> OtaAgent<'a, C, DP, DS, T, ST, PAL>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
     T: timer::CountDown + timer::Cancel,
     T::Time: From<u32>,
+    ST: timer::CountDown + timer::Cancel,
+    ST::Time: From<u32>,
     PAL: OtaPal,
 {
     pub fn init(&mut self) {

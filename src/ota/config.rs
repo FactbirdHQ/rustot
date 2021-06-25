@@ -6,6 +6,7 @@ pub struct Config {
     pub(crate) status_update_frequency: u32,
     pub(crate) allow_downgrade: bool,
     pub(crate) unsubscribe_on_shutdown: bool,
+    pub(crate) self_test_timeout_ms: u32,
 }
 
 impl Default for Config {
@@ -18,6 +19,7 @@ impl Default for Config {
             status_update_frequency: 24,
             allow_downgrade: false,
             unsubscribe_on_shutdown: true,
+            self_test_timeout_ms: 16000
         }
     }
 }

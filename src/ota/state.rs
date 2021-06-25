@@ -109,13 +109,15 @@ macro_rules! data_interface {
 }
 
 // Context of current OTA Job, keeping state
-pub(crate) struct SmContext<'a, C, DP, DS, T, PAL, const L: usize>
+pub(crate) struct SmContext<'a, C, DP, DS, T, ST, PAL, const L: usize>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
     T: timer::CountDown + timer::Cancel,
     T::Time: From<u32>,
+    ST: timer::CountDown + timer::Cancel,
+    ST::Time: From<u32>,
     PAL: OtaPal,
 {
     pub(crate) events: heapless::spsc::Queue<Events<'a>, L>,
@@ -129,17 +131,19 @@ where
     pub(crate) pal: PAL,
     pub(crate) request_momentum: u8,
     pub(crate) request_timer: T,
+    pub(crate) self_test_timer: Option<ST>,
     pub(crate) config: Config,
-    // pub(crate) callback: F
 }
 
-impl<'a, C, DP, DS, T, PAL, const L: usize> SmContext<'a, C, DP, DS, T, PAL, L>
+impl<'a, C, DP, DS, T, ST, PAL, const L: usize> SmContext<'a, C, DP, DS, T, ST, PAL, L>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
     T: timer::CountDown + timer::Cancel,
     T::Time: From<u32>,
+    ST: timer::CountDown + timer::Cancel,
+    ST::Time: From<u32>,
     PAL: OtaPal,
 {
     /// Called to update the filecontext structure from the job
@@ -482,21 +486,28 @@ where
     }
 }
 
-impl<'a, C, DP, DS, T, PAL, const L: usize> StateMachineContext
-    for SmContext<'a, C, DP, DS, T, PAL, L>
+impl<'a, C, DP, DS, T, ST, PAL, const L: usize> StateMachineContext
+    for SmContext<'a, C, DP, DS, T, ST, PAL, L>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
     T: timer::CountDown + timer::Cancel,
     T::Time: From<u32>,
+    ST: timer::CountDown + timer::Cancel,
+    ST::Time: From<u32>,
     PAL: OtaPal,
 {
     /// Start timers and initiate request for job document
     fn start_handler(&mut self) -> Result<(), OtaError> {
         // Start self-test timer, if platform is in self-test.
         if self.platform_in_selftest() {
-            // TODO: Start self-test timer
+            // Start self-test timer
+            if let Some(ref mut self_test_timer) = self.self_test_timer {
+                self_test_timer
+                    .try_start(self.config.self_test_timeout_ms)
+                    .map_err(|_| OtaError::Timer)?;
+            }
         }
 
         // Send event to OTA task to get job document
@@ -623,7 +634,10 @@ where
                 .insert(heapless::String::from("self_test"), heapless::String::new())
                 .map_err(|_| OtaError::Overflow)?;
 
-            // TODO: Stop the self test timer as it is no longer required
+            // Stop the self test timer as it is no longer required
+            if let Some(ref mut self_test_timer) = self.self_test_timer {
+                self_test_timer.try_cancel().map_err(|_| OtaError::Timer)?;
+            }
         } else {
             // The job is in self test but the platform image state is not so it
             // could be an attack on the platform image state. Reject the update
@@ -646,10 +660,8 @@ where
     ) -> Result<(), OtaError> {
         let (job_name, ota_document, status_details) = data;
 
-        // TODO: ERROR
-        let file_ctx = self
-            .get_file_context_from_job(job_name.clone(), ota_document, status_details.clone())
-            .unwrap();
+        let file_ctx =
+            self.get_file_context_from_job(job_name.clone(), ota_document, status_details.clone())?;
 
         // A null context here could either mean we didn't receive a valid job
         // or it could signify that we're in the self test phase (where the OTA

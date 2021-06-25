@@ -10,13 +10,40 @@ use crate::ota::{
 
 use super::{agent::OtaAgent, data_interface::NoInterface};
 
-pub struct OtaAgentBuilder<'a, C, DP, DS, T, PAL>
+pub struct NoTimer;
+
+impl timer::CountDown for NoTimer {
+    type Error = ();
+
+    type Time = u32;
+
+    fn try_start<T>(&mut self, _count: T) -> Result<(), Self::Error>
+    where
+        T: Into<Self::Time>,
+    {
+        unreachable!()
+    }
+
+    fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
+        unreachable!()
+    }
+}
+
+impl timer::Cancel for NoTimer {
+    fn try_cancel(&mut self) -> Result<(), Self::Error> {
+        unreachable!()
+    }
+}
+
+pub struct OtaAgentBuilder<'a, C, DP, DS, T, ST, PAL>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
     T: timer::CountDown + timer::Cancel,
     T::Time: From<u32>,
+    ST: timer::CountDown + timer::Cancel,
+    ST::Time: From<u32>,
     PAL: OtaPal,
 {
     control: &'a C,
@@ -27,10 +54,11 @@ where
     data_secondary: core::marker::PhantomData<DS>,
     pal: PAL,
     request_timer: T,
+    self_test_timer: Option<ST>,
     config: Config,
 }
 
-impl<'a, C, DP, T, PAL> OtaAgentBuilder<'a, C, DP, NoInterface, T, PAL>
+impl<'a, C, DP, T, PAL> OtaAgentBuilder<'a, C, DP, NoInterface, T, NoTimer, PAL>
 where
     C: ControlInterface,
     DP: DataInterface,
@@ -48,31 +76,35 @@ where
             data_secondary: core::marker::PhantomData,
             pal,
             request_timer,
+            self_test_timer: None,
             config: Config::default(),
         }
     }
 }
 
-impl<'a, C, DP, DS, T, PAL> OtaAgentBuilder<'a, C, DP, DS, T, PAL>
+impl<'a, C, DP, DS, T, ST, PAL> OtaAgentBuilder<'a, C, DP, DS, T, ST, PAL>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
     T: timer::CountDown + timer::Cancel,
     T::Time: From<u32>,
+    ST: timer::CountDown + timer::Cancel,
+    ST::Time: From<u32>,
     PAL: OtaPal,
 {
     #[cfg(all(feature = "ota_mqtt_data", feature = "ota_http_data"))]
     pub fn data_secondary<D: DataInterface>(
         self,
         interface: D,
-    ) -> OtaAgentBuilder<'a, C, DP, D, T, PAL> {
+    ) -> OtaAgentBuilder<'a, C, DP, D, T, ST, PAL> {
         OtaAgentBuilder {
             control: self.control,
             data_primary: self.data_primary,
             data_secondary: Some(interface),
             pal: self.pal,
             request_timer: self.request_timer,
+            self_test_timer: self.self_test_timer,
             config: self.config,
         }
     }
@@ -139,7 +171,30 @@ where
         }
     }
 
-    pub fn build(self) -> OtaAgent<'a, C, DP, DS, T, PAL> {
+    pub fn with_self_test_timeout<NST>(
+        self,
+        timer: NST,
+        timeout_ms: u32,
+    ) -> OtaAgentBuilder<'a, C, DP, DS, T, NST, PAL>
+    where
+        NST: timer::CountDown + timer::Cancel,
+        NST::Time: From<u32>,
+    {
+        OtaAgentBuilder {
+            control: self.control,
+            data_primary: self.data_primary,
+            data_secondary: self.data_secondary,
+            pal: self.pal,
+            request_timer: self.request_timer,
+            self_test_timer: Some(timer),
+            config: Config {
+                self_test_timeout_ms: timeout_ms,
+                ..self.config
+            },
+        }
+    }
+
+    pub fn build(self) -> OtaAgent<'a, C, DP, DS, T, ST, PAL> {
         OtaAgent {
             state: StateMachine::new(SmContext {
                 events: heapless::spsc::Queue::new(),
@@ -149,6 +204,7 @@ where
                 active_interface: None,
                 request_momentum: 0,
                 request_timer: self.request_timer,
+                self_test_timer: self.self_test_timer,
                 pal: self.pal,
                 config: self.config,
             }),

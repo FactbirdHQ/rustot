@@ -76,15 +76,18 @@ pub mod ota_tests {
 
     fn new_agent(
         mqtt: &MockMqtt,
-    ) -> OtaAgent<'_, MockMqtt, &MockMqtt, NoInterface, MockTimer, MockPal> {
+    ) -> OtaAgent<'_, MockMqtt, &MockMqtt, NoInterface, MockTimer, MockTimer, MockPal> {
         let request_timer = MockTimer::new();
+        let self_test_timer = MockTimer::new();
         let pal = MockPal {};
 
-        OtaAgent::builder(mqtt, mqtt, request_timer, pal).build()
+        OtaAgent::builder(mqtt, mqtt, request_timer, pal)
+            .with_self_test_timeout(self_test_timer, 16000)
+            .build()
     }
 
-    fn run_to_state<'a, C, DP, DS, T, PAL>(
-        agent: &mut OtaAgent<'a, C, DP, DS, T, PAL>,
+    fn run_to_state<'a, C, DP, DS, T, ST, PAL>(
+        agent: &mut OtaAgent<'a, C, DP, DS, T, ST, PAL>,
         state: States,
     ) where
         C: ControlInterface,
@@ -92,6 +95,8 @@ pub mod ota_tests {
         DS: DataInterface,
         T: timer::CountDown + timer::Cancel,
         T::Time: From<u32>,
+        ST: timer::CountDown + timer::Cancel,
+        ST::Time: From<u32>,
         PAL: OtaPal,
     {
         if agent.state.state() == &state {
