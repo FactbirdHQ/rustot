@@ -7,7 +7,7 @@ on:
   pull_request:
 
 env:
-  ALL_FEATURES: "log,ota_mqtt_data,ota_http_data"
+  ALL_FEATURES: "ota_mqtt_data,ota_http_data"
 
 jobs:
   cancel_previous_runs:
@@ -37,13 +37,13 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --all --target thumbv7m-none-eabi --features $ALL_FEATURES
+          args: --all --target thumbv7m-none-eabi --features ${{ env.ALL_FEATURES }}
 
       - name: Test
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib --features "ota_mqtt_data"
+          args: --lib --features "ota_mqtt_data,log"
   grcov:
     name: Coverage
     runs-on: ubuntu-latest
@@ -73,7 +73,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib --no-fail-fast --features $ALL_FEATURES
+          args: --lib --no-fail-fast --features ${{ env.ALL_FEATURES }}
         env:
           CARGO_INCREMENTAL: "0"
           RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=unwind -Zpanic_abort_tests"
@@ -201,7 +201,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: doc
-          args: --verbose --no-deps --features $ALL_FEATURES
+          args: --verbose --no-deps --features ${{ env.ALL_FEATURES }}
 
       # - name: Finalize documentation
       #   run: |
