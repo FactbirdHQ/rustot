@@ -14,6 +14,10 @@ documentation = "https://docs.rs/rustot"
 [lib]
 name = "rustot"
 
+[[example]]
+name = "linux"
+required-features = ["ota_mqtt_data", "log"]
+
 [badges]
 maintenance = { status = "actively-developed" }
 
@@ -41,7 +45,7 @@ mqttrust_core = { version = "0.2.0" }
 env_logger = "0.8.4"
 
 [features]
-default = ["ota_mqtt_data", "log"]
+default = ["ota_mqtt_data"]
 
 ota_mqtt_data = ["serde_cbor"]
 ota_http_data = []

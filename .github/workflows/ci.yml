@@ -6,6 +6,9 @@ on:
       - master
   pull_request:
 
+env:
+  ALL_FEATURES: "log,ota_mqtt_data,ota_http_data"
+
 jobs:
   cancel_previous_runs:
     name: Cancel previous runs
@@ -34,7 +37,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --all --all-features --target thumbv7m-none-eabi
+          args: --all --target thumbv7m-none-eabi --features $ALL_FEATURES
 
       - name: Test
         uses: actions-rs/cargo@v1
@@ -70,7 +73,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib --no-fail-fast --all-features
+          args: --lib --no-fail-fast --features $ALL_FEATURES
         env:
           CARGO_INCREMENTAL: "0"
           RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=unwind -Zpanic_abort_tests"
@@ -177,7 +180,7 @@ jobs:
         uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-features -- ${{ env.CLIPPY_PARAMS }}
+          args: -- ${{ env.CLIPPY_PARAMS }}
   docs:
     name: Documentation
     runs-on: ubuntu-latest
@@ -198,7 +201,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: doc
-          args: --verbose --no-deps --all-features
+          args: --verbose --no-deps --features $ALL_FEATURES
 
       # - name: Finalize documentation
       #   run: |
