@@ -170,7 +170,7 @@ impl<'a> Update<'a> {
             step_timeout_in_minutes: self.step_timeout_in_minutes,
             client_token: self.client_token,
         })
-        .map_err(|_|JobError::Encoding)?;
+        .map_err(|_| JobError::Encoding)?;
 
         Ok((JobTopic::Update(self.job_id).format(client_id)?, payload))
     }

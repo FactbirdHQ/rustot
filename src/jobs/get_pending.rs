@@ -49,7 +49,7 @@ impl<'a> GetPending<'a> {
         let payload = serde_json_core::to_vec(&&GetPendingJobExecutionsRequest {
             client_token: self.client_token,
         })
-        .map_err(|_|JobError::Encoding)?;
+        .map_err(|_| JobError::Encoding)?;
 
         Ok((JobTopic::GetPending.format(client_id)?, payload))
     }

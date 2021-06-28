@@ -122,7 +122,7 @@ impl<'a> Subscribe<'a> {
         rustot_log!(debug, "Subscribing to: {:?}", topics);
 
         for t in topics.chunks(5) {
-            mqtt.subscribe_many(heapless::Vec::from_slice(t).map_err(|_|JobError::Overflow)?)?;
+            mqtt.subscribe_many(heapless::Vec::from_slice(t).map_err(|_| JobError::Overflow)?)?;
         }
 
         Ok(())

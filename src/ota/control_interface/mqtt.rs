@@ -32,7 +32,8 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
         // `{requestNumber}:{thingName}`, and increments the request counter
         let mut client_token = heapless::String::<MAX_CLIENT_TOKEN_LEN>::new();
         client_token
-            .write_fmt(format_args!("{}:{}", request_cnt, self.client_id())).map_err(|_|OtaError::Overflow)?;
+            .write_fmt(format_args!("{}:{}", request_cnt, self.client_id()))
+            .map_err(|_| OtaError::Overflow)?;
 
         Jobs::describe()
             .client_token(client_token.as_str())
@@ -54,7 +55,8 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             .insert(
                 heapless::String::from("self_test"),
                 serde_json_core::to_string(&reason).map_err(|_| OtaError::Encoding)?,
-            ).map_err(|_| OtaError::Overflow)?;
+            )
+            .map_err(|_| OtaError::Overflow)?;
 
         let mut qos = QoS::AtLeastOnce;
 

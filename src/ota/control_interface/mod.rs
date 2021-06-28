@@ -1,6 +1,10 @@
 use crate::jobs::data_types::JobStatus;
 
-use super::{config::Config, encoding::{json::JobStatusReason, FileContext}, error::OtaError};
+use super::{
+    config::Config,
+    encoding::{json::JobStatusReason, FileContext},
+    error::OtaError,
+};
 
 pub mod mqtt;
 

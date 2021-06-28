@@ -19,7 +19,7 @@ impl Default for Config {
             status_update_frequency: 24,
             allow_downgrade: false,
             unsubscribe_on_shutdown: true,
-            self_test_timeout_ms: 16000
+            self_test_timeout_ms: 16000,
         }
     }
 }

@@ -2,6 +2,7 @@ use crate::ota::{
     config::Config,
     data_interface::{DataInterface, FileBlock, Protocol},
     encoding::FileContext,
+    error::OtaError,
 };
 
 pub struct HttpInterface {}
@@ -15,11 +16,15 @@ impl HttpInterface {
 impl DataInterface for HttpInterface {
     const PROTOCOL: Protocol = Protocol::Http;
 
-    fn init_file_transfer(&self, _file_ctx: &mut FileContext) -> Result<(), ()> {
+    fn init_file_transfer(&self, _file_ctx: &mut FileContext) -> Result<(), OtaError> {
         Ok(())
     }
 
-    fn request_file_block(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), ()> {
+    fn request_file_block(
+        &self,
+        _file_ctx: &mut FileContext,
+        _config: &Config,
+    ) -> Result<(), OtaError> {
         Ok(())
     }
 
@@ -27,12 +32,11 @@ impl DataInterface for HttpInterface {
         &self,
         _file_ctx: &mut FileContext,
         _payload: &'b mut [u8],
-    ) -> Result<FileBlock<'b>, ()> {
+    ) -> Result<FileBlock<'b>, OtaError> {
         unimplemented!()
     }
 
-    fn cleanup(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), ()> {
-        println!("Cleanup DataInterface for Http");
+    fn cleanup(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), OtaError> {
         Ok(())
     }
 }

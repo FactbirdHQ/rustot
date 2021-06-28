@@ -45,7 +45,11 @@ pub trait DataInterface {
     const PROTOCOL: Protocol;
 
     fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError>;
-    fn request_file_block(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), OtaError>;
+    fn request_file_block(
+        &self,
+        file_ctx: &mut FileContext,
+        config: &Config,
+    ) -> Result<(), OtaError>;
     fn decode_file_block<'a>(
         &self,
         file_ctx: &mut FileContext,
@@ -63,7 +67,11 @@ impl DataInterface for NoInterface {
         unreachable!()
     }
 
-    fn request_file_block(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), OtaError> {
+    fn request_file_block(
+        &self,
+        _file_ctx: &mut FileContext,
+        _config: &Config,
+    ) -> Result<(), OtaError> {
         unreachable!()
     }
 

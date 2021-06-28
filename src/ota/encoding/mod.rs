@@ -83,7 +83,11 @@ impl FileContext {
         config: &Config,
         current_version: Version,
     ) -> Result<Self, OtaError> {
-        let file_desc = ota_job.files.get(file_idx).ok_or(OtaError::InvalidFile)?.clone();
+        let file_desc = ota_job
+            .files
+            .get(file_idx)
+            .ok_or(OtaError::InvalidFile)?
+            .clone();
 
         // Initialize new `status_details' if not already present
         let mut status = if let Some(details) = status_details {

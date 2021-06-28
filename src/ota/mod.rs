@@ -37,9 +37,9 @@ pub mod config;
 pub mod control_interface;
 pub mod data_interface;
 pub mod encoding;
+pub mod error;
 pub mod pal;
 pub mod state;
-pub mod error;
 #[macro_use]
 pub mod logging;
 
