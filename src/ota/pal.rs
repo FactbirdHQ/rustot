@@ -54,7 +54,7 @@ pub enum OtaEvent {
 
     SelfTestFailed,
 
-    UpdateComplete
+    UpdateComplete,
 }
 
 #[derive(Debug, Clone, Eq)]

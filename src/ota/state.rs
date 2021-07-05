@@ -418,7 +418,7 @@ where
             .as_ref()
             .ok_or(OtaError::InvalidInterface)?
             .file_ctx();
-            
+
         self.pal.abort(file_ctx)?;
 
         self.active_interface = None;
@@ -688,8 +688,7 @@ where
                 self.active_interface = Some(interface);
 
                 // TODO: Start next pending job?
-                
-                
+
                 // Received a valid context so send event to request file blocks
                 self.events
                     .enqueue(Events::CreateFile)

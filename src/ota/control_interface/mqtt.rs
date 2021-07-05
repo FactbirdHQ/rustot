@@ -60,11 +60,15 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
         let mut qos = QoS::AtLeastOnce;
 
         if let (JobStatus::InProgress, _) | (JobStatus::Succeeded, _) = (status, reason) {
-            let total_blocks = ((file_ctx.filesize + config.block_size - 1) / config.block_size) as u32;
+            let total_blocks =
+                ((file_ctx.filesize + config.block_size - 1) / config.block_size) as u32;
             let received_blocks = total_blocks - file_ctx.blocks_remaining as u32;
 
             // Output a status update once in a while. Always update first and last status
-            if file_ctx.blocks_remaining != 0 && received_blocks != 0 && received_blocks % config.status_update_frequency != 0 {
+            if file_ctx.blocks_remaining != 0
+                && received_blocks != 0
+                && received_blocks % config.status_update_frequency != 0
+            {
                 return Ok(());
             }
 
