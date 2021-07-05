@@ -12,7 +12,6 @@ use crate::ota::config::Config;
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
-use crate::rustot_log;
 
 // FIXME: This can cause unit-tests to sometimes fail, due to parallel execution
 static REQUEST_CNT: AtomicU32 = AtomicU32::new(0);
@@ -54,18 +53,18 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             .status_details
             .insert(
                 heapless::String::from("self_test"),
-                serde_json_core::to_string(&reason).map_err(|_| OtaError::Encoding)?,
+                heapless::String::from(reason.as_str()),
             )
             .map_err(|_| OtaError::Overflow)?;
 
         let mut qos = QoS::AtLeastOnce;
 
-        if let (JobStatus::InProgress, JobStatusReason::Receiving) = (status, reason) {
-            let total_blocks = (file_ctx.filesize + config.block_size - 1) / config.block_size;
-            let received_blocks = (total_blocks - file_ctx.blocks_remaining + 1) as u32;
+        if let (JobStatus::InProgress, _) | (JobStatus::Succeeded, _) = (status, reason) {
+            let total_blocks = ((file_ctx.filesize + config.block_size - 1) / config.block_size) as u32;
+            let received_blocks = total_blocks - file_ctx.blocks_remaining as u32;
 
-            // Output a status update once in a while
-            if (received_blocks - 1) % config.status_update_frequency as u32 != 0 {
+            // Output a status update once in a while. Always update first and last status
+            if file_ctx.blocks_remaining != 0 && received_blocks != 0 && received_blocks % config.status_update_frequency != 0 {
                 return Ok(());
             }
 
@@ -73,8 +72,6 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             progress
                 .write_fmt(format_args!("{}/{}", received_blocks, total_blocks))
                 .map_err(|_| OtaError::Overflow)?;
-
-            rustot_log!(info, "Updating progress: {}", progress);
 
             file_ctx
                 .status_details

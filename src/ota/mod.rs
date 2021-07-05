@@ -32,7 +32,6 @@
 
 pub mod agent;
 pub mod builder;
-pub mod callback;
 pub mod config;
 pub mod control_interface;
 pub mod data_interface;

@@ -22,7 +22,7 @@ pub fn test_job_doc() -> OtaJob {
             update_data_url: None,
             auth_scheme: None,
             sha1_rsa: Some(heapless::String::from("")),
-            file_attributes: Some(0),
+            file_type: Some(0),
             sha256_rsa: None,
             sha1_ecdsa: None,
             sha256_ecdsa: None,
@@ -449,7 +449,7 @@ pub mod ota_tests {
                             sha256_ecdsa: Some(heapless::String::from(
                                 "This is my signature! Better believe it!"
                             )),
-                            file_attributes: None,
+                            file_type: Some(0),
                         }])
                         .unwrap(),
                     })),

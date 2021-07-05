@@ -21,16 +21,19 @@ impl timer::CountDown for NoTimer {
     where
         T: Into<Self::Time>,
     {
+        // `NoTimer` is only here for type purposes, and should never end up being called!
         unreachable!()
     }
 
     fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
+        // `NoTimer` is only here for type purposes, and should never end up being called!
         unreachable!()
     }
 }
 
 impl timer::Cancel for NoTimer {
     fn try_cancel(&mut self) -> Result<(), Self::Error> {
+        // `NoTimer` is only here for type purposes, and should never end up being called!
         unreachable!()
     }
 }
@@ -133,18 +136,6 @@ where
         Self {
             config: Config {
                 request_wait_ms,
-                ..self.config
-            },
-            ..self
-        }
-    }
-
-    pub fn max_blocks_per_request(self, max_blocks_per_request: u32) -> Self {
-        assert!(max_blocks_per_request < 32);
-
-        Self {
-            config: Config {
-                max_blocks_per_request,
                 ..self.config
             },
             ..self

@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-
 use crate::ota::data_interface::Protocol;
+use core::str::FromStr;
+use serde::Deserialize;
 
 /// OTA job document, compatible with FreeRTOS OTA process
 #[derive(Debug, PartialEq, Deserialize)]
@@ -53,9 +53,9 @@ pub struct FileDescription {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256_ecdsa: Option<heapless::String<64>>,
 
-    #[serde(rename = "attr")]
+    #[serde(rename = "fileType")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_attributes: Option<u32>,
+    pub file_type: Option<u32>,
 }
 
 impl FileDescription {
@@ -76,19 +76,79 @@ impl FileDescription {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum JobStatusReason {
-    #[serde(rename = "")]
-    Receiving, /* Update progress status. */
-    #[serde(rename = "ready")]
+    Receiving,      /* Update progress status. */
     SigCheckPassed, /* Set status details to Self Test Ready. */
-    #[serde(rename = "active")]
     SelfTestActive, /* Set status details to Self Test Active. */
-    #[serde(rename = "accepted")]
-    Accepted, /* Set job state to Succeeded. */
-    #[serde(rename = "rejected")]
-    Rejected, /* Set job state to Failed. */
-    #[serde(rename = "aborted")]
-    Aborted, /* Set job state to Failed. */
+    Accepted,       /* Set job state to Succeeded. */
+    Rejected,       /* Set job state to Failed. */
+    Aborted,        /* Set job state to Failed. */
     Pal(u32),
+}
+
+impl JobStatusReason {
+    pub fn as_str(&self) -> &str {
+        match self {
+            JobStatusReason::Receiving => "",
+            JobStatusReason::SigCheckPassed => "ready",
+            JobStatusReason::SelfTestActive => "active",
+            JobStatusReason::Accepted => "accepted",
+            JobStatusReason::Rejected => "rejected",
+            JobStatusReason::Aborted => "aborted",
+            JobStatusReason::Pal(_) => todo!(),
+        }
+    }
+}
+
+impl FromStr for JobStatusReason {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "" => JobStatusReason::Receiving,
+            "ready" => JobStatusReason::SigCheckPassed,
+            "active" => JobStatusReason::SelfTestActive,
+            "accepted" => JobStatusReason::Accepted,
+            "rejected" => JobStatusReason::Rejected,
+            "aborted" => JobStatusReason::Aborted,
+            _ => return Err(()),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use heapless::String;
+
+    use crate::jobs::StatusDetails;
+
+    use super::*;
+
+    #[test]
+    fn job_status_reason_serialize() {
+        let reasons = &[
+            (JobStatusReason::Receiving, ""),
+            (JobStatusReason::SigCheckPassed, "ready"),
+            (JobStatusReason::SelfTestActive, "active"),
+            (JobStatusReason::Accepted, "accepted"),
+            (JobStatusReason::Rejected, "rejected"),
+            (JobStatusReason::Aborted, "aborted"),
+        ];
+
+        for (reason, exp) in reasons {
+            let mut status_details = StatusDetails::new();
+
+            status_details
+                .insert(String::from("self_test"), String::from(reason.as_str()))
+                .unwrap();
+
+            assert_eq!(
+                serde_json_core::to_string::<_, 128>(&status_details)
+                    .unwrap()
+                    .as_str(),
+                format!("{{\"self_test\":\"{}\"}}", exp).as_str()
+            );
+        }
+    }
 }

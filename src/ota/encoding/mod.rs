@@ -7,8 +7,9 @@ use core::str::FromStr;
 use serde::{Serialize, Serializer};
 
 use crate::jobs::StatusDetails;
+use crate::rustot_log;
 
-use self::json::{OtaJob, Signature};
+use self::json::{JobStatusReason, OtaJob, Signature};
 
 use super::error::OtaError;
 use super::{config::Config, pal::Version};
@@ -22,7 +23,7 @@ impl Bitmap {
         let total_num_blocks = (file_size + block_size - 1) / block_size;
 
         Self(bitmaps::Bitmap::mask(core::cmp::min(
-            31,
+            32 - 1,
             total_num_blocks - block_offset as usize,
         )))
     }
@@ -63,7 +64,7 @@ pub struct FileContext {
     pub update_data_url: Option<heapless::String<64>>,
     pub auth_scheme: Option<heapless::String<64>>,
     pub signature: Signature,
-    pub file_attributes: Option<u32>,
+    pub file_type: Option<u32>,
 
     pub status_details: StatusDetails,
     pub block_offset: u32,
@@ -105,10 +106,8 @@ impl FileContext {
 
         let signature = file_desc.signature();
 
-        let number_of_blocks = core::cmp::min(
-            config.max_blocks_per_request,
-            128 * 1024 / config.block_size as u32,
-        );
+        let block_offset = 0;
+        let bitmap = Bitmap::new(file_desc.filesize, config.block_size, block_offset);
 
         Ok(FileContext {
             filepath: file_desc.filepath,
@@ -118,23 +117,24 @@ impl FileContext {
             update_data_url: file_desc.update_data_url,
             auth_scheme: file_desc.auth_scheme,
             signature,
-            file_attributes: file_desc.file_attributes,
+            file_type: file_desc.file_type,
 
             status_details: status,
 
             job_name,
-            block_offset: 0,
-            request_block_remaining: number_of_blocks,
+            block_offset,
+            request_block_remaining: bitmap.len() as u32,
             blocks_remaining: (file_desc.filesize + config.block_size - 1) / config.block_size,
             stream_name: ota_job.streamname.clone(),
-            bitmap: Bitmap::new(file_desc.filesize, config.block_size, 0),
+            bitmap,
         })
     }
 
     pub fn self_test(&self) -> bool {
         self.status_details
             .get(&heapless::String::from("self_test"))
-            .map(|f| f.as_str() == "ready")
+            .and_then(|f| f.parse().ok())
+            .map(|reason: JobStatusReason| reason == JobStatusReason::SigCheckPassed)
             .unwrap_or(false)
     }
 
@@ -142,5 +142,18 @@ impl FileContext {
         self.status_details
             .get(&heapless::String::from("updated_by"))
             .and_then(|s| Version::from_str(s.as_str()).ok())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bitmap_masking() {
+        let bitmap = Bitmap::new(255000, 256, 0);
+
+        let true_indices: Vec<usize> = bitmap.into_iter().collect();
+        assert_eq!((0..31).into_iter().collect::<Vec<usize>>(), true_indices);
     }
 }

@@ -30,7 +30,7 @@ nb = "1"
 serde = { version = "1.0.126", default-features = false, features = ["derive"] }
 serde_cbor = { version = "^0.11", default-features = false, optional = true }
 serde-json-core = { version = "0.4.0" }
-smlang = "0.3.5"
+smlang = "0.4.0"
 
 log = { version = "^0.4", default-features = false, optional = true }
 defmt = { version = "^0.2", optional = true }
@@ -56,7 +56,3 @@ defmt-debug = ["defmt"]
 defmt-info = ["defmt"]
 defmt-warn = ["defmt"]
 defmt-error = ["defmt"]
-
-
-[patch.crates-io]
-smlang = { git = "https://github.com/MathiasKoch/smlang-rs", rev = "5c694d0" }

@@ -11,6 +11,7 @@ use super::pal::OtaPal;
 use super::pal::OtaPalError;
 
 use crate::ota::encoding::Bitmap;
+use crate::ota::pal::OtaEvent;
 use crate::rustot_log;
 use crate::{
     jobs::{data_types::JobStatus, StatusDetails},
@@ -18,7 +19,6 @@ use crate::{
 };
 
 use super::{
-    callback::JobEvent,
     error::OtaError,
     pal::{ImageState, PalImageState},
 };
@@ -173,6 +173,7 @@ where
                 rustot_log!(info, "New job document received, aborting current job");
 
                 // Abort the current job
+                // TODO:??
                 self.pal.set_platform_image_state(ImageState::Aborted)?;
 
                 // Abort any active file access and release the file resource,
@@ -291,13 +292,14 @@ where
             .get_active_firmware_version()
             .unwrap_or(Version::new(0, 0, 0));
 
-        let version_check = if file_ctx.fileid == 0 && file_ctx.file_attributes == Some(0) {
+        let version_check = if file_ctx.fileid == 0 && file_ctx.file_type == Some(0) {
             // Only check for versions if the target is self & always allow
             // updates if updated_by is not present.
             file_ctx.updated_by().map_or(true, |v| v > active_version)
         } else {
             true
         };
+        rustot_log!(info, "Version check: {:?}", version_check);
 
         if self.config.allow_downgrade || version_check {
             // The running firmware version is newer than the firmware that
@@ -317,7 +319,7 @@ where
             )?;
 
             // TODO: Application callback for self-test failure.
-            // self.OtaAppCallback( OtaJobEventSelfTestFailed, NULL );
+            self.pal.complete_callback(OtaEvent::SelfTestFailed)?;
 
             // Handle self-test failure in the platform specific implementation,
             // example, reset the device in case of firmware upgrade.
@@ -331,7 +333,9 @@ where
         mut image_state: ImageState,
         mut reason: Option<ImageStateReason<PAL::Error>>,
     ) -> Result<(), OtaError> {
+        rustot_log!(debug, "set_image_state_with_reason {:?}", image_state);
         // Call the platform specific code to set the image state
+        // TODO: Is this setting state of current (old) image, or new image?
         if let Err(e) = self.pal.set_platform_image_state(image_state) {
             if image_state != ImageState::Aborted {
                 // If the platform image state couldn't be set correctly, force
@@ -352,9 +356,8 @@ where
             }
         }
 
-        // Now update the image state and job status on service side
+        // Now update the image state and job status on server side
         if let Some(ref mut interface) = self.active_interface {
-            // updateJobStatusFromImageState()
             match image_state {
                 ImageState::Testing => {
                     // We discovered we're ready for test mode, put job status
@@ -415,6 +418,7 @@ where
             .as_ref()
             .ok_or(OtaError::InvalidInterface)?
             .file_ctx();
+            
         self.pal.abort(file_ctx)?;
 
         self.active_interface = None;
@@ -431,9 +435,10 @@ where
             .mut_file_ctx();
 
         if block.validate(self.config.block_size, file_ctx.filesize) {
-            if !file_ctx
-                .bitmap
-                .get(block.block_id - file_ctx.block_offset as usize)
+            if block.block_id < file_ctx.block_offset as usize
+                || !file_ctx
+                    .bitmap
+                    .get(block.block_id - file_ctx.block_offset as usize)
             {
                 rustot_log!(
                     info,
@@ -471,6 +476,15 @@ where
                 // Return true to indicate end of file.
                 Ok(true)
             } else {
+                if file_ctx.bitmap.is_empty() {
+                    file_ctx.block_offset += 31;
+                    file_ctx.bitmap = Bitmap::new(
+                        file_ctx.filesize,
+                        self.config.block_size,
+                        file_ctx.block_offset,
+                    );
+                }
+
                 Ok(false)
             }
         } else {
@@ -619,8 +633,8 @@ where
         // self test
         if self.platform_in_selftest() {
             // TODO: Callback for application specific self-test.
-            // otaAgent.OtaAppCallback( OtaJobEventStartTest, NULL );
-            rustot_log!(info, "Application callback! OtaJobEventStartTest");
+            self.pal.complete_callback(OtaEvent::StartTest)?;
+            rustot_log!(info, "Application callback! OtaEvent::StartTest");
 
             // Clear self-test flag
             let file_ctx = self
@@ -673,6 +687,9 @@ where
                 rustot_log!(info, "Setting OTA data interface");
                 self.active_interface = Some(interface);
 
+                // TODO: Start next pending job?
+                
+                
                 // Received a valid context so send event to request file blocks
                 self.events
                     .enqueue(Events::CreateFile)
@@ -762,6 +779,7 @@ where
             .map_err(|_| OtaError::Timer)?;
 
         // Abort the current job
+        // TODO: This should never write to current image flags?!
         self.pal.set_platform_image_state(ImageState::Aborted)?;
         self.ota_close()
     }
@@ -778,27 +796,22 @@ where
                     .mut_file_ctx();
 
                 // File is completed! Update progress accordingly.
-                let (status, reason, event) = if let Some(0) = file_ctx.file_attributes {
+                let (status, reason, event) = if let Some(0) = file_ctx.file_type {
                     (
                         JobStatus::InProgress,
                         JobStatusReason::SigCheckPassed,
-                        JobEvent::Activate,
+                        OtaEvent::Activate,
                     )
                 } else {
                     (
                         JobStatus::Succeeded,
                         JobStatusReason::Accepted,
-                        JobEvent::UpdateComplete,
+                        OtaEvent::UpdateComplete,
                     )
                 };
 
                 self.control
                     .update_job_status(file_ctx, &self.config, status, reason)?;
-
-                // Stop the request timer.
-                self.request_timer
-                    .try_cancel()
-                    .map_err(|_| OtaError::Timer)?;
 
                 // Send event to close file.
                 self.events
@@ -808,9 +821,11 @@ where
                 // TODO: Last file block processed, increment the statistics
                 // otaAgent.statistics.otaPacketsProcessed++;
 
-                // TODO: Let main application know that update is complete
-                // otaAgent.OtaAppCallback( otaJobEvent, &jobDoc );
+                // FIXME: Allow application to empty MQTT Queue, and cleanup before calling `Pal::activate_image()`
+
+                // Let main application know that update is complete
                 rustot_log!(info, "Application callback! {:?}", event);
+                // self.pal.complete_callback(event)?;
             }
             Ok(false) => {
                 let file_ctx = self
@@ -837,17 +852,6 @@ where
                 if file_ctx.request_block_remaining > 1 {
                     file_ctx.request_block_remaining -= 1;
                 } else {
-                    file_ctx.block_offset += self.config.max_blocks_per_request;
-                    file_ctx.bitmap = Bitmap::new(
-                        file_ctx.filesize,
-                        self.config.block_size,
-                        file_ctx.block_offset,
-                    );
-                    file_ctx.request_block_remaining = core::cmp::min(
-                        self.config.max_blocks_per_request,
-                        file_ctx.blocks_remaining as u32,
-                    );
-
                     // Start the request timer.
                     self.request_timer
                         .try_start(self.config.request_wait_ms)
@@ -870,6 +874,7 @@ where
                 );
 
                 // Call the platform specific code to reject the image
+                // TODO: This should never write to current image flags?!
                 self.pal.set_platform_image_state(ImageState::Rejected)?;
 
                 // TODO: Pal reason
@@ -890,8 +895,8 @@ where
                     .enqueue(Events::CloseFile)
                     .map_err(|_| OtaError::SignalEventFailed)?;
 
-                // TODO: otaAgent.OtaAppCallback( OtaJobEventFail, &jobDoc );
-                rustot_log!(info, "Application callback! OtaJobEventFail");
+                self.pal.complete_callback(OtaEvent::Fail)?;
+                rustot_log!(info, "Application callback! OtaEvent::Fail");
                 return Err(e);
             }
         }

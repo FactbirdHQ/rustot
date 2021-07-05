@@ -131,7 +131,7 @@ where
             qos: mqttrust::QoS::AtLeastOnce,
         };
 
-        rustot_log!(debug, "Subscribing to: [{:?}]", topic);
+        // rustot_log!(debug, "Subscribing to: [{:?}]", topic);
 
         self.subscribe(topic)?;
 
@@ -145,8 +145,18 @@ where
         config: &Config,
     ) -> Result<(), OtaError> {
         // Reset number of blocks requested
-        file_ctx.request_block_remaining = config.max_blocks_per_request;
-        rustot_log!(trace, "Requesting data! Offset: {}", file_ctx.block_offset);
+        file_ctx.request_block_remaining = file_ctx.bitmap.len() as u32;
+
+        rustot_log!(
+            debug,
+            "Requesting data! Offset: {:?}, bitmap: {:?}",
+            file_ctx.block_offset,
+            file_ctx
+                .bitmap
+                .into_iter()
+                .collect::<heapless::Vec<usize, 32>>()
+                .as_slice()
+        );
 
         let buf = &mut [0u8; 32];
         let len = cbor::to_slice(

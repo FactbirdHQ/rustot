@@ -3,9 +3,12 @@
 use core::fmt::Write;
 use core::str::FromStr;
 
+use crate::rustot_log;
+
 use super::encoding::FileContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ImageState {
     Unknown,
     Aborted,
@@ -29,6 +32,7 @@ pub enum OtaPalError<E: Copy> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PalImageState {
     /// the new firmware image is in the self test phase
     PendingCommit,
@@ -38,6 +42,8 @@ pub enum PalImageState {
     Invalid,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OtaEvent {
     /// OTA update is authenticated and ready to activate.
     Activate,
@@ -45,6 +51,10 @@ pub enum OtaEvent {
     Fail,
     /// OTA job is now ready for optional user self tests.
     StartTest,
+
+    SelfTestFailed,
+
+    UpdateComplete
 }
 
 #[derive(Debug, Clone, Eq)]
@@ -262,15 +272,24 @@ pub trait OtaPal {
     fn complete_callback(&mut self, event: OtaEvent) -> Result<(), OtaPalError<Self::Error>> {
         match event {
             OtaEvent::Activate => self.activate_new_image(),
-            OtaEvent::Fail => {
+            OtaEvent::Fail | OtaEvent::UpdateComplete => {
                 // Nothing special to do. The OTA agent handles it
                 Ok(())
             }
             OtaEvent::StartTest => {
                 // Accept the image since it was a good transfer
                 // and networking and services are all working.
-                self.set_platform_image_state(ImageState::Testing)?;
-                self.reset_device()
+                self.set_platform_image_state(ImageState::Accepted)?;
+                Ok(())
+            }
+            OtaEvent::SelfTestFailed => {
+                // Requires manual activation of previous image as self-test for
+                // new image downloaded failed.*/
+                rustot_log!(error, "Self-test failed, shutting down OTA Agent.");
+
+                // Shutdown OTA Agent, if it is required that the unsubscribe operations are not
+                // performed while shutting down please set the second parameter to 0 instead of 1.
+                Ok(())
             }
         }
     }
