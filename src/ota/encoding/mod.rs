@@ -91,18 +91,18 @@ impl FileContext {
             .clone();
 
         // Initialize new `status_details' if not already present
-        let mut status = if let Some(details) = status_details {
+        let status = if let Some(details) = status_details {
             details
         } else {
-            StatusDetails::new()
+            let mut status = StatusDetails::new();
+            status
+                .insert(
+                    heapless::String::from("updated_by"),
+                    current_version.to_string(),
+                )
+                .map_err(|_| OtaError::Overflow)?;
+            status
         };
-
-        status
-            .insert(
-                heapless::String::from("updated_by"),
-                current_version.to_string(),
-            )
-            .map_err(|_| OtaError::Overflow)?;
 
         let signature = file_desc.signature();
 
@@ -134,7 +134,10 @@ impl FileContext {
         self.status_details
             .get(&heapless::String::from("self_test"))
             .and_then(|f| f.parse().ok())
-            .map(|reason: JobStatusReason| reason == JobStatusReason::SigCheckPassed)
+            .map(|reason: JobStatusReason| {
+                reason == JobStatusReason::SigCheckPassed
+                    || reason == JobStatusReason::SelfTestActive
+            })
             .unwrap_or(false)
     }
 

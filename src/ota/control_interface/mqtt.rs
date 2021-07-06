@@ -72,15 +72,17 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
                 return Ok(());
             }
 
-            let mut progress = heapless::String::new();
-            progress
-                .write_fmt(format_args!("{}/{}", received_blocks, total_blocks))
-                .map_err(|_| OtaError::Overflow)?;
+            if status != JobStatus::Succeeded {
+                let mut progress = heapless::String::new();
+                progress
+                    .write_fmt(format_args!("{}/{}", received_blocks, total_blocks))
+                    .map_err(|_| OtaError::Overflow)?;
 
-            file_ctx
-                .status_details
-                .insert(heapless::String::from("progress"), progress)
-                .map_err(|_| OtaError::Overflow)?;
+                file_ctx
+                    .status_details
+                    .insert(heapless::String::from("progress"), progress)
+                    .map_err(|_| OtaError::Overflow)?;
+            }
 
             // Downgrade Progress updates to QOS 0 to avoid overloading MQTT
             // buffers during active streaming

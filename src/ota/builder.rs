@@ -8,7 +8,7 @@ use crate::ota::{
     state::{SmContext, StateMachine},
 };
 
-use super::{agent::OtaAgent, data_interface::NoInterface};
+use super::{agent::OtaAgent, data_interface::NoInterface, pal::ImageState};
 
 pub struct NoTimer;
 
@@ -198,6 +198,7 @@ where
                 self_test_timer: self.self_test_timer,
                 pal: self.pal,
                 config: self.config,
+                image_state: ImageState::Unknown,
             }),
         }
     }
