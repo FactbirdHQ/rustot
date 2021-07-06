@@ -1,12 +1,9 @@
 use mqttrust::{Mqtt, QoS};
 use serde::Serialize;
 
-use crate::{
-    jobs::{
-        data_types::JobStatus, JobTopic, StatusDetails, MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN,
-        MAX_THING_NAME_LEN,
-    },
-    rustot_log,
+use crate::jobs::{
+    data_types::JobStatus, JobTopic, StatusDetails, MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN,
+    MAX_THING_NAME_LEN,
 };
 
 use super::JobError;
@@ -179,12 +176,6 @@ impl<'a> Update<'a> {
     }
 
     pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), JobError> {
-        #[cfg(feature = "defmt")]
-        rustot_log!(
-            warn,
-            "Sending Job Update! {:?}",
-            defmt::Debug2Format(&self.status_details.as_ref())
-        );
         let (topic, payload) = self.topic_payload(mqtt.client_id())?;
 
         mqtt.publish(topic.as_str(), &payload, qos)?;

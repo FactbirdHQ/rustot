@@ -1,6 +1,7 @@
 pub struct Config {
     pub(crate) block_size: usize,
     pub(crate) max_request_momentum: u8,
+    pub(crate) activate_delay: u8,
     pub(crate) request_wait_ms: u32,
     pub(crate) status_update_frequency: u32,
     pub(crate) allow_downgrade: bool,
@@ -13,6 +14,7 @@ impl Default for Config {
         Self {
             block_size: 256,
             max_request_momentum: 3,
+            activate_delay: 3,
             request_wait_ms: 8000,
             status_update_frequency: 24,
             allow_downgrade: false,

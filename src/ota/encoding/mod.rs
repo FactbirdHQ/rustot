@@ -7,7 +7,6 @@ use core::str::FromStr;
 use serde::{Serialize, Serializer};
 
 use crate::jobs::StatusDetails;
-use crate::rustot_log;
 
 use self::json::{JobStatusReason, OtaJob, Signature};
 

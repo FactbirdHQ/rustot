@@ -165,6 +165,7 @@ pub mod ota_tests {
                 run_to_state(agent, States::RequestingJob);
                 agent.check_for_update().unwrap();
             }
+            States::Activating => {}
         }
     }
 

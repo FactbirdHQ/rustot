@@ -51,6 +51,8 @@ statemachine! {
         WaitingForFileBlock + RequestJobDocument [request_job_handler] = WaitingForJob,
         WaitingForFileBlock + ReceivedJobDocument((heapless::String<64>, OtaJob, Option<StatusDetails>)) [job_notification_handler] = RequestingJob,
         WaitingForFileBlock + CloseFile [close_file_handler] = WaitingForJob,
+        WaitingForJob + Activate(u8) [activate_image_handler] = Activating,
+        Activating + Activate(u8) [activate_image_handler] = Activating,
         Suspended + Resume [resume_job_handler] = RequestingJob,
         Ready + Suspend = Suspended,
         RequestingJob + Suspend = Suspended,
@@ -331,7 +333,6 @@ where
                 Some(ImageStateReason::VersionCheck),
             )?;
 
-            // TODO: Application callback for self-test failure.
             self.pal.complete_callback(OtaEvent::SelfTestFailed)?;
 
             // Handle self-test failure in the platform specific implementation,
@@ -524,6 +525,17 @@ where
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
+    fn activate_image_handler(&mut self, cnt: &u8) -> Result<(), OtaError> {
+        if *cnt >= self.config.activate_delay {
+            self.pal.complete_callback(OtaEvent::Activate)?;
+        } else {
+            self.events
+                .enqueue(Events::Activate(cnt + 1))
+                .map_err(|_| OtaError::SignalEventFailed)?;
+        }
+        Ok(())
+    }
+
     /// Start timers and initiate request for job document
     fn start_handler(&mut self) -> Result<(), OtaError> {
         // Start self-test timer, if platform is in self-test.
@@ -862,11 +874,16 @@ where
                 // TODO: Last file block processed, increment the statistics
                 // otaAgent.statistics.otaPacketsProcessed++;
 
-                // FIXME: Allow application to empty MQTT Queue, and cleanup before calling `Pal::activate_image()`
-
                 // Let main application know that update is complete
                 rustot_log!(info, "Application callback! {:?}", event);
-                // self.pal.complete_callback(event)?;
+                match event {
+                    OtaEvent::Activate => {
+                        self.events
+                            .enqueue(Events::Activate(0))
+                            .map_err(|_| OtaError::SignalEventFailed)?;
+                    }
+                    event => self.pal.complete_callback(event)?,
+                };
             }
             Ok(false) => {
                 let file_ctx = self
