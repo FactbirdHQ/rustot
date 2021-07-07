@@ -23,7 +23,7 @@ Any contributions will be welcomed! Even if they are just suggestions, bugs or r
 
 This is a port of the Amazon-FreeRTOS AWS IoT Device SDK (https://github.com/nguyenvuhung/amazon-freertos/tree/master/libraries/freertos_plus/aws/ota), written in pure Rust.
 
-It is written to work with [MqttRust](https://github.com/BlackbirdHQ/mqttrust), but should work with any other mqtt client, that implements the [Mqtt trait](https://github.com/BlackbirdHQ/mqttrust/blob/a63084212f24177695e9994971ae94c8c71f4200/src/client.rs#L14) from MqttRust.
+It is written to work with [mqttrust](https://github.com/BlackbirdHQ/mqttrust), but should work with any other mqtt client, that implements the [Mqtt trait](https://github.com/BlackbirdHQ/mqttrust/blob/master/mqttrust/src/lib.rs) from mqttrust.
 
 
 ## Tests
