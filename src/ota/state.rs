@@ -39,6 +39,15 @@ pub enum RestartReason {
     Restart(u8),
 }
 
+impl RestartReason {
+    pub fn inc(self) -> Self {
+        match self {
+            RestartReason::Activate(cnt) => RestartReason::Activate(cnt + 1),
+            RestartReason::Restart(cnt) => RestartReason::Restart(cnt + 1),
+        }
+    }
+}
+
 statemachine! {
     guard_error: OtaError,
     transitions: {
@@ -537,6 +546,7 @@ where
     fn restart_handler(&mut self, reason: &RestartReason) -> Result<(), OtaError> {
         match reason {
             RestartReason::Activate(cnt) if *cnt > self.config.activate_delay => {
+                rustot_log!(info, "Application callback! OtaEvent::Activate");
                 self.pal.complete_callback(OtaEvent::Activate)?;
             }
             RestartReason::Restart(cnt) if *cnt > self.config.activate_delay => {
@@ -544,7 +554,7 @@ where
             }
             r => {
                 self.events
-                    .enqueue(Events::Restart(r.clone()))
+                    .enqueue(Events::Restart(r.inc()))
                     .map_err(|_| OtaError::SignalEventFailed)?;
             }
         }
@@ -692,7 +702,10 @@ where
 
             file_ctx
                 .status_details
-                .insert(heapless::String::from("self_test"), heapless::String::new())
+                .insert(
+                    heapless::String::from("self_test"),
+                    heapless::String::from(JobStatusReason::Accepted.as_str()),
+                )
                 .map_err(|_| OtaError::Overflow)?;
 
             // Stop the self test timer as it is no longer required
@@ -891,8 +904,6 @@ where
                 // TODO: Last file block processed, increment the statistics
                 // otaAgent.statistics.otaPacketsProcessed++;
 
-                // Let main application know that update is complete
-                rustot_log!(info, "Application callback! {:?}", event);
                 match event {
                     OtaEvent::Activate => {
                         self.events

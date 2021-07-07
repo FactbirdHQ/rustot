@@ -72,8 +72,10 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
                 return Ok(());
             }
 
-            // Don't override the progress on succeeded
-            if status != JobStatus::Succeeded {
+            // Don't override the progress on succeeded, nor on self-test
+            // active. (Cases where progess counter is lost due to device
+            // restarts)
+            if status != JobStatus::Succeeded && reason != JobStatusReason::SelfTestActive {
                 let mut progress = heapless::String::new();
                 progress
                     .write_fmt(format_args!("{}/{}", received_blocks, total_blocks))
@@ -90,13 +92,6 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             qos = QoS::AtMostOnce;
         }
 
-        // #[cfg(feature = "defmt")]
-        // crate::rustot_log!(
-        //     warn,
-        //     "Sending Job Update! {:?} {:?}",
-        //     status,
-        //     defmt::Debug2Format(&file_ctx.status_details)
-        // );
         Jobs::update(file_ctx.job_name.as_str(), status)
             .status_details(&file_ctx.status_details)
             .send(self, qos)?;
