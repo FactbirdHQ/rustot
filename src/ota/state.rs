@@ -33,6 +33,12 @@ pub enum ImageStateReason<E: Copy> {
     Pal(OtaPalError<E>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RestartReason {
+    Activate(u8),
+    Restart(u8),
+}
+
 statemachine! {
     guard_error: OtaError,
     transitions: {
@@ -43,6 +49,7 @@ statemachine! {
         CreatingFile + StartSelfTest [in_self_test_handler] = WaitingForJob,
         CreatingFile + CreateFile [init_file_handler] = RequestingFileBlock,
         CreatingFile + RequestTimer [init_file_handler] = RequestingFileBlock,
+        CreatingFile + Restart(RestartReason) [restart_handler] = Restarting,
         RequestingFileBlock + RequestFileBlock [request_data_handler] = WaitingForFileBlock,
         RequestingFileBlock + RequestTimer [request_data_handler] = WaitingForFileBlock,
         WaitingForFileBlock + ReceivedFileBlock(&'a mut [u8]) [process_data_handler]  = WaitingForFileBlock,
@@ -51,8 +58,8 @@ statemachine! {
         WaitingForFileBlock + RequestJobDocument [request_job_handler] = WaitingForJob,
         WaitingForFileBlock + ReceivedJobDocument((heapless::String<64>, OtaJob, Option<StatusDetails>)) [job_notification_handler] = RequestingJob,
         WaitingForFileBlock + CloseFile [close_file_handler] = WaitingForJob,
-        WaitingForJob + Activate(u8) [activate_image_handler] = Activating,
-        Activating + Activate(u8) [activate_image_handler] = Activating,
+        WaitingForJob + Restart(RestartReason) [restart_handler] = Restarting,
+        Restarting + Restart(RestartReason) [restart_handler] = Restarting,
         Suspended + Resume [resume_job_handler] = RequestingJob,
         Ready + Suspend = Suspended,
         RequestingJob + Suspend = Suspended,
@@ -337,7 +344,9 @@ where
 
             // Handle self-test failure in the platform specific implementation,
             // example, reset the device in case of firmware upgrade.
-            self.pal.reset_device()?;
+            self.events
+                .enqueue(Events::Restart(RestartReason::Restart(0)))
+                .map_err(|_| OtaError::SignalEventFailed)?;
             Ok(())
         }
     }
@@ -525,13 +534,19 @@ where
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
-    fn activate_image_handler(&mut self, cnt: &u8) -> Result<(), OtaError> {
-        if *cnt >= self.config.activate_delay {
-            self.pal.complete_callback(OtaEvent::Activate)?;
-        } else {
-            self.events
-                .enqueue(Events::Activate(cnt + 1))
-                .map_err(|_| OtaError::SignalEventFailed)?;
+    fn restart_handler(&mut self, reason: &RestartReason) -> Result<(), OtaError> {
+        match reason {
+            RestartReason::Activate(cnt) if *cnt > self.config.activate_delay => {
+                self.pal.complete_callback(OtaEvent::Activate)?;
+            }
+            RestartReason::Restart(cnt) if *cnt > self.config.activate_delay => {
+                self.pal.reset_device()?;
+            }
+            r => {
+                self.events
+                    .enqueue(Events::Restart(r.clone()))
+                    .map_err(|_| OtaError::SignalEventFailed)?;
+            }
         }
         Ok(())
     }
@@ -698,7 +713,10 @@ where
                 ImageState::Rejected,
                 Some(ImageStateReason::ImageStateMismatch),
             )?;
-            self.pal.reset_device()?;
+
+            self.events
+                .enqueue(Events::Restart(RestartReason::Restart(0)))
+                .map_err(|_| OtaError::SignalEventFailed)?;
         }
         Ok(())
     }
@@ -748,20 +766,19 @@ where
             }
         } else {
             if !self.platform_in_selftest() {
-                // TODO: Start next pending job?
-
                 // Received a valid context so send event to request file blocks
                 self.events
                     .enqueue(Events::CreateFile)
                     .map_err(|_| OtaError::SignalEventFailed)?;
-                Ok(())
             } else {
                 // Received a job that is not in self-test but platform is, so
                 // reboot the device to allow roll back to previous image.
                 rustot_log!(error, "Rejecting new image and rebooting: The platform is in the self-test state while the job is not.");
-                self.pal.reset_device()?;
-                Err(OtaError::ResetFailed)
+                self.events
+                    .enqueue(Events::Restart(RestartReason::Restart(0)))
+                    .map_err(|_| OtaError::SignalEventFailed)?;
             }
+            Ok(())
         }
     }
 
@@ -879,7 +896,7 @@ where
                 match event {
                     OtaEvent::Activate => {
                         self.events
-                            .enqueue(Events::Activate(0))
+                            .enqueue(Events::Restart(RestartReason::Activate(0)))
                             .map_err(|_| OtaError::SignalEventFailed)?;
                     }
                     event => self.pal.complete_callback(event)?,
