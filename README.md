@@ -14,10 +14,8 @@ This crates strives to implement the sum of:
 ![Test][test]
 [![Code coverage][codecov-badge]][codecov]
 ![No Std][no-std-badge]
-<!--
 [![Crates.io Version][crates-io-badge]][crates-io]
 [![Crates.io Downloads][crates-io-download-badge]][crates-io-download]
--->
 
 Any contributions will be welcomed! Even if they are just suggestions, bugs or reviews!
 
@@ -51,9 +49,7 @@ dual licensed as above, without any additional terms or conditions.
 [no-std-badge]: https://img.shields.io/badge/no__std-yes-blue
 [codecov-badge]: https://codecov.io/gh/BlackbirdHQ/rustot/branch/master/graph/badge.svg
 [codecov]: https://codecov.io/gh/BlackbirdHQ/rustot
-<!--
 [crates-io]: https://crates.io/crates/rustot
 [crates-io-badge]: https://img.shields.io/crates/v/rustot.svg?maxAge=3600
 [crates-io-download]: https://crates.io/crates/rustot
 [crates-io-download-badge]: https://img.shields.io/crates/d/rustot.svg?maxAge=3600
--->
