@@ -1,106 +1,164 @@
 mod common;
 
-use embedded_nal::Ipv4Addr;
-
-use mqttrust_core::{Client, EventLoop, MqttOptions, Notification, Request};
-
-use rustot::{
-    jobs::{is_job_message, IotJobsData, JobAgent, JobDetails},
-    ota::ota::{is_ota_message, OtaAgent, OtaConfig},
+use jobs::data_types::NextJobExecutionChanged;
+use mqttrust_core::{
+    Client, EventLoop, MqttOptions, Notification, OwnedRequest, PublishNotification,
 };
+use serde::Deserialize;
 
 use common::file_handler::FileHandler;
 use common::network::Network;
-use common::timer::SysTimer;
+use common::timer::SysClock;
 use heapless::spsc::Queue;
+use ota::encoding::json::OtaJob;
+use rustot::jobs::data_types::DescribeJobExecutionResponse;
+use rustot::jobs::{self, StatusDetails, MAX_JOB_ID_LEN};
+use rustot::ota;
+use rustot::ota::agent::OtaAgent;
 use std::thread;
 
-static mut Q: Queue<Request<heapless::Vec<u8, 512>>, 10> = Queue::new();
+static mut Q: Queue<OwnedRequest<128, 512>, 10> = Queue::new();
+
+#[derive(Debug, Deserialize)]
+pub enum Jobs {
+    #[serde(rename = "afr_ota")]
+    Ota(OtaJob),
+}
+
+impl Jobs {
+    pub fn ota_job(self) -> Option<OtaJob> {
+        match self {
+            Jobs::Ota(ota_job) => Some(ota_job),
+        }
+    }
+}
+
+enum OtaUpdate {
+    JobUpdate(
+        heapless::String<MAX_JOB_ID_LEN>,
+        OtaJob,
+        Option<StatusDetails>,
+    ),
+    Data,
+}
+
+fn handle_ota(publish: &PublishNotification) -> Result<OtaUpdate, ()> {
+    match jobs::Topic::from_str(publish.topic_name.as_str()) {
+        Some(jobs::Topic::NotifyNext) => {
+            let (execution_changed, _) =
+                serde_json_core::from_slice::<NextJobExecutionChanged<Jobs>>(&publish.payload)
+                    .map_err(drop)?;
+            let job = execution_changed.execution.ok_or(())?;
+            let ota_job = job.job_document.ok_or(())?.ota_job().ok_or(())?;
+            return Ok(OtaUpdate::JobUpdate(
+                job.job_id,
+                ota_job,
+                job.status_details,
+            ));
+        }
+        Some(jobs::Topic::DescribeAccepted(_)) => {
+            let (execution_changed, _) =
+                serde_json_core::from_slice::<DescribeJobExecutionResponse<Jobs>>(&publish.payload)
+                    .map_err(drop)?;
+            let job = execution_changed.execution.ok_or(())?;
+            let ota_job = job.job_document.ok_or(())?.ota_job().ok_or(())?;
+            return Ok(OtaUpdate::JobUpdate(
+                job.job_id,
+                ota_job,
+                job.status_details,
+            ));
+        }
+        _ => {}
+    }
+
+    match ota::Topic::from_str(publish.topic_name.as_str()) {
+        Some(ota::Topic::Data(_, _)) => {
+            return Ok(OtaUpdate::Data);
+        }
+        _ => {}
+    }
+    Err(())
+}
 
 fn main() {
+    env_logger::init();
+
     let (p, c) = unsafe { Q.split() };
 
     let mut network = Network;
 
-    // #[cfg(feature = "logging")]
-    // log::info!("Starting!");
+    let thing_name = "rustot-test";
 
-    let thing_name = "test_mini_2";
-
-    // Connect to broker.hivemq.com:1883
     let mut mqtt_eventloop = EventLoop::new(
         c,
-        SysTimer::new(),
-        MqttOptions::new(thing_name, Ipv4Addr::new(52, 208, 158, 107).into(), 8883),
+        SysClock::new(),
+        MqttOptions::new(
+            thing_name,
+            "a69ih9fwq4cti-ats.iot.eu-west-1.amazonaws.com".into(),
+            8883,
+        ),
     );
 
-    let mut mqtt_client = Client::new(p, thing_name);
+    let mqtt_client = Client::new(p, thing_name);
 
     let file_handler = FileHandler::new();
-    let mut job_agent = JobAgent::new(3);
-    let mut ota_agent = OtaAgent::new(file_handler, SysTimer::new(), OtaConfig::default());
 
     nb::block!(mqtt_eventloop.connect(&mut network)).expect("Failed to connect to MQTT");
 
-    job_agent.subscribe_to_jobs(&mut mqtt_client).unwrap();
-
-    job_agent
-        .describe_job_execution(&mut mqtt_client, "$next", None, None)
-        .unwrap();
-
     thread::Builder::new()
         .name("eventloop".to_string())
-        .spawn(move || loop {
-            // ota_agent.request_timer_irq(&mqtt_client);
+        .spawn(move || {
+            let mut ota_agent =
+                OtaAgent::builder(&mqtt_client, &mqtt_client, SysClock::new(), file_handler)
+                    .build();
 
-            match nb::block!(mqtt_eventloop.yield_event(&mut network)) {
-                Ok(Notification::Publish(mut publish)) => {
-                    if is_job_message(&publish.topic_name) {
-                        match job_agent.handle_message(&mut mqtt_client, &publish) {
-                            Ok(None) => {}
-                            Ok(Some(job)) => {
-                                // #[cfg(feature = "logging")]
-                                // log::debug!("Accepted a new JOB! {:?}", job);
-                                match job.details {
-                                    JobDetails::OtaJob(otajob) => ota_agent
-                                        .process_ota_job(&mut mqtt_client, &otajob)
-                                        .unwrap(),
-                                    _ => {}
+            ota_agent.init();
+
+            let mut cnt = 0;
+            let mut suspended = false;
+
+            loop {
+                ota_agent.timer_callback().expect("Failed timer callback!");
+
+                match mqtt_eventloop.yield_event(&mut network) {
+                    Ok(Notification::Publish(mut publish)) => {
+                        // Check if the received file is a jobs topic, that we
+                        // want to react to.
+                        match handle_ota(&publish) {
+                            Ok(OtaUpdate::JobUpdate(job_id, job_doc, status_details)) => {
+                                log::debug!("Received job! Starting OTA! {:?}", job_doc.streamname);
+                                ota_agent
+                                    .job_update(job_id.as_str(), job_doc, status_details)
+                                    .expect("Failed to start OTA job");
+                            }
+                            Ok(OtaUpdate::Data) => {
+                                ota_agent.handle_message(&mut publish.payload).ok();
+                                cnt += 1;
+
+                                if cnt > 1000 && !suspended {
+                                    log::info!("Suspending current OTA Job");
+                                    ota_agent.suspend().ok();
+                                    suspended = true;
                                 }
                             }
-                            Err(e) => {
-                                // #[cfg(feature = "logging")]
-                                // log::error!("[{}, {:?}]:", publish.topic_name, publish.qospid);
-                                // #[cfg(feature = "logging")]
-                                // log::error!("{:?}", e);
-                            }
+                            Err(_) => {}
                         }
-                    } else if is_ota_message(&publish.topic_name) {
-                        match ota_agent.handle_message(
-                            &mut mqtt_client,
-                            &mut job_agent,
-                            &mut publish,
-                        ) {
-                            Ok(progress) => {
-                                // #[cfg(feature = "logging")]
-                                // log::info!("OTA Progress: {}%", progress);
-                            }
-                            Err(e) => {
-                                // #[cfg(feature = "logging")]
-                                // log::error!("[{}, {:?}]:", publish.topic_name, publish.qospid);
-                                // #[cfg(feature = "logging")]
-                                // log::error!("{:?}", e);
-                            }
-                        }
-                    } else {
-                        // #[cfg(feature = "logging")]
-                        // log::info!("Got some other incoming message {:?}", publish);
+                    }
+                    Ok(n) => {
+                        log::trace!("{:?}", n);
+                    }
+                    _ => {}
+                }
+
+                if suspended && cnt < 1200 {
+                    cnt += 1;
+                    thread::sleep(std::time::Duration::from_millis(200));
+                    if cnt >= 1200 {
+                        log::info!("Resuming OTA Job");
+                        ota_agent.resume().ok();
                     }
                 }
-                _ => {
-                    // #[cfg(feature = "logging")]
-                    // log::debug!("{:?}", n);
-                }
+                ota_agent.process_event().ok();
             }
         })
         .unwrap();

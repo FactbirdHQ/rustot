@@ -5,6 +5,12 @@
 
 > no_std, no_alloc crate for AWS IoT Devices, implementing Jobs, OTA, Device Defender and IoT Shadows
 
+This crates strives to implement the sum of:
+- [AWS OTA](https://github.com/aws/ota-for-aws-iot-embedded-sdk)
+- [AWS Device Defender](https://github.com/aws/Device-Defender-for-AWS-IoT-embedded-sdk)
+- [AWS Jobs](https://github.com/aws/Jobs-for-AWS-IoT-embedded-sdk)
+- [AWS Device Shadow](https://github.com/aws/Device-Shadow-for-AWS-IoT-embedded-sdk)
+
 ![Test][test]
 [![Code coverage][codecov-badge]][codecov]
 ![No Std][no-std-badge]

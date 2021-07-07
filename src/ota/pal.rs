@@ -1,20 +1,38 @@
 //! Platform abstraction trait for OTA updates
 
-use crate::{jobs::FileDescription, ota::ota::ImageState};
+use core::fmt::Write;
+use core::str::FromStr;
 
-#[derive(Debug)]
-pub enum OtaPalError<E> {
+use crate::rustot_log;
+
+use super::encoding::FileContext;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ImageState {
+    Unknown,
+    Aborted,
+    Rejected,
+    Accepted,
+    Testing,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum OtaPalError<E: Copy> {
     SignatureCheckFailed,
     FileWriteFailed,
     FileTooLarge,
     FileCloseFailed,
     BadFileHandle,
     Unsupported,
-    CommitFailed,
     BadImageState,
+    CommitFailed,
+    VersionCheck,
     Custom(E),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PalImageState {
     /// the new firmware image is in the self test phase
     PendingCommit,
@@ -24,6 +42,8 @@ pub enum PalImageState {
     Invalid,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OtaEvent {
     /// OTA update is authenticated and ready to activate.
     Activate,
@@ -31,11 +51,98 @@ pub enum OtaEvent {
     Fail,
     /// OTA job is now ready for optional user self tests.
     StartTest,
+
+    SelfTestFailed,
+
+    UpdateComplete,
 }
 
+#[derive(Debug, Clone, Eq)]
+pub struct Version {
+    major: u8,
+    minor: u8,
+    patch: u8,
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for Version {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "{=u8}.{=u8}.{=u8}", self.major, self.minor, self.patch)
+    }
+}
+
+impl Default for Version {
+    fn default() -> Self {
+        Self::new(0, 0, 0)
+    }
+}
+
+impl FromStr for Version {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut iter = s.split(".");
+        Ok(Self {
+            major: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
+            minor: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
+            patch: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
+        })
+    }
+}
+
+impl Version {
+    pub fn new(major: u8, minor: u8, patch: u8) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    pub fn to_string<const L: usize>(&self) -> heapless::String<L> {
+        let mut s = heapless::String::new();
+        s.write_fmt(format_args!("{}.{}.{}", self.major, self.minor, self.patch))
+            .unwrap();
+        s
+    }
+}
+
+impl core::cmp::PartialEq for Version {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.major == other.major && self.minor == other.minor && self.patch == other.patch
+    }
+}
+
+impl core::cmp::PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl core::cmp::Ord for Version {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        match self.major.cmp(&other.major) {
+            core::cmp::Ordering::Equal => {}
+            r => return r,
+        }
+
+        match self.minor.cmp(&other.minor) {
+            core::cmp::Ordering::Equal => {}
+            r => return r,
+        }
+
+        match self.patch.cmp(&other.patch) {
+            core::cmp::Ordering::Equal => {}
+            r => return r,
+        }
+
+        core::cmp::Ordering::Equal
+    }
+}
 /// Platform abstraction layer for OTA jobs
 pub trait OtaPal {
-    type Error;
+    type Error: Copy;
 
     /// OTA abort.
     ///
@@ -43,8 +150,8 @@ pub trait OtaPal {
     /// Agent. This callback is used to override the behavior of how a job is
     /// aborted.
     ///
-    /// - `file`: [`FileDescription`] File description of the job being aborted
-    fn abort(&mut self, file: &FileDescription) -> Result<(), OtaPalError<Self::Error>>;
+    /// - `file`: [`FileContext`] File description of the job being aborted
+    fn abort(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Activate the newest MCU image received via OTA.
     ///
@@ -66,11 +173,8 @@ pub trait OtaPal {
     /// Agent. This callback is used to override the behavior of how a new file
     /// is created.
     ///
-    /// - `file`: [`FileDescription`] File description of the job being aborted
-    fn create_file_for_rx(
-        &mut self,
-        file: &FileDescription,
-    ) -> Result<(), OtaPalError<Self::Error>>;
+    /// - `file`: [`FileContext`] File description of the job being aborted
+    fn create_file_for_rx(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Get the state of the OTA update image.
     ///
@@ -87,7 +191,7 @@ pub trait OtaPal {
     /// timer is not started.
     ///
     /// **return** An [`PalImageState`].
-    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError<Self::Error>>;
+    fn get_platform_image_state(&self) -> Result<PalImageState, OtaPalError<Self::Error>>;
 
     /// Attempt to set the state of the OTA update image.
     ///
@@ -121,15 +225,15 @@ pub trait OtaPal {
     /// If the signature verification fails, file close should still be
     /// attempted.
     ///
-    /// - `file`: [`FileDescription`] File description of the job being aborted
+    /// - `file`: [`FileContext`] File description of the job being aborted
     ///
     /// **return** The OTA PAL layer error code combined with the MCU specific
     /// error code.
-    fn close_file(&mut self, file: &FileDescription) -> Result<(), OtaPalError<Self::Error>>;
+    fn close_file(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Write a block of data to the specified file at the given offset.
     ///
-    /// - `file`: [`FileDescription`] File description of the job being aborted.
+    /// - `file`: [`FileContext`] File description of the job being aborted.
     /// - `block_offset`: Byte offset to write to from the beginning of the
     ///   file.
     /// - `block_payload`: Byte array of data to write.
@@ -138,7 +242,7 @@ pub trait OtaPal {
     /// code from the platform abstraction layer.
     fn write_block(
         &mut self,
-        file: &FileDescription,
+        file: &FileContext,
         block_offset: usize,
         block_payload: &[u8],
     ) -> Result<usize, OtaPalError<Self::Error>>;
@@ -158,9 +262,9 @@ pub trait OtaPal {
     ///
     /// The callback function is called with one of the following arguments:
     ///
-    ///      OtaEvent::Activate      OTA update is authenticated and ready to activate.
-    ///      OtaEvent::Fail          OTA update failed. Unable to use this update.
-    ///      OtaEvent::StartTest     OTA job is now ready for optional user self tests.
+    /// - OtaEvent::Activate      OTA update is authenticated and ready to activate.
+    /// - OtaEvent::Fail          OTA update failed. Unable to use this update.
+    /// - OtaEvent::StartTest     OTA job is now ready for optional user self tests.
     ///
     /// When OtaEvent::Activate is received, the job status details have been
     /// updated with the state as ready for Self Test. After reboot, the new
@@ -175,15 +279,36 @@ pub trait OtaPal {
     fn complete_callback(&mut self, event: OtaEvent) -> Result<(), OtaPalError<Self::Error>> {
         match event {
             OtaEvent::Activate => self.activate_new_image(),
-            OtaEvent::Fail => {
+            OtaEvent::Fail | OtaEvent::UpdateComplete => {
                 // Nothing special to do. The OTA agent handles it
                 Ok(())
             }
             OtaEvent::StartTest => {
                 // Accept the image since it was a good transfer
                 // and networking and services are all working.
-                self.set_platform_image_state(ImageState::Accepted)
+                self.set_platform_image_state(ImageState::Accepted)?;
+                Ok(())
+            }
+            OtaEvent::SelfTestFailed => {
+                // Requires manual activation of previous image as self-test for
+                // new image downloaded failed.*/
+                rustot_log!(error, "Self-test failed, shutting down OTA Agent.");
+
+                // Shutdown OTA Agent, if it is required that the unsubscribe operations are not
+                // performed while shutting down please set the second parameter to 0 instead of 1.
+                Ok(())
             }
         }
     }
+
+    ///
+    fn get_active_firmware_version(&self) -> Result<Version, OtaPalError<Self::Error>>;
+}
+
+#[cfg(test)]
+mod tests {
+    //! Platform abstraction layer tests.
+    //!
+    //! These tests utilize the `MockPal` to test that the `OtaPal` trait
+    //! functions are called correctly.
 }

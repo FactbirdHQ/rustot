@@ -1,43 +1,8 @@
-use core::ops::{Deref, DerefMut};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, PartialEq)]
-pub struct Bitmap(bitmaps::Bitmap<32>);
+use crate::ota::data_interface::FileBlock;
 
-impl Bitmap {
-    pub fn new(file_size: usize, block_size: usize, block_offset: u32) -> Self {
-        // Total number of blocks in file, rounded up
-        let total_num_blocks = (file_size + block_size - 1) / block_size;
-
-        Self(bitmaps::Bitmap::mask(core::cmp::min(
-            31,
-            total_num_blocks - block_offset as usize,
-        )))
-    }
-}
-
-impl Deref for Bitmap {
-    type Target = bitmaps::Bitmap<32>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Bitmap {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Serialize for Bitmap {
-    fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        Serializer::serialize_bytes(serializer, &self.deref().into_value().to_le_bytes())
-    }
-}
+use super::Bitmap;
 
 #[derive(Serialize)]
 pub struct DescribeStreamRequest<'a> {
@@ -116,8 +81,22 @@ where
     Ok(serializer.into_inner().bytes_written())
 }
 
+impl<'a> From<GetStreamResponse<'a>> for FileBlock<'a> {
+    fn from(v: GetStreamResponse<'a>) -> Self {
+        Self {
+            client_token: v.client_token,
+            file_id: v.file_id,
+            block_size: v.block_size,
+            block_id: v.block_id,
+            block_payload: v.block_payload,
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use core::ops::{Deref, DerefMut};
+
     use super::*;
 
     #[test]
