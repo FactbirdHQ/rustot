@@ -1,6 +1,6 @@
 [package]
 name = "rustot"
-version = "0.2.0"
+version = "0.1.0"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "AWS IoT"
 readme = "README.md"
