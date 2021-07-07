@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn job_status_reason_serialize() {
         let reasons = &[
-            (JobStatusReason::Receiving, ""),
+            (JobStatusReason::Receiving, "receiving"),
             (JobStatusReason::SigCheckPassed, "ready"),
             (JobStatusReason::SelfTestActive, "active"),
             (JobStatusReason::Accepted, "accepted"),

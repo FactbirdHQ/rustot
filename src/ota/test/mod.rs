@@ -263,10 +263,7 @@ pub mod ota_tests {
                 qos: QoS::AtLeastOnce,
                 retain: false,
                 topic_name: String::from("$aws/things/test_client/jobs/$next/get"),
-                payload: vec![
-                    123, 34, 99, 108, 105, 101, 110, 116, 84, 111, 107, 101, 110, 34, 58, 34, 48,
-                    58, 116, 101, 115, 116, 95, 99, 108, 105, 101, 110, 116, 34, 125
-                ]
+                payload: vec![123, 125]
             }))
         );
         assert_eq!(mqtt.tx.borrow_mut().len(), 0);

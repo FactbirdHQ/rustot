@@ -4,7 +4,6 @@ use core::str::FromStr;
 use mqttrust::{Mqtt, QoS, SubscribeTopic};
 
 use crate::ota::error::OtaError;
-use crate::rustot_log;
 use crate::{
     jobs::{MAX_STREAM_ID_LEN, MAX_THING_NAME_LEN},
     ota::{
