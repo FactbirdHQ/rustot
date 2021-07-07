@@ -1,5 +1,4 @@
 use core::fmt::Write;
-// use core::sync::atomic::{AtomicU32, Ordering};
 
 use mqttrust::QoS;
 
@@ -7,14 +6,10 @@ use super::ControlInterface;
 use crate::jobs::data_types::JobStatus;
 use crate::jobs::subscribe::Topic;
 use crate::jobs::Jobs;
-// use crate::jobs::MAX_CLIENT_TOKEN_LEN;
 use crate::ota::config::Config;
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
-
-// FIXME: This can cause unit-tests to sometimes fail, due to parallel execution
-// static REQUEST_CNT: AtomicU32 = AtomicU32::new(0);
 
 impl<T: mqttrust::Mqtt> ControlInterface for T {
     /// Check for next available OTA job from the job service by publishing a
@@ -25,18 +20,7 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             .topic(Topic::NotifyNext, QoS::AtLeastOnce)
             .send(self)?;
 
-        // let request_cnt = REQUEST_CNT.fetch_add(1, Ordering::Relaxed);
-
-        // Obtains a unique client token on the form
-        // `{requestNumber}:{thingName}`, and increments the request counter
-        // let mut client_token = heapless::String::<MAX_CLIENT_TOKEN_LEN>::new();
-        // client_token
-        //     .write_fmt(format_args!("{}:{}", request_cnt, self.client_id()))
-        //     .map_err(|_| OtaError::Overflow)?;
-
-        Jobs::describe()
-            // .client_token(client_token.as_str())
-            .send(self, QoS::AtLeastOnce)?;
+        Jobs::describe().send(self, QoS::AtLeastOnce)?;
 
         Ok(())
     }
@@ -90,13 +74,6 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
             qos = QoS::AtMostOnce;
         }
 
-        #[cfg(feature = "defmt")]
-        crate::rustot_log!(
-            warn,
-            "Sending Job Update! {:?} {:?}",
-            status,
-            defmt::Debug2Format(&file_ctx.status_details)
-        );
         Jobs::update(file_ctx.job_name.as_str(), status)
             .status_details(&file_ctx.status_details)
             .send(self, qos)?;

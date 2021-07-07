@@ -90,7 +90,7 @@ pub enum JobStatusReason {
 impl JobStatusReason {
     pub fn as_str(&self) -> &str {
         match self {
-            JobStatusReason::Receiving => "",
+            JobStatusReason::Receiving => "receiving",
             JobStatusReason::SigCheckPassed => "ready",
             JobStatusReason::SelfTestActive => "active",
             JobStatusReason::Accepted => "accepted",
@@ -106,7 +106,7 @@ impl FromStr for JobStatusReason {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "" => JobStatusReason::Receiving,
+            "receiving" => JobStatusReason::Receiving,
             "ready" => JobStatusReason::SigCheckPassed,
             "active" => JobStatusReason::SelfTestActive,
             "accepted" => JobStatusReason::Accepted,
