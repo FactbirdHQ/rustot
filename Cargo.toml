@@ -1,6 +1,6 @@
 [package]
 name = "rustot"
-version = "0.2.1-alpha.0"
+version = "0.2.0"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "AWS IoT"
 readme = "README.md"
@@ -58,3 +58,8 @@ defmt-debug = ["defmt"]
 defmt-info = ["defmt"]
 defmt-warn = ["defmt"]
 defmt-error = ["defmt"]
+
+[patch.crates-io]
+mqttrust = { path = "../mqttrust/mqttrust" }
+mqttrust_core = { path = "../mqttrust/mqttrust_core" }
+bbqueue = { git = "https://github.com/mriise/bbqueue" }

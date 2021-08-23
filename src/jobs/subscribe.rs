@@ -75,11 +75,11 @@ impl<'a> From<&Topic<'a>> for JobTopic<'a> {
 }
 
 #[derive(Default)]
-pub struct Subscribe<'a> {
-    topics: heapless::Vec<(Topic<'a>, QoS), 10>,
+pub struct Subscribe<'a, const N: usize> {
+    topics: heapless::Vec<(Topic<'a>, QoS), N>,
 }
 
-impl<'a> Subscribe<'a> {
+impl<'a, const N: usize> Subscribe<'a, N> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -99,49 +99,60 @@ impl<'a> Subscribe<'a> {
 
         let mut topics = self.topics;
         topics.push((topic, qos)).ok();
+
         Self { topics }
     }
 
-    pub fn topics(self, client_id: &str) -> Result<heapless::Vec<SubscribeTopic, 10>, JobError> {
+    pub fn topics(
+        self,
+        client_id: &str,
+    ) -> Result<heapless::Vec<(heapless::String<256>, QoS), N>, JobError> {
         assert!(client_id.len() <= MAX_THING_NAME_LEN);
-
-        self.topics
+        Ok(self
+            .topics
             .iter()
             .map(|(topic, qos)| {
-                Ok(SubscribeTopic {
-                    topic_path: JobTopic::from(topic).format(client_id)?,
-                    qos: qos.clone(),
-                })
+                (
+                    JobTopic::from(topic).format::<256>(client_id).unwrap(),
+                    qos.clone(),
+                )
             })
-            .collect()
+            .collect())
     }
 
     pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), JobError> {
-        let topics = self.topics(mqtt.client_id())?;
+        let topic_paths = self.topics(mqtt.client_id())?;
 
-        // rustot_log!(debug, "Subscribing to: {:?}", topics);
+        let topics: heapless::Vec<_, N> = topic_paths
+            .iter()
+            .map(|(s, qos)| SubscribeTopic {
+                topic_path: s.as_str(),
+                qos: qos.clone(),
+            })
+            .collect();
+
+        crate::rustot_log!(debug, "Subscribing!");
 
         for t in topics.chunks(5) {
-            mqtt.subscribe_many(heapless::Vec::from_slice(t).map_err(|_| JobError::Overflow)?)?;
+            mqtt.subscribe(t)?;
         }
-
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use mqttrust::{QoS, SubscribeRequest, SubscribeTopic};
+    use mqttrust::{encoding::v4::decode_slice, Packet, QoS, SubscribeTopic};
 
     use super::*;
 
-    use crate::test::{MockMqtt, MqttRequest};
+    use crate::test::MockMqtt;
 
     #[test]
     fn splits_subscribe_all() {
         let mqtt = &MockMqtt::new();
 
-        Subscribe::new()
+        Subscribe::<10>::new()
             .topic(Topic::Notify, QoS::AtLeastOnce)
             .topic(Topic::NotifyNext, QoS::AtLeastOnce)
             .topic(Topic::GetAccepted, QoS::AtLeastOnce)
@@ -156,79 +167,72 @@ mod tests {
             .unwrap();
 
         assert_eq!(mqtt.tx.borrow_mut().len(), 2);
+        let bytes = mqtt.tx.borrow_mut().pop_front().unwrap();
+        let packet = decode_slice(bytes.as_slice()).unwrap();
+
+        let topics = match packet {
+            Some(Packet::Subscribe(ref s)) => s.topics().collect::<Vec<_>>(),
+            _ => panic!(),
+        };
+
         assert_eq!(
-            mqtt.tx.borrow_mut().pop_front(),
-            Some(MqttRequest::Subscribe(SubscribeRequest {
-                topics: heapless::Vec::from_slice(&[
-                    SubscribeTopic {
-                        topic_path: heapless::String::from("$aws/things/test_client/jobs/notify"),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/notify-next"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/get/accepted"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/get/rejected"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/start-next/accepted"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    }
-                ])
-                .unwrap()
-            }))
+            topics,
+            vec![
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/notify",
+                    qos: QoS::AtLeastOnce
+                },
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/notify-next",
+                    qos: QoS::AtLeastOnce
+                },
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/get/accepted",
+                    qos: QoS::AtLeastOnce
+                },
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/get/rejected",
+                    qos: QoS::AtLeastOnce
+                },
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/start-next/accepted",
+                    qos: QoS::AtLeastOnce
+                }
+            ]
         );
+
+        let bytes = mqtt.tx.borrow_mut().pop_front().unwrap();
+        let packet = decode_slice(bytes.as_slice()).unwrap();
+
+        let topics = match packet {
+            Some(Packet::Subscribe(ref s)) => s.topics().collect::<Vec<_>>(),
+            _ => panic!(),
+        };
+
         assert_eq!(
-            mqtt.tx.borrow_mut().pop_front(),
-            Some(MqttRequest::Subscribe(SubscribeRequest {
-                topics: heapless::Vec::from_slice(&[
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/start-next/rejected"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/test_job/get/accepted"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/test_job/get/rejected"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/test_job/update/accepted"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    },
-                    SubscribeTopic {
-                        topic_path: heapless::String::from(
-                            "$aws/things/test_client/jobs/test_job/update/rejected"
-                        ),
-                        qos: QoS::AtLeastOnce
-                    }
-                ])
-                .unwrap()
-            }))
+            topics,
+            vec![
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/start-next/rejected",
+                    qos: QoS::AtLeastOnce
+                },
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/test_job/get/accepted",
+                    qos: QoS::AtLeastOnce
+                },
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/test_job/get/rejected",
+                    qos: QoS::AtLeastOnce
+                },
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/test_job/update/accepted",
+                    qos: QoS::AtLeastOnce
+                },
+                SubscribeTopic {
+                    topic_path: "$aws/things/test_client/jobs/test_job/update/rejected",
+                    qos: QoS::AtLeastOnce
+                }
+            ]
         );
     }
 }

@@ -118,7 +118,7 @@ pub const MAX_THING_NAME_LEN: usize = 128;
 pub const MAX_CLIENT_TOKEN_LEN: usize = MAX_THING_NAME_LEN + 10;
 pub const MAX_JOB_ID_LEN: usize = 64;
 pub const MAX_STREAM_ID_LEN: usize = MAX_JOB_ID_LEN;
-pub const MAX_PENDING_JOBS: usize = 4;
+pub const MAX_PENDING_JOBS: usize = 1;
 pub const MAX_RUNNING_JOBS: usize = 1;
 
 pub type StatusDetails = heapless::FnvIndexMap<heapless::String<15>, heapless::String<11>, 4>;
@@ -242,11 +242,11 @@ impl Jobs {
         Update::new(job_id, status)
     }
 
-    pub fn subscribe<'a>() -> Subscribe<'a> {
+    pub fn subscribe<'a, const N: usize>() -> Subscribe<'a, N> {
         Subscribe::new()
     }
 
-    pub fn unsubscribe<'a>() -> Unsubscribe<'a> {
+    pub fn unsubscribe<'a, const N: usize>() -> Unsubscribe<'a, N> {
         Unsubscribe::new()
     }
 }
