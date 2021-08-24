@@ -55,6 +55,7 @@ statemachine! {
         RequestingJob + RequestJobDocument [request_job_handler] = WaitingForJob,
         RequestingJob + RequestTimer [request_job_handler] = WaitingForJob,
         WaitingForJob + ReceivedJobDocument((heapless::String<64>, OtaJob, Option<StatusDetails>)) [process_job_handler] = CreatingFile,
+        WaitingForJob + Start [request_job_handler] = WaitingForJob,
         CreatingFile + StartSelfTest [in_self_test_handler] = WaitingForJob,
         CreatingFile + CreateFile [init_file_handler] = RequestingFileBlock,
         CreatingFile + RequestTimer [init_file_handler] = RequestingFileBlock,

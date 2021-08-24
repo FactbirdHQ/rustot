@@ -89,7 +89,9 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
 
             // Downgrade Progress updates to QOS 0 to avoid overloading MQTT
             // buffers during active streaming
-            qos = QoS::AtMostOnce;
+            if status == JobStatus::InProgress {
+                qos = QoS::AtMostOnce;
+            }
         }
 
         Jobs::update(file_ctx.job_name.as_str(), status)
