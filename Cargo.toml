@@ -1,6 +1,6 @@
 [package]
 name = "rustot"
-version = "0.2.0"
+version = "0.2.1-alpha.0"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "AWS IoT"
 readme = "README.md"
@@ -44,7 +44,7 @@ rust-crypto = "^0.2"
 embedded-nal = "0.6.0"
 embedded-time = "0.11.0"
 dns-lookup = "1.0.3"
-mqttrust_core = { version = "0.2.0" }
+mqttrust_core = { git = "https://github.com/BlackbirdHQ/mqttrust", rev = "1600266" }
 env_logger = "0.8.4"
 
 [features]
