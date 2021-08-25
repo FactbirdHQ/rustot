@@ -21,7 +21,7 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
     /// "get next job" message to the job service.
     fn request_job(&self) -> Result<(), OtaError> {
         // Subscribe to the OTA job notification topics
-        Jobs::subscribe()
+        Jobs::subscribe::<1>()
             .topic(Topic::NotifyNext, QoS::AtLeastOnce)
             .send(self)?;
 
@@ -89,7 +89,9 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
 
             // Downgrade Progress updates to QOS 0 to avoid overloading MQTT
             // buffers during active streaming
-            qos = QoS::AtMostOnce;
+            if status == JobStatus::InProgress {
+                qos = QoS::AtMostOnce;
+            }
         }
 
         Jobs::update(file_ctx.job_name.as_str(), status)
@@ -101,7 +103,9 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
 
     /// Perform any cleanup operations required for control plane
     fn cleanup(&self) -> Result<(), OtaError> {
-        Jobs::unsubscribe().topic(Topic::NotifyNext).send(self)?;
+        Jobs::unsubscribe::<1>()
+            .topic(Topic::NotifyNext)
+            .send(self)?;
         Ok(())
     }
 }

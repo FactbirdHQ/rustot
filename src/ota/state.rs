@@ -55,6 +55,7 @@ statemachine! {
         RequestingJob + RequestJobDocument [request_job_handler] = WaitingForJob,
         RequestingJob + RequestTimer [request_job_handler] = WaitingForJob,
         WaitingForJob + ReceivedJobDocument((heapless::String<64>, OtaJob, Option<StatusDetails>)) [process_job_handler] = CreatingFile,
+        WaitingForJob + Start [request_job_handler] = WaitingForJob,
         CreatingFile + StartSelfTest [in_self_test_handler] = WaitingForJob,
         CreatingFile + CreateFile [init_file_handler] = RequestingFileBlock,
         CreatingFile + RequestTimer [init_file_handler] = RequestingFileBlock,
@@ -544,6 +545,7 @@ where
     PAL: OtaPal,
 {
     fn restart_handler(&mut self, reason: &RestartReason) -> Result<(), OtaError> {
+        rustot_log!(debug, "restart_handler");
         match reason {
             RestartReason::Activate(cnt) if *cnt > self.config.activate_delay => {
                 rustot_log!(info, "Application callback! OtaEvent::Activate");
@@ -563,6 +565,7 @@ where
 
     /// Start timers and initiate request for job document
     fn start_handler(&mut self) -> Result<(), OtaError> {
+        rustot_log!(debug, "start_handler");
         // Start self-test timer, if platform is in self-test.
         if self.platform_in_selftest() {
             // Start self-test timer
@@ -580,6 +583,7 @@ where
     }
 
     fn resume_job_handler(&mut self) -> Result<(), OtaError> {
+        rustot_log!(debug, "resume_job_handler");
         // Send signal to request job document
         self.events
             .enqueue(Events::RequestJobDocument)
@@ -588,6 +592,7 @@ where
 
     /// Initiate a request for a job
     fn request_job_handler(&mut self) -> Result<(), OtaError> {
+        rustot_log!(debug, "request_job_handler");
         match self.control.request_job() {
             Err(e) => {
                 if self.request_momentum < self.config.max_request_momentum {
@@ -630,6 +635,7 @@ where
 
     /// Initialize and handle file transfer
     fn init_file_handler(&mut self) -> Result<(), OtaError> {
+        rustot_log!(debug, "init_file_handler");
         match data_interface!(self.init_file_transfer) {
             Err(e) => {
                 if self.request_momentum < self.config.max_request_momentum {

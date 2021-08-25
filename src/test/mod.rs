@@ -1,41 +1,12 @@
 use std::{cell::RefCell, collections::VecDeque};
 
-use mqttrust::{Mqtt, PublishRequest, QoS, SubscribeRequest, UnsubscribeRequest};
-
-#[derive(Debug, PartialEq)]
-pub enum MqttRequest {
-    Publish(OwnedPublishRequest),
-    Subscribe(SubscribeRequest),
-    Unsubscribe(UnsubscribeRequest),
-    Disconnect,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct OwnedPublishRequest {
-    pub dup: bool,
-    pub qos: QoS,
-    pub retain: bool,
-    pub topic_name: String,
-    pub payload: Vec<u8>,
-}
-
-impl<'a> From<PublishRequest<'a>> for OwnedPublishRequest {
-    fn from(v: PublishRequest<'a>) -> Self {
-        Self {
-            dup: v.dup,
-            qos: v.qos,
-            retain: v.retain,
-            topic_name: String::from(v.topic_name),
-            payload: Vec::from(v.payload),
-        }
-    }
-}
+use mqttrust::{encoding::v4::encode_slice, Mqtt, MqttError, Packet};
 
 ///
 /// Mock Mqtt client used for unit tests. Implements `mqttrust::Mqtt` trait.
 ///
 pub struct MockMqtt {
-    pub tx: RefCell<VecDeque<MqttRequest>>,
+    pub tx: RefCell<VecDeque<Vec<u8>>>,
     publish_fail: bool,
 }
 
@@ -53,20 +24,12 @@ impl MockMqtt {
 }
 
 impl Mqtt for MockMqtt {
-    fn send(&self, request: mqttrust::Request) -> Result<(), mqttrust::MqttError> {
-        let req = match request {
-            mqttrust::Request::Publish(p) => {
-                if self.publish_fail {
-                    return Err(mqttrust::MqttError::Full);
-                }
-                MqttRequest::Publish(p.into())
-            }
-            mqttrust::Request::Subscribe(s) => MqttRequest::Subscribe(s),
-            mqttrust::Request::Unsubscribe(u) => MqttRequest::Unsubscribe(u),
-            mqttrust::Request::Disconnect => MqttRequest::Disconnect,
-        };
+    fn send(&self, packet: Packet<'_>) -> Result<(), MqttError> {
+        let v = &mut [0u8; 1024];
 
-        self.tx.borrow_mut().push_back(req);
+        let len = encode_slice(&packet, v).map_err(|_| MqttError::Full)?;
+        let packet = v[..len].iter().cloned().collect();
+        self.tx.borrow_mut().push_back(packet);
 
         Ok(())
     }
