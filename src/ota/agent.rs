@@ -22,7 +22,7 @@ where
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
-    pub(crate) state: StateMachine<SmContext<'a, C, DP, DS, T, ST, PAL, 10>>,
+    pub(crate) state: StateMachine<SmContext<'a, C, DP, DS, T, ST, PAL, 3>>,
 }
 
 // Make sure any active OTA session is cleaned up, and the topics are
@@ -115,7 +115,7 @@ where
         if let Some(event) = self.state.context_mut().events.dequeue() {
             self.state.process_event(event)?;
         }
-        Ok(self.state.state())
+        Ok(self.state())
     }
 
     pub fn handle_message(&mut self, payload: &mut [u8]) -> Result<&States, Error> {
@@ -141,5 +141,9 @@ where
     pub fn resume(&mut self) -> Result<&States, Error> {
         // Send event to OTA agent task
         self.state.process_event(Events::Resume)
+    }
+
+    pub fn state(&self) -> &States {
+        self.state.state()
     }
 }

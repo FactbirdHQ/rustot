@@ -8,7 +8,7 @@ use crate::rustot_log;
 use super::encoding::FileContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum ImageState {
     Unknown,
     Aborted,
@@ -32,7 +32,7 @@ pub enum OtaPalError<E: Copy> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum PalImageState {
     /// the new firmware image is in the self test phase
     PendingCommit,
@@ -43,7 +43,7 @@ pub enum PalImageState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum OtaEvent {
     /// OTA update is authenticated and ready to activate.
     Activate,
@@ -64,7 +64,7 @@ pub struct Version {
     patch: u8,
 }
 
-#[cfg(feature = "defmt")]
+#[cfg(feature = "defmt-impl")]
 impl defmt::Format for Version {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(fmt, "{=u8}.{=u8}.{=u8}", self.major, self.minor, self.patch)

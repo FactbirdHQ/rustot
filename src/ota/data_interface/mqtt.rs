@@ -124,15 +124,16 @@ where
 
     /// Init file transfer by subscribing to the OTA data stream topic
     fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError> {
+        let topic_path = OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
+            .format::<256>(self.client_id())?;
         let topic = SubscribeTopic {
-            topic_path: OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
-                .format(self.client_id())?,
+            topic_path: topic_path.as_str(),
             qos: mqttrust::QoS::AtLeastOnce,
         };
 
         // rustot_log!(debug, "Subscribing to: [{:?}]", topic);
 
-        self.subscribe(topic)?;
+        self.subscribe(&[topic])?;
 
         Ok(())
     }
@@ -190,10 +191,11 @@ where
     fn cleanup(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), OtaError> {
         if config.unsubscribe_on_shutdown {
             // Unsubscribe from data stream topics
-            self.unsubscribe(
+            self.unsubscribe(&[
                 OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
-                    .format(self.client_id())?,
-            )?;
+                    .format::<256>(self.client_id())?
+                    .as_str(),
+            ])?;
         }
         Ok(())
     }
@@ -201,13 +203,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use mqttrust::{SubscribeRequest, SubscribeTopic, UnsubscribeRequest};
+    use mqttrust::{encoding::v4::decode_slice, Packet, SubscribeTopic};
 
     use super::*;
-    use crate::{
-        ota::test::test_file_ctx,
-        test::{MockMqtt, MqttRequest, OwnedPublishRequest},
-    };
+    use crate::{ota::test::test_file_ctx, test::MockMqtt};
 
     #[test]
     fn protocol_fits() {
@@ -223,17 +222,20 @@ mod tests {
         mqtt.init_file_transfer(&mut file_ctx).unwrap();
 
         assert_eq!(mqtt.tx.borrow_mut().len(), 1);
+
+        let bytes = mqtt.tx.borrow_mut().pop_front().unwrap();
+
+        let packet = decode_slice(bytes.as_slice()).unwrap();
+        let topics = match packet {
+            Some(Packet::Subscribe(ref s)) => s.topics().collect::<Vec<_>>(),
+            _ => panic!(),
+        };
         assert_eq!(
-            mqtt.tx.borrow_mut().pop_front(),
-            Some(MqttRequest::Subscribe(SubscribeRequest {
-                topics: heapless::Vec::from_slice(&[SubscribeTopic {
-                    topic_path: heapless::String::from(
-                        "$aws/things/test_client/streams/test_stream/data/cbor"
-                    ),
-                    qos: QoS::AtLeastOnce
-                }])
-                .unwrap()
-            }))
+            topics,
+            vec![SubscribeTopic {
+                topic_path: "$aws/things/test_client/streams/test_stream/data/cbor",
+                qos: QoS::AtLeastOnce
+            }]
         );
     }
 
@@ -247,17 +249,26 @@ mod tests {
         mqtt.request_file_block(&mut file_ctx, &config).unwrap();
 
         assert_eq!(mqtt.tx.borrow_mut().len(), 1);
+
+        let bytes = mqtt.tx.borrow_mut().pop_front().unwrap();
+
+        let publish = match decode_slice(bytes.as_slice()).unwrap() {
+            Some(Packet::Publish(s)) => s,
+            _ => panic!(),
+        };
+
         assert_eq!(
-            mqtt.tx.borrow_mut().pop_front(),
-            Some(MqttRequest::Publish(OwnedPublishRequest {
+            publish,
+            mqttrust::encoding::v4::publish::Publish {
                 dup: false,
                 qos: QoS::AtMostOnce,
                 retain: false,
-                topic_name: String::from("$aws/things/test_client/streams/test_stream/get/cbor"),
-                payload: vec![
+                topic_name: "$aws/things/test_client/streams/test_stream/get/cbor",
+                payload: &[
                     164, 97, 102, 0, 97, 108, 25, 1, 0, 97, 111, 0, 97, 98, 68, 255, 255, 255, 127
-                ]
-            }))
+                ],
+                pid: None
+            }
         );
     }
 
@@ -369,14 +380,17 @@ mod tests {
         mqtt.cleanup(&mut file_ctx, &config).unwrap();
 
         assert_eq!(mqtt.tx.borrow_mut().len(), 1);
+        let bytes = mqtt.tx.borrow_mut().pop_front().unwrap();
+
+        let packet = decode_slice(bytes.as_slice()).unwrap();
+        let topics = match packet {
+            Some(Packet::Unsubscribe(ref s)) => s.topics().collect::<Vec<_>>(),
+            _ => panic!(),
+        };
+
         assert_eq!(
-            mqtt.tx.borrow_mut().pop_front(),
-            Some(MqttRequest::Unsubscribe(UnsubscribeRequest {
-                topics: heapless::Vec::from_slice(&[heapless::String::from(
-                    "$aws/things/test_client/streams/test_stream/data/cbor"
-                )])
-                .unwrap()
-            }))
+            topics,
+            vec!["$aws/things/test_client/streams/test_stream/data/cbor"]
         );
     }
 

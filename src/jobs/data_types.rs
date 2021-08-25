@@ -7,7 +7,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum JobStatus {
     #[serde(rename = "QUEUED")]
     Queued,

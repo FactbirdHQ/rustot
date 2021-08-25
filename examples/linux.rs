@@ -1,15 +1,15 @@
 mod common;
 
 use jobs::data_types::NextJobExecutionChanged;
-use mqttrust_core::{
-    Client, EventLoop, MqttOptions, Notification, OwnedRequest, PublishNotification,
-};
+use mqttrust_core::bbqueue::{BBBuffer, ConstBBBuffer};
+use mqttrust_core::PublishNotification;
+use mqttrust_core::{EventLoop, MqttOptions, Notification};
+
 use serde::Deserialize;
 
 use common::file_handler::FileHandler;
 use common::network::Network;
 use common::timer::SysClock;
-use heapless::spsc::Queue;
 use ota::encoding::json::OtaJob;
 use rustot::jobs::data_types::DescribeJobExecutionResponse;
 use rustot::jobs::{self, StatusDetails, MAX_JOB_ID_LEN};
@@ -17,7 +17,7 @@ use rustot::ota;
 use rustot::ota::agent::OtaAgent;
 use std::thread;
 
-static mut Q: Queue<OwnedRequest<128, 512>, 10> = Queue::new();
+static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer(ConstBBBuffer::new());
 
 #[derive(Debug, Deserialize)]
 pub enum Jobs {
@@ -83,11 +83,13 @@ fn handle_ota(publish: &PublishNotification) -> Result<OtaUpdate, ()> {
 fn main() {
     env_logger::init();
 
-    let (p, c) = unsafe { Q.split() };
+    let (p, c) = unsafe { Q.try_split_framed().unwrap() };
 
     let mut network = Network;
 
     let thing_name = "rustot-test";
+
+    log::info!("Starting OTA example...");
 
     let mut mqtt_eventloop = EventLoop::new(
         c,
@@ -99,11 +101,13 @@ fn main() {
         ),
     );
 
-    let mqtt_client = Client::new(p, thing_name);
+    let mqtt_client = mqttrust_core::Client::new(p, thing_name);
 
     let file_handler = FileHandler::new();
 
     nb::block!(mqtt_eventloop.connect(&mut network)).expect("Failed to connect to MQTT");
+
+    log::info!("Successfully connected to broker");
 
     thread::Builder::new()
         .name("eventloop".to_string())
