@@ -60,9 +60,8 @@ pub mod ota_tests {
     };
     use crate::test::MockMqtt;
     use embedded_hal::timer;
-    use mqttrust::encoding::v4::{decode_slice, PacketType};
+    use mqttrust::encoding::v4::{decode_slice, utils::Pid, PacketType};
     use mqttrust::{MqttError, Packet, QoS, SubscribeTopic};
-    use mqttrust_core::Pid;
     use serde::Deserialize;
     use serde_json_core::from_slice;
 
