@@ -1,7 +1,7 @@
 mod common;
 
 use jobs::data_types::NextJobExecutionChanged;
-use mqttrust_core::bbqueue::{BBBuffer, ConstBBBuffer};
+use mqttrust_core::bbqueue::BBBuffer;
 use mqttrust_core::PublishNotification;
 use mqttrust_core::{EventLoop, MqttOptions, Notification};
 
@@ -17,7 +17,7 @@ use rustot::ota;
 use rustot::ota::agent::OtaAgent;
 use std::thread;
 
-static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer(ConstBBBuffer::new());
+static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer::new();
 
 #[derive(Debug, Deserialize)]
 pub enum Jobs {
