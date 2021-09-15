@@ -81,7 +81,7 @@ impl FromStr for Version {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut iter = s.split(".");
+        let mut iter = s.split('.');
         Ok(Self {
             major: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
             minor: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
@@ -262,20 +262,23 @@ pub trait OtaPal {
     ///
     /// The callback function is called with one of the following arguments:
     ///
-    /// - OtaEvent::Activate      OTA update is authenticated and ready to activate.
-    /// - OtaEvent::Fail          OTA update failed. Unable to use this update.
-    /// - OtaEvent::StartTest     OTA job is now ready for optional user self tests.
+    /// - `OtaEvent::Activate`      OTA update is authenticated and ready to
+    ///   activate.
+    /// - `OtaEvent::Fail`          OTA update failed. Unable to use this
+    ///   update.
+    /// - `OtaEvent::StartTest`     OTA job is now ready for optional user self
+    ///   tests.
     ///
-    /// When OtaEvent::Activate is received, the job status details have been
+    /// When `OtaEvent::Activate` is received, the job status details have been
     /// updated with the state as ready for Self Test. After reboot, the new
     /// firmware will (normally) be notified that it is in the Self Test phase
     /// via the callback and the application may then optionally run its own
     /// tests before committing the new image.
     ///
-    /// If the callback function is called with a result of OtaEvent::Fail, the
-    /// OTA update job has failed in some way and should be rejected.
+    /// If the callback function is called with a result of `OtaEvent::Fail`,
+    /// the OTA update job has failed in some way and should be rejected.
     ///
-    /// - `event` [`OtaEvent`] An OTA update event from the OtaEvent enum.
+    /// - `event` [`OtaEvent`] An OTA update event from the `OtaEvent` enum.
     fn complete_callback(&mut self, event: OtaEvent) -> Result<(), OtaPalError<Self::Error>> {
         match event {
             OtaEvent::Activate => self.activate_new_image(),

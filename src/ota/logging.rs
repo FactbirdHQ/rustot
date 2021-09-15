@@ -18,7 +18,6 @@ macro_rules! rustot_log {
     ($level:ident, $($arg:expr),*) => {
         {
             $( let _ = $arg; )*
-            ()
         }
 
     }

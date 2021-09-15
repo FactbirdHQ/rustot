@@ -32,7 +32,6 @@ impl<'a> GetPending<'a> {
 
         Self {
             client_token: Some(client_token),
-            ..self
         }
     }
 

@@ -26,7 +26,7 @@ impl<'a, const N: usize> Unsubscribe<'a, N> {
             _ => {}
         }
 
-        if self.topics.iter().find(|&t| t == &topic).is_some() {
+        if self.topics.iter().any(|t| t == &topic) {
             return self;
         }
 
