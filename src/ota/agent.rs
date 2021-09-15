@@ -6,7 +6,7 @@ use super::{
     data_interface::{DataInterface, NoInterface},
     encoding::json::OtaJob,
     pal::OtaPal,
-    state::{Error, Events, SmContext, StateMachine, States},
+    state::{Error, Events, JobEventData, SmContext, StateMachine, States},
 };
 use crate::{jobs::StatusDetails, rustot_log};
 
@@ -82,14 +82,15 @@ where
     pub fn job_update(
         &mut self,
         job_name: &str,
-        ota_document: OtaJob,
-        status_details: Option<StatusDetails>,
+        ota_document: &OtaJob,
+        status_details: Option<&StatusDetails>,
     ) -> Result<&States, Error> {
-        self.state.process_event(Events::ReceivedJobDocument((
-            heapless::String::from(job_name),
-            ota_document,
-            status_details,
-        )))
+        self.state
+            .process_event(Events::ReceivedJobDocument(JobEventData {
+                job_name,
+                ota_document,
+                status_details,
+            }))
     }
 
     pub fn timer_callback(&mut self) -> Result<(), Error> {

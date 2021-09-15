@@ -40,12 +40,20 @@ pub enum RestartReason {
 }
 
 impl RestartReason {
+    #[must_use]
     pub fn inc(self) -> Self {
         match self {
-            RestartReason::Activate(cnt) => RestartReason::Activate(cnt + 1),
-            RestartReason::Restart(cnt) => RestartReason::Restart(cnt + 1),
+            Self::Activate(cnt) => Self::Activate(cnt + 1),
+            Self::Restart(cnt) => Self::Restart(cnt + 1),
         }
     }
+}
+
+#[derive(PartialEq)]
+pub struct JobEventData<'a> {
+    pub job_name: &'a str,
+    pub ota_document: &'a OtaJob,
+    pub status_details: Option<&'a StatusDetails>,
 }
 
 statemachine! {
@@ -54,7 +62,7 @@ statemachine! {
         *Ready + Start [start_handler] = RequestingJob,
         RequestingJob + RequestJobDocument [request_job_handler] = WaitingForJob,
         RequestingJob + RequestTimer [request_job_handler] = WaitingForJob,
-        WaitingForJob + ReceivedJobDocument((heapless::String<64>, OtaJob, Option<StatusDetails>)) [process_job_handler] = CreatingFile,
+        WaitingForJob + ReceivedJobDocument(JobEventData<'a>) [process_job_handler] = CreatingFile,
         WaitingForJob + Start [request_job_handler] = WaitingForJob,
         CreatingFile + StartSelfTest [in_self_test_handler] = WaitingForJob,
         CreatingFile + CreateFile [init_file_handler] = RequestingFileBlock,
@@ -66,7 +74,7 @@ statemachine! {
         WaitingForFileBlock + RequestTimer [request_data_handler] = WaitingForFileBlock,
         WaitingForFileBlock + RequestFileBlock [request_data_handler] = WaitingForFileBlock,
         WaitingForFileBlock + RequestJobDocument [request_job_handler] = WaitingForJob,
-        WaitingForFileBlock + ReceivedJobDocument((heapless::String<64>, OtaJob, Option<StatusDetails>)) [job_notification_handler] = RequestingJob,
+        WaitingForFileBlock + ReceivedJobDocument(JobEventData<'a>) [job_notification_handler] = RequestingJob,
         WaitingForFileBlock + CloseFile [close_file_handler] = WaitingForJob,
         WaitingForJob + Restart(RestartReason) [restart_handler] = Restarting,
         Restarting + Restart(RestartReason) [restart_handler] = Restarting,
@@ -99,7 +107,7 @@ pub(crate) enum Interface {
 }
 
 impl Interface {
-    pub fn file_ctx(&self) -> &FileContext {
+    pub const fn file_ctx(&self) -> &FileContext {
         match self {
             Interface::Primary(i) => i,
             #[cfg(all(feature = "ota_mqtt_data", feature = "ota_http_data"))]
@@ -169,7 +177,7 @@ where
     /// Called to update the filecontext structure from the job
     fn get_file_context_from_job(
         &mut self,
-        job_name: heapless::String<64>,
+        job_name: &str,
         ota_document: &OtaJob,
         status_details: Option<StatusDetails>,
     ) -> Result<FileContext, OtaError> {
@@ -187,7 +195,7 @@ where
 
         // If there's an active job, verify that it's the same as what's being
         // reported now
-        let cur_file_ctx = self.active_interface.as_ref().map(|i| i.file_ctx().clone());
+        let cur_file_ctx = self.active_interface.as_mut().map(|i| i.mut_file_ctx());
         let file_ctx = if let Some(mut file_ctx) = cur_file_ctx {
             if file_ctx.stream_name != ota_document.streamname {
                 rustot_log!(info, "New job document received, aborting current job");
@@ -198,7 +206,7 @@ where
 
                 // Abort any active file access and release the file resource,
                 // if needed
-                self.pal.abort(&file_ctx)?;
+                self.pal.abort(file_ctx)?;
 
                 // Cleanup related to selected protocol
                 data_interface!(self.cleanup, &self.config)?;
@@ -221,7 +229,7 @@ where
                     .map(|f| f.update_data_url.clone())
                     .ok_or(OtaError::InvalidFile)?;
 
-                Err(file_ctx)
+                Err(file_ctx.clone())
             }
         } else {
             Ok(FileContext::new_from(
@@ -266,7 +274,7 @@ where
         // Create/Open the OTA file on the file system
         if let Err(e) = self.pal.create_file_for_rx(&file_ctx) {
             self.image_state = Self::set_image_state_with_reason(
-                &self.control,
+                self.control,
                 &mut self.pal,
                 &self.config,
                 &mut file_ctx,
@@ -281,19 +289,23 @@ where
         Ok(file_ctx)
     }
 
-    fn select_interface(&self, file_ctx: FileContext, protocols: &[Protocol]) -> Option<Interface> {
+    fn select_interface(
+        &self,
+        file_ctx: FileContext,
+        protocols: &[Protocol],
+    ) -> Result<Interface, FileContext> {
         if protocols.contains(&DP::PROTOCOL) {
-            Some(Interface::Primary(file_ctx))
+            Ok(Interface::Primary(file_ctx))
         } else {
             #[cfg(all(feature = "ota_mqtt_data", feature = "ota_http_data"))]
-            return self
-                .data_secondary
-                .is_some()
-                .then(|| Interface::Secondary(file_ctx))
-                .filter(|_| protocols.contains(&DS::PROTOCOL));
+            if protocols.contains(&DS::PROTOCOL) && self.data_secondary.is_some() {
+                Ok(Interface::Secondary(file_ctx))
+            } else {
+                Err(file_ctx)
+            }
 
             #[cfg(not(all(feature = "ota_mqtt_data", feature = "ota_http_data")))]
-            None
+            Err(file_ctx)
         }
     }
 
@@ -312,7 +324,7 @@ where
         let active_version = self
             .pal
             .get_active_firmware_version()
-            .unwrap_or(Version::new(0, 0, 0));
+            .unwrap_or_else(|_| Version::new(0, 0, 0));
 
         let version_check = if file_ctx.fileid == 0 && file_ctx.file_type == Some(0) {
             // Only check for versions if the target is self & always allow
@@ -331,7 +343,7 @@ where
             // Set image state accordingly and update job status with self test
             // identifier.
             self.image_state = Self::set_image_state_with_reason(
-                &self.control,
+                self.control,
                 &mut self.pal,
                 &self.config,
                 file_ctx,
@@ -342,7 +354,7 @@ where
             Ok(())
         } else {
             self.image_state = Self::set_image_state_with_reason(
-                &self.control,
+                self.control,
                 &mut self.pal,
                 &self.config,
                 file_ctx,
@@ -484,7 +496,7 @@ where
             }
 
             self.pal.write_block(
-                &file_ctx,
+                file_ctx,
                 block.block_id * self.config.block_size,
                 block.block_payload,
             )?;
@@ -503,7 +515,7 @@ where
                     .try_cancel()
                     .map_err(|_| OtaError::Timer)?;
 
-                self.pal.close_file(&file_ctx)?;
+                self.pal.close_file(file_ctx)?;
 
                 // Return true to indicate end of file.
                 Ok(true)
@@ -725,7 +737,7 @@ where
             // and reset the device.
             rustot_log!(error,"Rejecting new image and rebooting: the job is in the self-test state while the platform is not.");
             self.image_state = Self::set_image_state_with_reason(
-                &self.control,
+                self.control,
                 &mut self.pal,
                 &self.config,
                 file_ctx,
@@ -741,38 +753,51 @@ where
     }
 
     /// Update file context from job document
-    fn process_job_handler(
-        &mut self,
-        data: &(heapless::String<64>, OtaJob, Option<StatusDetails>),
-    ) -> Result<(), OtaError> {
-        let (job_name, ota_document, status_details) = data;
+    fn process_job_handler(&mut self, data: &JobEventData<'_>) -> Result<(), OtaError> {
+        let JobEventData {
+            job_name,
+            ota_document,
+            status_details,
+        } = data;
 
-        let mut file_ctx =
-            self.get_file_context_from_job(job_name.clone(), ota_document, status_details.clone())?;
+        let file_ctx = self.get_file_context_from_job(
+            job_name,
+            ota_document,
+            status_details.map(Clone::clone),
+        )?;
 
-        if let Some(interface) = self.select_interface(file_ctx.clone(), &ota_document.protocols) {
-            rustot_log!(info, "Setting OTA data interface");
-            self.active_interface = Some(interface);
-        } else {
-            // Failed to set the data interface so abort the OTA. If there
-            // is a valid job id, then a job status update will be sent.
-            rustot_log!(
-                error,
-                "Failed to set OTA data interface. Aborting current update."
-            );
+        match self.select_interface(file_ctx, &ota_document.protocols) {
+            Ok(interface) => {
+                rustot_log!(info, "Setting OTA data interface");
+                self.active_interface = Some(interface);
+            }
+            Err(mut file_ctx) => {
+                // Failed to set the data interface so abort the OTA. If there
+                // is a valid job id, then a job status update will be sent.
+                rustot_log!(
+                    error,
+                    "Failed to set OTA data interface. Aborting current update."
+                );
 
-            self.image_state = Self::set_image_state_with_reason(
-                &self.control,
-                &mut self.pal,
-                &self.config,
-                &mut file_ctx,
-                ImageState::Aborted,
-                Some(ImageStateReason::InvalidDataProtocol),
-            )?;
-            return Err(OtaError::InvalidInterface);
+                self.image_state = Self::set_image_state_with_reason(
+                    self.control,
+                    &mut self.pal,
+                    &self.config,
+                    &mut file_ctx,
+                    ImageState::Aborted,
+                    Some(ImageStateReason::InvalidDataProtocol),
+                )?;
+                return Err(OtaError::InvalidInterface);
+            }
         }
 
-        if file_ctx.self_test() {
+        if self
+            .active_interface
+            .as_mut()
+            .ok_or(OtaError::InvalidInterface)?
+            .file_ctx()
+            .self_test()
+        {
             // If the OTA job is in the self_test state, alert the application layer.
             if self.image_state == ImageState::Testing {
                 self.events
@@ -830,7 +855,7 @@ where
 
                 // Failed to send data request abort and close file.
                 self.image_state = Self::set_image_state_with_reason(
-                    &self.control,
+                    self.control,
                     &mut self.pal,
                     &self.config,
                     file_ctx,
@@ -858,10 +883,7 @@ where
 
     /// Upon receiving a new job document cancel current job if present and
     /// initiate new download
-    fn job_notification_handler(
-        &mut self,
-        _data: &(heapless::String<64>, OtaJob, Option<StatusDetails>),
-    ) -> Result<(), OtaError> {
+    fn job_notification_handler(&mut self, _data: &JobEventData<'_>) -> Result<(), OtaError> {
         // Stop the request timer
         self.request_timer
             .try_cancel()
@@ -1008,7 +1030,7 @@ where
         rustot_log!(warn, "User abort OTA!");
         if let Some(ref mut interface) = self.active_interface {
             self.image_state = Self::set_image_state_with_reason(
-                &self.control,
+                self.control,
                 &mut self.pal,
                 &self.config,
                 interface.mut_file_ctx(),
@@ -1026,7 +1048,7 @@ where
         rustot_log!(warn, "Shutting down OTA!");
         if let Some(ref mut interface) = self.active_interface {
             self.image_state = Self::set_image_state_with_reason(
-                &self.control,
+                self.control,
                 &mut self.pal,
                 &self.config,
                 interface.mut_file_ctx(),

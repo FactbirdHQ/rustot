@@ -76,7 +76,7 @@ pub struct FileContext {
 
 impl FileContext {
     pub fn new_from(
-        job_name: heapless::String<64>,
+        job_name: &str,
         ota_job: &OtaJob,
         status_details: Option<StatusDetails>,
         file_idx: usize,
@@ -120,7 +120,7 @@ impl FileContext {
 
             status_details: status,
 
-            job_name,
+            job_name: heapless::String::from(job_name),
             block_offset,
             request_block_remaining: bitmap.len() as u32,
             blocks_remaining: (file_desc.filesize + config.block_size - 1) / config.block_size,

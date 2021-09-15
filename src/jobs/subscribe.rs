@@ -93,7 +93,7 @@ impl<'a, const N: usize> Subscribe<'a, N> {
             _ => {}
         }
 
-        if self.topics.iter().find(|(t, _)| t == &topic).is_some() {
+        if self.topics.iter().any(|(t, _)| t == &topic) {
             return self;
         }
 
@@ -114,7 +114,7 @@ impl<'a, const N: usize> Subscribe<'a, N> {
             .map(|(topic, qos)| {
                 (
                     JobTopic::from(topic).format::<256>(client_id).unwrap(),
-                    qos.clone(),
+                    *qos,
                 )
             })
             .collect())
@@ -127,7 +127,7 @@ impl<'a, const N: usize> Subscribe<'a, N> {
             .iter()
             .map(|(s, qos)| SubscribeTopic {
                 topic_path: s.as_str(),
-                qos: qos.clone(),
+                qos: *qos,
             })
             .collect();
 

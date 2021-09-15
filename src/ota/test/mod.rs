@@ -33,15 +33,7 @@ pub fn test_job_doc() -> OtaJob {
 
 pub fn test_file_ctx(config: &Config) -> FileContext {
     let ota_job = test_job_doc();
-    FileContext::new_from(
-        heapless::String::from("Job-name"),
-        &ota_job,
-        None,
-        0,
-        config,
-        Version::default(),
-    )
-    .unwrap()
+    FileContext::new_from("Job-name", &ota_job, None, 0, config, Version::default()).unwrap()
 }
 
 pub mod ota_tests {
@@ -120,7 +112,7 @@ pub mod ota_tests {
                 run_to_state(agent, States::WaitingForJob);
 
                 let job_doc = test_job_doc();
-                agent.job_update("Test-job", job_doc, None).unwrap();
+                agent.job_update("Test-job", &job_doc, None).unwrap();
                 agent.state.context_mut().events.dequeue();
             }
             States::RequestingFileBlock => {
