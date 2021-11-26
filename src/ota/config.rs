@@ -14,7 +14,7 @@ impl Default for Config {
         Self {
             block_size: 256,
             max_request_momentum: 3,
-            activate_delay: 3,
+            activate_delay: 5,
             request_wait_ms: 8000,
             status_update_frequency: 24,
             allow_downgrade: false,

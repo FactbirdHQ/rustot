@@ -132,6 +132,16 @@ where
         }
     }
 
+    pub fn activate_delay(self, activate_delay: u8) -> Self {
+        Self {
+            config: Config {
+                activate_delay,
+                ..self.config
+            },
+            ..self
+        }
+    }
+
     pub fn request_wait_ms(self, request_wait_ms: u32) -> Self {
         Self {
             config: Config {
