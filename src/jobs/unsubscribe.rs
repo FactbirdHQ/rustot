@@ -48,7 +48,6 @@ impl<'a, const N: usize> Unsubscribe<'a, N> {
         if self.topics.is_empty() {
             return Ok(());
         }
-
         let topic_paths = self.topics(mqtt.client_id())?;
         let topics: heapless::Vec<_, N> = topic_paths.iter().map(|s| s.as_str()).collect();
 

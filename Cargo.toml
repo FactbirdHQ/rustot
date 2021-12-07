@@ -38,6 +38,7 @@ serde_cbor = { version = "^0.11", default-features = false, optional = true }
 serde-json-core = { version = "0.4.0" }
 smlang = "0.5.0"
 fugit-timer = "0.1.2"
+optional_struct = "0.2.0"
 
 log = { version = "^0.4", default-features = false, optional = true }
 defmt = { version = "^0.3", optional = true }
