@@ -28,7 +28,7 @@ impl From<ShadowError> for Error {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShadowError {
     InvalidJson,
     MissingState,
