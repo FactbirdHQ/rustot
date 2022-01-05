@@ -10,6 +10,7 @@ pub mod mqtt;
 
 // Interfaces required for OTA
 pub trait ControlInterface {
+    fn init(&self) -> Result<(), OtaError>;
     fn request_job(&self) -> Result<(), OtaError>;
     fn update_job_status(
         &self,

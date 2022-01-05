@@ -86,6 +86,6 @@ impl OtaPal for MockPal {
     }
 
     fn get_active_firmware_version(&self) -> Result<Version, OtaPalError<Self::Error>> {
-        Ok(Version::default())
+        Ok(Version::new(1, 0, 0))
     }
 }

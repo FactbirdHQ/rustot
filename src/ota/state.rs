@@ -10,13 +10,10 @@ use super::encoding::FileContext;
 use super::pal::OtaPal;
 use super::pal::OtaPalError;
 
+use crate::jobs::{data_types::JobStatus, StatusDetails};
 use crate::ota::encoding::Bitmap;
 use crate::ota::pal::OtaEvent;
 use crate::rustot_log;
-use crate::{
-    jobs::{data_types::JobStatus, StatusDetails},
-    ota::pal::Version,
-};
 
 use super::{
     error::OtaError,
@@ -62,6 +59,7 @@ statemachine! {
         *Ready + Start [start_handler] = RequestingJob,
         RequestingJob + RequestJobDocument [request_job_handler] = WaitingForJob,
         RequestingJob + RequestTimer [request_job_handler] = WaitingForJob,
+        WaitingForJob + RequestJobDocument [request_job_handler] = WaitingForJob,
         WaitingForJob + ReceivedJobDocument(JobEventData<'a>) [process_job_handler] = CreatingFile,
         WaitingForJob + Start [request_job_handler] = WaitingForJob,
         CreatingFile + StartSelfTest [in_self_test_handler] = WaitingForJob,
@@ -321,18 +319,18 @@ where
     fn handle_self_test_job(&mut self, file_ctx: &mut FileContext) -> Result<(), OtaError> {
         rustot_log!(info, "In self test mode");
 
-        let active_version = self
-            .pal
-            .get_active_firmware_version()
-            .unwrap_or_else(|_| Version::new(0, 0, 0));
+        let active_version = self.pal.get_active_firmware_version().unwrap_or_default();
 
         let version_check = if file_ctx.fileid == 0 && file_ctx.file_type == Some(0) {
             // Only check for versions if the target is self & always allow
             // updates if updated_by is not present.
-            file_ctx.updated_by().map_or(true, |v| v < active_version)
+            file_ctx
+                .updated_by()
+                .map_or(true, |updated_by| active_version > updated_by)
         } else {
             true
         };
+
         rustot_log!(info, "Version check: {:?}", version_check);
 
         if self.config.allow_downgrade || version_check {
@@ -587,6 +585,8 @@ where
                     .map_err(|_| OtaError::Timer)?;
             }
         }
+
+        self.control.init()?;
 
         // Send event to OTA task to get job document
         self.events
@@ -1058,5 +1058,118 @@ where
             self.ota_close()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        ota::{
+            agent::OtaAgent,
+            pal::Version,
+            test::{
+                mock::{MockPal, MockTimer},
+                test_job_doc,
+            },
+        },
+        test::MockMqtt,
+    };
+
+    use super::*;
+
+    #[test]
+    fn version_check_success() {
+        // The version check is run after swapping & rebooting, so the PAL will
+        // return the version of the newly flashed firmware, and `FileContext`
+        // will contain the `updated_by` version, which is the old firmware
+        // version.
+
+        let mqtt = MockMqtt::new();
+
+        let request_timer = MockTimer::new();
+        let self_test_timer = MockTimer::new();
+        let pal = MockPal {};
+
+        let mut agent = OtaAgent::builder(&mqtt, &mqtt, request_timer, pal)
+            .with_self_test_timeout(self_test_timer, 32000)
+            .build();
+
+        let ota_job = test_job_doc();
+        let mut file_ctx = FileContext::new_from(
+            "Job-name",
+            &ota_job,
+            None,
+            0,
+            &Config::default(),
+            Version::new(0, 1, 0),
+        )
+        .unwrap();
+
+        let mut context = agent.state.context_mut();
+
+        assert_eq!(context.handle_self_test_job(&mut file_ctx), Ok(()));
+
+        assert_eq!(context.image_state, ImageState::Testing);
+    }
+
+    #[test]
+    fn version_check_rejected() {
+        let mqtt = MockMqtt::new();
+
+        let request_timer = MockTimer::new();
+        let self_test_timer = MockTimer::new();
+        let pal = MockPal {};
+
+        let mut agent = OtaAgent::builder(&mqtt, &mqtt, request_timer, pal)
+            .with_self_test_timeout(self_test_timer, 32000)
+            .build();
+
+        let ota_job = test_job_doc();
+        let mut file_ctx = FileContext::new_from(
+            "Job-name",
+            &ota_job,
+            None,
+            0,
+            &Config::default(),
+            Version::new(1, 1, 0),
+        )
+        .unwrap();
+
+        let mut context = agent.state.context_mut();
+
+        assert_eq!(context.handle_self_test_job(&mut file_ctx), Ok(()));
+
+        assert_eq!(context.image_state, ImageState::Rejected);
+    }
+
+    #[test]
+    fn version_check_allow_donwgrade() {
+        let mqtt = MockMqtt::new();
+
+        let request_timer = MockTimer::new();
+        let self_test_timer = MockTimer::new();
+        let pal = MockPal {};
+
+        let mut agent = OtaAgent::builder(&mqtt, &mqtt, request_timer, pal)
+            .with_self_test_timeout(self_test_timer, 32000)
+            .allow_downgrade()
+            .build();
+
+        let ota_job = test_job_doc();
+        let mut file_ctx = FileContext::new_from(
+            "Job-name",
+            &ota_job,
+            None,
+            0,
+            &Config::default(),
+            Version::new(1, 1, 0),
+        )
+        .unwrap();
+
+        let mut context = agent.state.context_mut();
+
+        assert_eq!(context.handle_self_test_job(&mut file_ctx), Ok(()));
+
+        assert_eq!(context.image_state, ImageState::Testing);
     }
 }
