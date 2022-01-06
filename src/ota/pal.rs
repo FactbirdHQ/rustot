@@ -6,18 +6,20 @@ use core::str::FromStr;
 use crate::rustot_log;
 
 use super::encoding::FileContext;
+use super::state::ImageStateReason;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
-pub enum ImageState {
+pub enum ImageState<E: Copy> {
     Unknown,
-    Aborted,
-    Rejected,
+    Aborted(ImageStateReason<E>),
+    Rejected(ImageStateReason<E>),
     Accepted,
-    Testing,
+    Testing(ImageStateReason<E>),
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum OtaPalError<E: Copy> {
     SignatureCheckFailed,
     FileWriteFailed,
@@ -205,7 +207,7 @@ pub trait OtaPal {
     /// error code.
     fn set_platform_image_state(
         &mut self,
-        image_state: ImageState,
+        image_state: ImageState<Self::Error>,
     ) -> Result<(), OtaPalError<Self::Error>>;
 
     /// Reset the device.

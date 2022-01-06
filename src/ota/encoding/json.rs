@@ -96,7 +96,7 @@ impl JobStatusReason {
             JobStatusReason::Accepted => "accepted",
             JobStatusReason::Rejected => "rejected",
             JobStatusReason::Aborted => "aborted",
-            JobStatusReason::Pal(_) => todo!(),
+            JobStatusReason::Pal(_) => "pal err",
         }
     }
 }

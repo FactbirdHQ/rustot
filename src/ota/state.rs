@@ -21,7 +21,11 @@ use super::{
 };
 
 #[derive(Clone, Copy)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum ImageStateReason<E: Copy> {
+    NewerJob,
+    FailedIngest,
+    MomentumAbort,
     ImageStateMismatch,
     SignatureCheckPassed,
     InvalidDataProtocol,
@@ -98,6 +102,16 @@ statemachine! {
     }
 }
 
+#[cfg(feature = "defmt-impl")]
+impl defmt::Format for Error {
+    fn format(&self, fmt: defmt::Formatter) {
+        match self {
+            Error::InvalidEvent => defmt::write!(fmt, "Error::InvalidEvent"),
+            Error::GuardFailed(e) => defmt::write!(fmt, "Error::GuardFailed({:?})", e),
+        }
+    }
+}
+
 pub(crate) enum Interface {
     Primary(FileContext),
     #[cfg(all(feature = "ota_mqtt_data", feature = "ota_http_data"))]
@@ -158,7 +172,7 @@ where
     pub(crate) request_timer: T,
     pub(crate) self_test_timer: Option<ST>,
     pub(crate) config: Config,
-    pub(crate) image_state: ImageState,
+    pub(crate) image_state: ImageState<PAL::Error>,
 }
 
 impl<'a, C, DP, DS, T, ST, PAL, const L: usize> SmContext<'a, C, DP, DS, T, ST, PAL, L>
@@ -200,7 +214,8 @@ where
 
                 // Abort the current job
                 // TODO:??
-                self.pal.set_platform_image_state(ImageState::Aborted)?;
+                self.pal
+                    .set_platform_image_state(ImageState::Aborted(ImageStateReason::NewerJob))?;
 
                 // Abort any active file access and release the file resource,
                 // if needed
@@ -276,8 +291,7 @@ where
                 &mut self.pal,
                 &self.config,
                 &mut file_ctx,
-                ImageState::Aborted,
-                Some(ImageStateReason::Pal(e)),
+                ImageState::Aborted(ImageStateReason::Pal(e)),
             )?;
 
             self.ota_close()?;
@@ -345,8 +359,7 @@ where
                 &mut self.pal,
                 &self.config,
                 file_ctx,
-                ImageState::Testing,
-                Some(ImageStateReason::VersionCheck),
+                ImageState::Testing(ImageStateReason::VersionCheck),
             )?;
 
             Ok(())
@@ -356,8 +369,7 @@ where
                 &mut self.pal,
                 &self.config,
                 file_ctx,
-                ImageState::Rejected,
-                Some(ImageStateReason::VersionCheck),
+                ImageState::Rejected(ImageStateReason::VersionCheck),
             )?;
 
             self.pal.complete_callback(OtaEvent::SelfTestFailed)?;
@@ -376,18 +388,15 @@ where
         pal: &mut PAL,
         config: &Config,
         file_ctx: &mut FileContext,
-        mut image_state: ImageState,
-        mut reason: Option<ImageStateReason<PAL::Error>>,
-    ) -> Result<ImageState, OtaError> {
-        rustot_log!(debug, "set_image_state_with_reason {:?}", image_state);
+        image_state: ImageState<PAL::Error>,
+    ) -> Result<ImageState<PAL::Error>, OtaError> {
+        // rustot_log!(debug, "set_image_state_with_reason {:?}", image_state);
         // Call the platform specific code to set the image state
-        // TODO: Is this setting state of current (old) image, or new image?
-        if let Err(e) = pal.set_platform_image_state(image_state) {
-            if image_state != ImageState::Aborted {
+        let image_state = match pal.set_platform_image_state(image_state) {
+            Err(e) if !matches!(image_state, ImageState::Aborted(_)) => {
                 // If the platform image state couldn't be set correctly, force
                 // fail the update by setting the image state to "Rejected"
                 // unless it's already in "Aborted".
-                image_state = ImageState::Rejected;
 
                 // Capture the failure reason if not already set (and we're not
                 // already Aborted as checked above). Otherwise Keep the
@@ -398,13 +407,14 @@ where
                 //
                 // Intentionally override reason since we failed within this
                 // function
-                reason.get_or_insert(ImageStateReason::Pal(e));
+                ImageState::Rejected(ImageStateReason::Pal(e))
             }
-        }
+            _ => image_state,
+        };
 
         // Now update the image state and job status on server side
         match image_state {
-            ImageState::Testing => {
+            ImageState::Testing(_) => {
                 // We discovered we're ready for test mode, put job status
                 // in self_test active
                 control.update_job_status(
@@ -424,7 +434,7 @@ where
                     JobStatusReason::Accepted,
                 )?;
             }
-            ImageState::Rejected => {
+            ImageState::Rejected(_) => {
                 // The firmware update was rejected, complete the job as
                 // FAILED (Job service will not allow us to set REJECTED
                 // after the job has been started already).
@@ -586,6 +596,7 @@ where
             }
         }
 
+        // Initialize the control interface
         self.control.init()?;
 
         // Send event to OTA task to get job document
@@ -741,8 +752,7 @@ where
                 &mut self.pal,
                 &self.config,
                 file_ctx,
-                ImageState::Rejected,
-                Some(ImageStateReason::ImageStateMismatch),
+                ImageState::Rejected(ImageStateReason::ImageStateMismatch),
             )?;
 
             self.events
@@ -784,8 +794,7 @@ where
                     &mut self.pal,
                     &self.config,
                     &mut file_ctx,
-                    ImageState::Aborted,
-                    Some(ImageStateReason::InvalidDataProtocol),
+                    ImageState::Aborted(ImageStateReason::InvalidDataProtocol),
                 )?;
                 return Err(OtaError::InvalidInterface);
             }
@@ -799,7 +808,7 @@ where
             .self_test()
         {
             // If the OTA job is in the self_test state, alert the application layer.
-            if self.image_state == ImageState::Testing {
+            if matches!(self.image_state, ImageState::Testing(_)) {
                 self.events
                     .enqueue(Events::StartSelfTest)
                     .map_err(|_| OtaError::SignalEventFailed)?;
@@ -859,8 +868,7 @@ where
                     &mut self.pal,
                     &self.config,
                     file_ctx,
-                    ImageState::Aborted,
-                    None,
+                    ImageState::Aborted(ImageStateReason::MomentumAbort),
                 )?;
 
                 rustot_log!(warn, "Shutdown [request_data_handler]");
@@ -891,7 +899,8 @@ where
 
         // Abort the current job
         // TODO: This should never write to current image flags?!
-        self.pal.set_platform_image_state(ImageState::Aborted)?;
+        self.pal
+            .set_platform_image_state(ImageState::Aborted(ImageStateReason::NewerJob))?;
         self.ota_close()
     }
 
@@ -989,7 +998,9 @@ where
 
                 // Call the platform specific code to reject the image
                 // TODO: This should never write to current image flags?!
-                self.pal.set_platform_image_state(ImageState::Rejected)?;
+                self.pal.set_platform_image_state(ImageState::Rejected(
+                    ImageStateReason::FailedIngest,
+                ))?;
 
                 // TODO: Pal reason
                 self.control.update_job_status(
@@ -1034,8 +1045,7 @@ where
                 &mut self.pal,
                 &self.config,
                 interface.mut_file_ctx(),
-                ImageState::Aborted,
-                Some(ImageStateReason::UserAbort),
+                ImageState::Aborted(ImageStateReason::UserAbort),
             )?;
             self.ota_close()
         } else {
@@ -1052,8 +1062,7 @@ where
                 &mut self.pal,
                 &self.config,
                 interface.mut_file_ctx(),
-                ImageState::Aborted,
-                Some(ImageStateReason::UserAbort),
+                ImageState::Aborted(ImageStateReason::UserAbort),
             )?;
             self.ota_close()?;
         }
