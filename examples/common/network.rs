@@ -1,10 +1,12 @@
 use embedded_nal::{AddrType, Dns, IpAddr, SocketAddr, TcpClientStack};
 use heapless::String;
-use native_tls::{Certificate, Identity, TlsConnector, TlsStream};
+use native_tls::{TlsConnector, TlsStream};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
 use dns_lookup::{lookup_addr, lookup_host};
+
+use super::credentials;
 
 /// An std::io::Error compatible error type returned when an operation is requested in the wrong
 /// sequence (where the "right" is create a socket, connect, any receive/send, and possibly close).
@@ -113,25 +115,21 @@ impl TcpClientStack for Network {
         remote: SocketAddr,
     ) -> nb::Result<(), Self::Error> {
         let connector = TlsConnector::builder()
-            .identity(Identity::from_pkcs12(include_bytes!("../secrets/identity.pfx"), "").unwrap())
-            .add_root_certificate(
-                Certificate::from_pem(include_bytes!("../secrets/root-ca.pem")).unwrap(),
-            )
+            .identity(credentials::identity())
+            .add_root_certificate(credentials::root_ca())
             .build()
             .unwrap();
         let soc = TcpStream::connect(format!("{}", remote))?;
 
-        // let host = self.get_host_by_address(remote.ip()).unwrap();
-        // dbg!(&host);
-        let mut tls_stream = connector
-            .connect("a69ih9fwq4cti-ats.iot.eu-west-1.amazonaws.com", soc)
-            .map_err(|e| match e {
-                native_tls::HandshakeError::Failure(_) => nb::Error::Other(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed TLS handshake",
-                )),
-                native_tls::HandshakeError::WouldBlock(_) => nb::Error::WouldBlock,
-            })?;
+        let mut tls_stream =
+            connector
+                .connect(credentials::HOSTNAME, soc)
+                .map_err(|e| match e {
+                    native_tls::HandshakeError::Failure(_) => nb::Error::Other(
+                        std::io::Error::new(std::io::ErrorKind::Other, "Failed TLS handshake"),
+                    ),
+                    native_tls::HandshakeError::WouldBlock(_) => nb::Error::WouldBlock,
+                })?;
 
         tls_stream.get_mut().set_nonblocking(true)?;
 

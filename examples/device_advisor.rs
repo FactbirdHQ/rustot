@@ -1,8 +1,9 @@
 mod common;
 
 use jobs::data_types::NextJobExecutionChanged;
+use mqttrust::{Mqtt, QoS, SubscribeTopic};
 use mqttrust_core::bbqueue::BBBuffer;
-use mqttrust_core::PublishNotification;
+use mqttrust_core::{EventError, PublishNotification};
 use mqttrust_core::{EventLoop, MqttOptions, Notification};
 
 use serde::Deserialize;
@@ -16,6 +17,8 @@ use rustot::jobs::{self, StatusDetails, MAX_JOB_ID_LEN};
 use rustot::ota;
 use rustot::ota::agent::OtaAgent;
 use std::thread;
+
+use crate::common::credentials;
 
 static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer::new();
 
@@ -87,66 +90,85 @@ fn main() {
 
     let mut network = Network;
 
-    let thing_name = "rustot-test";
+    let thing_name = "rustot";
 
     log::info!("Starting OTA example...");
 
     let mut mqtt_eventloop = EventLoop::new(
         c,
         SysClock::new(),
-        MqttOptions::new(
-            thing_name,
-            "a69ih9fwq4cti-ats.iot.eu-west-1.amazonaws.com".into(),
-            8883,
-        ),
+        MqttOptions::new(thing_name, credentials::HOSTNAME.into(), 8883),
     );
 
     let mqtt_client = mqttrust_core::Client::new(p, thing_name);
 
     let file_handler = FileHandler::new();
 
-    nb::block!(mqtt_eventloop.connect(&mut network)).expect("Failed to connect to MQTT");
-
-    log::info!("Successfully connected to broker");
-
     thread::Builder::new()
         .name("eventloop".to_string())
         .spawn(move || {
-            let mut ota_agent =
-                OtaAgent::builder(&mqtt_client, &mqtt_client, SysClock::new(), file_handler)
-                    .build();
+            // let mut ota_agent =
+            //     OtaAgent::builder(&mqtt_client, &mqtt_client, SysClock::new(), file_handler)
+            //         .build();
 
-            ota_agent.init();
+            // ota_agent.init();
 
             let mut cnt = 0;
             let mut suspended = false;
 
             loop {
-                ota_agent.timer_callback().expect("Failed timer callback!");
+                loop {
+                    match nb::block!(mqtt_eventloop.connect(&mut network)) {
+                        Err(_) => {}
+                        Ok(true) => {
+                            log::info!("Successfully connected to broker");
+                            mqtt_client
+                                .subscribe(&[SubscribeTopic {
+                                    topic_path: "rustot/device/advisor",
+                                    qos: QoS::AtLeastOnce,
+                                }])
+                                .unwrap();
+
+                            mqtt_client
+                                .publish(
+                                    "rustot/device/advisor/hello",
+                                    b"Hello from rustot",
+                                    QoS::AtLeastOnce,
+                                )
+                                .unwrap();
+                            break;
+                        }
+                        Ok(false) => {
+                            break;
+                        }
+                    }
+                }
+
+                // ota_agent.timer_callback().expect("Failed timer callback!");
 
                 match mqtt_eventloop.yield_event(&mut network) {
                     Ok(Notification::Publish(mut publish)) => {
                         // Check if the received file is a jobs topic, that we
                         // want to react to.
-                        match handle_ota(&publish) {
-                            Ok(OtaUpdate::JobUpdate(job_id, job_doc, status_details)) => {
-                                log::debug!("Received job! Starting OTA! {:?}", job_doc.streamname);
-                                ota_agent
-                                    .job_update(job_id.as_str(), job_doc, status_details)
-                                    .expect("Failed to start OTA job");
-                            }
-                            Ok(OtaUpdate::Data) => {
-                                ota_agent.handle_message(&mut publish.payload).ok();
-                                cnt += 1;
+                        // match handle_ota(&publish) {
+                        //     Ok(OtaUpdate::JobUpdate(job_id, job_doc, status_details)) => {
+                        //         log::debug!("Received job! Starting OTA! {:?}", job_doc.streamname);
+                        //         ota_agent
+                        //             .job_update(job_id.as_str(), &job_doc, status_details.as_ref())
+                        //             .expect("Failed to start OTA job");
+                        //     }
+                        //     Ok(OtaUpdate::Data) => {
+                        //         ota_agent.handle_message(&mut publish.payload).ok();
+                        //         cnt += 1;
 
-                                if cnt > 1000 && !suspended {
-                                    log::info!("Suspending current OTA Job");
-                                    ota_agent.suspend().ok();
-                                    suspended = true;
-                                }
-                            }
-                            Err(_) => {}
-                        }
+                        //         if cnt > 1000 && !suspended {
+                        //             log::info!("Suspending current OTA Job");
+                        //             ota_agent.suspend().ok();
+                        //             suspended = true;
+                        //         }
+                        //     }
+                        //     Err(_) => {}
+                        // }
                     }
                     Ok(n) => {
                         log::trace!("{:?}", n);
@@ -159,10 +181,10 @@ fn main() {
                     thread::sleep(std::time::Duration::from_millis(200));
                     if cnt >= 1200 {
                         log::info!("Resuming OTA Job");
-                        ota_agent.resume().ok();
+                        // ota_agent.resume().ok();
                     }
                 }
-                ota_agent.process_event().ok();
+                // ota_agent.process_event().ok();
             }
         })
         .unwrap();

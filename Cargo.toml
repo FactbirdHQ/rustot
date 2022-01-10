@@ -17,7 +17,7 @@ exclude = ["/documentation"]
 name = "rustot"
 
 [[example]]
-name = "linux"
+name = "device_advisor"
 required-features = ["ota_mqtt_data", "log"]
 
 [badges]
@@ -45,6 +45,8 @@ embedded-time = "0.11.0"
 dns-lookup = "1.0.3"
 mqttrust_core = "0.4.0"
 env_logger = "0.8.4"
+aws-config = "0.3.0"
+aws-sdk-iotdeviceadvisor = "0.3.0"
 
 [features]
 default = ["ota_mqtt_data"]
