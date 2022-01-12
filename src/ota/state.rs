@@ -52,7 +52,7 @@ impl RestartReason {
 #[derive(PartialEq)]
 pub struct JobEventData<'a> {
     pub job_name: &'a str,
-    pub ota_document: &'a OtaJob,
+    pub ota_document: &'a OtaJob<'a>,
     pub status_details: Option<&'a StatusDetails>,
 }
 
@@ -226,7 +226,7 @@ where
                 file_ctx.update_data_url = ota_document
                     .files
                     .get(0)
-                    .map(|f| f.update_data_url.clone())
+                    .map(|f| f.update_data_url.map(heapless::String::from))
                     .ok_or(OtaError::InvalidFile)?;
 
                 Err(file_ctx.clone())
