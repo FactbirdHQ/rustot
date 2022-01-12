@@ -1,0 +1,50 @@
+{
+  "Parameters": {
+    "CertDate": {
+      "Type": "String"
+    },
+    "deviceId": {
+      "Type": "String"
+    },
+    "AWS::IoT::Certificate::Id": {
+      "Type": "String"
+    }
+  },
+  "Resources": {
+    "certificate": {
+      "Properties": {
+        "CertificateId": {
+          "Ref": "AWS::IoT::Certificate::Id"
+        },
+        "Status": "Active"
+      },
+      "Type": "AWS::IoT::Certificate"
+    },
+    "policy": {
+      "Properties": {
+        "PolicyName": "full_iot_policy"
+      },
+      "Type": "AWS::IoT::Policy"
+    },
+    "thing": {
+      "OverrideSettings": {
+        "AttributePayload": "MERGE",
+        "ThingGroups": "DO_NOTHING",
+        "ThingTypeName": "REPLACE"
+      },
+      "Properties": {
+        "AttributePayload": {
+          "cert_issuance": {
+            "Ref": "CertDate"
+          }
+        },
+        "ThingGroups": [],
+        "ThingName": {
+          "Ref": "deviceId"
+        }
+      },
+      "Type": "AWS::IoT::Thing"
+    }
+  },
+  "DeviceConfiguration": {}
+}

@@ -10,6 +10,8 @@ This crates strives to implement the sum of:
 - [AWS Device Defender](https://github.com/aws/Device-Defender-for-AWS-IoT-embedded-sdk)
 - [AWS Jobs](https://github.com/aws/Jobs-for-AWS-IoT-embedded-sdk)
 - [AWS Device Shadow](https://github.com/aws/Device-Shadow-for-AWS-IoT-embedded-sdk)
+- [AWS IoT Fleet Provisioning](https://github.com/aws/Fleet-Provisioning-for-AWS-IoT-embedded-sdk)
+
 
 ![Test][test]
 [![Code coverage][codecov-badge]][codecov]

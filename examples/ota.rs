@@ -5,44 +5,44 @@ use mqttrust_core::bbqueue::BBBuffer;
 use mqttrust_core::PublishNotification;
 use mqttrust_core::{EventLoop, MqttOptions, Notification};
 
+use native_tls::TlsConnector;
 use serde::Deserialize;
 
+use common::clock::SysClock;
 use common::file_handler::FileHandler;
 use common::network::Network;
-use common::timer::SysClock;
 use ota::encoding::json::OtaJob;
 use rustot::jobs::data_types::DescribeJobExecutionResponse;
-use rustot::jobs::{self, StatusDetails, MAX_JOB_ID_LEN};
+use rustot::jobs::{self, StatusDetails};
 use rustot::ota;
 use rustot::ota::agent::OtaAgent;
 use std::thread;
 
+use crate::common::credentials;
+
 static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer::new();
 
 #[derive(Debug, Deserialize)]
-pub enum Jobs {
+pub enum Jobs<'a> {
     #[serde(rename = "afr_ota")]
-    Ota(OtaJob),
+    #[serde(borrow)]
+    Ota(OtaJob<'a>),
 }
 
-impl Jobs {
-    pub fn ota_job(self) -> Option<OtaJob> {
+impl<'a> Jobs<'a> {
+    pub fn ota_job(self) -> Option<OtaJob<'a>> {
         match self {
             Jobs::Ota(ota_job) => Some(ota_job),
         }
     }
 }
 
-enum OtaUpdate {
-    JobUpdate(
-        heapless::String<MAX_JOB_ID_LEN>,
-        OtaJob,
-        Option<StatusDetails>,
-    ),
-    Data,
+enum OtaUpdate<'a> {
+    JobUpdate(&'a str, OtaJob<'a>, Option<StatusDetails>),
+    Data(&'a mut [u8]),
 }
 
-fn handle_ota(publish: &PublishNotification) -> Result<OtaUpdate, ()> {
+fn handle_ota<'a>(publish: &'a mut PublishNotification) -> Result<OtaUpdate<'a>, ()> {
     match jobs::Topic::from_str(publish.topic_name.as_str()) {
         Some(jobs::Topic::NotifyNext) => {
             let (execution_changed, _) =
@@ -73,7 +73,7 @@ fn handle_ota(publish: &PublishNotification) -> Result<OtaUpdate, ()> {
 
     match ota::Topic::from_str(publish.topic_name.as_str()) {
         Some(ota::Topic::Data(_, _)) => {
-            return Ok(OtaUpdate::Data);
+            return Ok(OtaUpdate::Data(&mut publish.payload));
         }
         _ => {}
     }
@@ -85,7 +85,15 @@ fn main() {
 
     let (p, c) = unsafe { Q.try_split_framed().unwrap() };
 
-    let mut network = Network;
+    let hostname = credentials::HOSTNAME.unwrap();
+
+    let connector = TlsConnector::builder()
+        .identity(credentials::identity())
+        .add_root_certificate(credentials::root_ca())
+        .build()
+        .unwrap();
+
+    let mut network = Network::new_tls(connector, String::from(hostname));
 
     let thing_name = "rustot-test";
 
@@ -94,11 +102,7 @@ fn main() {
     let mut mqtt_eventloop = EventLoop::new(
         c,
         SysClock::new(),
-        MqttOptions::new(
-            thing_name,
-            "a69ih9fwq4cti-ats.iot.eu-west-1.amazonaws.com".into(),
-            8883,
-        ),
+        MqttOptions::new(thing_name, hostname.into(), 8883),
     );
 
     let mqtt_client = mqttrust_core::Client::new(p, thing_name);
@@ -128,15 +132,15 @@ fn main() {
                     Ok(Notification::Publish(mut publish)) => {
                         // Check if the received file is a jobs topic, that we
                         // want to react to.
-                        match handle_ota(&publish) {
+                        match handle_ota(&mut publish) {
                             Ok(OtaUpdate::JobUpdate(job_id, job_doc, status_details)) => {
                                 log::debug!("Received job! Starting OTA! {:?}", job_doc.streamname);
                                 ota_agent
-                                    .job_update(job_id.as_str(), job_doc, status_details)
+                                    .job_update(job_id, &job_doc, status_details.as_ref())
                                     .expect("Failed to start OTA job");
                             }
-                            Ok(OtaUpdate::Data) => {
-                                ota_agent.handle_message(&mut publish.payload).ok();
+                            Ok(OtaUpdate::Data(payload)) => {
+                                ota_agent.handle_message(payload).ok();
                                 cnt += 1;
 
                                 if cnt > 1000 && !suspended {
