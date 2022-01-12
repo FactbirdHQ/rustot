@@ -1,10 +1,7 @@
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    StatusDetails, MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_PENDING_JOBS, MAX_RUNNING_JOBS,
-    MAX_THING_NAME_LEN,
-};
+use super::{StatusDetails, MAX_JOB_ID_LEN, MAX_PENDING_JOBS, MAX_RUNNING_JOBS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
@@ -65,7 +62,7 @@ pub struct DescribeJobExecutionResponse<'a, J> {
     /// Contains data about a job execution.
     #[serde(rename = "execution")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution: Option<JobExecution<J>>,
+    pub execution: Option<JobExecution<'a, J>>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
     pub timestamp: i64,
@@ -98,7 +95,7 @@ pub struct GetPendingJobExecutionsResponse<'a> {
 
 /// Contains data about a job execution.
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct JobExecution<J> {
+pub struct JobExecution<'a, J> {
     /// The estimated number of seconds that remain before the job execution
     /// status will be changed to <code>TIMED_OUT</code>.
     #[serde(rename = "approximateSecondsBeforeTimedOut")]
@@ -116,7 +113,7 @@ pub struct JobExecution<J> {
     pub job_document: Option<J>,
     /// The unique identifier you assigned to this job when it was created.
     #[serde(rename = "jobId")]
-    pub job_id: String<MAX_JOB_ID_LEN>,
+    pub job_id: &'a str,
     /// The time, in seconds since the epoch, when the job execution was last
     /// updated.
     #[serde(rename = "lastUpdatedAt")]
@@ -142,7 +139,7 @@ pub struct JobExecution<J> {
     // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thing_name: Option<String<MAX_THING_NAME_LEN>>,
+    pub thing_name: Option<&'a str>,
     /// The version of the job execution. Job execution versions are incremented
     /// each time they are updated by a device.
     #[serde(rename = "versionNumber")]
@@ -207,7 +204,7 @@ pub struct StartNextPendingJobExecutionResponse<'a, J> {
     /// A JobExecution object.
     #[serde(rename = "execution")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution: Option<JobExecution<J>>,
+    pub execution: Option<JobExecution<'a, J>>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
     pub timestamp: i64,
@@ -265,11 +262,12 @@ pub struct JobExecutionsChanged {
 ///
 /// Topic: $aws/things/{thingName}/jobs/notify-next
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct NextJobExecutionChanged<J> {
+pub struct NextJobExecutionChanged<'a, J> {
     /// Contains data about a job execution.
     #[serde(rename = "execution")]
+    #[serde(borrow)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution: Option<JobExecution<J>>,
+    pub execution: Option<JobExecution<'a, J>>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
     pub timestamp: i64,
@@ -290,15 +288,15 @@ pub struct Jobs {
 /// Contains information about an error that occurred during an AWS IoT Jobs
 /// service operation.
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct ErrorResponse {
+pub struct ErrorResponse<'a> {
     code: ErrorCode,
     /// An error message string.
-    message: String<128>,
+    message: &'a str,
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_token: Option<String<MAX_CLIENT_TOKEN_LEN>>,
+    pub client_token: Option<&'a str>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
     pub timestamp: i64,
@@ -316,16 +314,17 @@ mod test {
 
     /// Job document used while developing the module
     #[derive(Debug, Clone, PartialEq, Deserialize)]
-    pub struct TestJob {
-        operation: String<128>,
-        somerandomkey: String<128>,
+    pub struct TestJob<'a> {
+        operation: &'a str,
+        somerandomkey: &'a str,
     }
 
     /// All known job document that the device knows how to process.
     #[derive(Debug, PartialEq, Deserialize)]
-    pub enum JobDetails {
+    pub enum JobDetails<'a> {
         #[serde(rename = "test_job")]
-        TestJob(TestJob),
+        #[serde(borrow)]
+        TestJob(TestJob<'a>),
 
         #[serde(other)]
         Unknown,
@@ -361,10 +360,10 @@ mod test {
                 execution: Some(JobExecution {
                     execution_number: Some(1),
                     job_document: Some(JobDetails::TestJob(TestJob {
-                        operation: String::from("test"),
-                        somerandomkey: String::from("random_value")
+                        operation: "test",
+                        somerandomkey: "random_value"
                     })),
-                    job_id: String::from("mini"),
+                    job_id: "mini",
                     last_updated_at: 1587471559,
                     queued_at: 1587471559,
                     status: JobStatus::Queued,
@@ -469,10 +468,10 @@ mod test {
                 execution: Some(JobExecution {
                     execution_number: Some(1),
                     job_document: Some(JobDetails::TestJob(TestJob {
-                        operation: String::from("test"),
-                        somerandomkey: String::from("random_value")
+                        operation: "test",
+                        somerandomkey: "random_value"
                     })),
-                    job_id: String::from("test"),
+                    job_id: "test",
                     last_updated_at: 1587036256,
                     queued_at: 1587036256,
                     status_details: None,

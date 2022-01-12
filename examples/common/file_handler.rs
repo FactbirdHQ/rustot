@@ -1,6 +1,5 @@
-use crypto::digest::Digest;
-use crypto::sha2::Sha256;
 use rustot::ota::pal::{OtaPal, OtaPalError, PalImageState};
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Cursor, Write};
 
@@ -53,8 +52,8 @@ impl OtaPal for FileHandler {
     ) -> Result<(), OtaPalError<Self::Error>> {
         if let Some(ref mut buf) = &mut self.filebuf {
             let mut hasher = Sha256::new();
-            hasher.input(buf.get_ref());
-            println!("Sha256 is {:}!", hasher.result_str());
+            hasher.update(buf.get_ref());
+            println!("Sha256 is {:?}!", hasher.finalize());
 
             let mut file =
                 File::create(file.filepath.as_str()).map_err(|_| OtaPalError::FileWriteFailed)?;

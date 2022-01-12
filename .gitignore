@@ -4,5 +4,4 @@
 *.fifo
 target/
 *.o
-**/*secrets*
 Cargo.lock

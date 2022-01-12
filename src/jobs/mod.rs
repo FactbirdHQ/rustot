@@ -137,7 +137,7 @@ impl From<mqttrust::MqttError> for JobError {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum JobTopic<'a> {
+pub enum JobTopic<'a> {
     // Outgoing Topics
     GetNext,
     GetPending,
@@ -159,62 +159,92 @@ enum JobTopic<'a> {
 }
 
 impl<'a> JobTopic<'a> {
+    const PREFIX: &'static str = "$aws/things";
+
+    pub fn check(s: &'a str) -> bool {
+        s.starts_with(Self::PREFIX)
+    }
+
     pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, JobError> {
         let mut topic_path = heapless::String::new();
         match self {
-            Self::GetNext => {
-                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/$next/get", client_id))
-            }
+            Self::GetNext => topic_path.write_fmt(format_args!(
+                "{}/{}/jobs/$next/get",
+                Self::PREFIX,
+                client_id
+            )),
             Self::GetPending => {
-                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/get", client_id))
+                topic_path.write_fmt(format_args!("{}/{}/jobs/get", Self::PREFIX, client_id))
             }
-            Self::StartNext => {
-                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/start-next", client_id))
-            }
+            Self::StartNext => topic_path.write_fmt(format_args!(
+                "{}/{}/jobs/start-next",
+                Self::PREFIX,
+                client_id
+            )),
             Self::Get(job_id) => topic_path.write_fmt(format_args!(
-                "$aws/things/{}/jobs/{}/get",
-                client_id, job_id
+                "{}/{}/jobs/{}/get",
+                Self::PREFIX,
+                client_id,
+                job_id
             )),
             Self::Update(job_id) => topic_path.write_fmt(format_args!(
-                "$aws/things/{}/jobs/{}/update",
-                client_id, job_id
+                "{}/{}/jobs/{}/update",
+                Self::PREFIX,
+                client_id,
+                job_id
             )),
 
             Self::Notify => {
-                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/notify", client_id))
+                topic_path.write_fmt(format_args!("{}/{}/jobs/notify", Self::PREFIX, client_id))
             }
-            Self::NotifyNext => {
-                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/notify-next", client_id))
-            }
-            Self::GetAccepted => {
-                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/get/accepted", client_id))
-            }
-            Self::GetRejected => {
-                topic_path.write_fmt(format_args!("$aws/things/{}/jobs/get/rejected", client_id))
-            }
+            Self::NotifyNext => topic_path.write_fmt(format_args!(
+                "{}/{}/jobs/notify-next",
+                Self::PREFIX,
+                client_id
+            )),
+            Self::GetAccepted => topic_path.write_fmt(format_args!(
+                "{}/{}/jobs/get/accepted",
+                Self::PREFIX,
+                client_id
+            )),
+            Self::GetRejected => topic_path.write_fmt(format_args!(
+                "{}/{}/jobs/get/rejected",
+                Self::PREFIX,
+                client_id
+            )),
             Self::StartNextAccepted => topic_path.write_fmt(format_args!(
-                "$aws/things/{}/jobs/start-next/accepted",
+                "{}/{}/jobs/start-next/accepted",
+                Self::PREFIX,
                 client_id
             )),
             Self::StartNextRejected => topic_path.write_fmt(format_args!(
-                "$aws/things/{}/jobs/start-next/rejected",
+                "{}/{}/jobs/start-next/rejected",
+                Self::PREFIX,
                 client_id
             )),
             Self::DescribeAccepted(job_id) => topic_path.write_fmt(format_args!(
-                "$aws/things/{}/jobs/{}/get/accepted",
-                client_id, job_id
+                "{}/{}/jobs/{}/get/accepted",
+                Self::PREFIX,
+                client_id,
+                job_id
             )),
             Self::DescribeRejected(job_id) => topic_path.write_fmt(format_args!(
-                "$aws/things/{}/jobs/{}/get/rejected",
-                client_id, job_id
+                "{}/{}/jobs/{}/get/rejected",
+                Self::PREFIX,
+                client_id,
+                job_id
             )),
             Self::UpdateAccepted(job_id) => topic_path.write_fmt(format_args!(
-                "$aws/things/{}/jobs/{}/update/accepted",
-                client_id, job_id
+                "{}/{}/jobs/{}/update/accepted",
+                Self::PREFIX,
+                client_id,
+                job_id
             )),
             Self::UpdateRejected(job_id) => topic_path.write_fmt(format_args!(
-                "$aws/things/{}/jobs/{}/update/rejected",
-                client_id, job_id
+                "{}/{}/jobs/{}/update/rejected",
+                Self::PREFIX,
+                client_id,
+                job_id
             )),
         }
         .map_err(|_| JobError::Overflow)?;
