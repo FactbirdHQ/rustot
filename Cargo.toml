@@ -31,7 +31,7 @@ maintenance = { status = "actively-developed" }
 bitmaps = { version = "^3.1", default-features = false }
 embedded-hal = "=1.0.0-alpha.6"
 heapless = { version = "0.7.0", features = ["serde"] }
-mqttrust = { version = "0.4.1" }
+mqttrust = { version = "0.5.0" }
 nb = "1"
 serde = { version = "1.0.126", default-features = false, features = ["derive"] }
 serde_cbor = { version = "^0.11", default-features = false, optional = true }
@@ -46,7 +46,7 @@ native-tls = { version = "^0.2" }
 embedded-nal = "0.6.0"
 fugit-timer = "0.1.2"
 dns-lookup = "1.0.3"
-mqttrust_core = { version = "0.4.1", features = ["log"] }
+mqttrust_core = { version = "0.5.0", features = ["log"] }
 env_logger = "0.9.0"
 sha2 = "0.10.1"
 
@@ -59,7 +59,3 @@ ota_http_data = []
 cbor = ["serde_cbor"]
 
 defmt-impl = ["defmt", "mqttrust/defmt-impl", "heapless/defmt-impl"]
-
-[patch.crates-io]
-mqttrust = { path = "../mqttrust/mqttrust" }
-mqttrust_core = { path = "../mqttrust/mqttrust_core" }
