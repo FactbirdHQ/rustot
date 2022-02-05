@@ -213,3 +213,34 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::{
+        ota::test::mock::{MockPal, MockTimer},
+        test::MockMqtt,
+    };
+
+    #[test]
+    fn enables_allow_downgrade() {
+        let mqtt = MockMqtt::new();
+
+        let request_timer = MockTimer::new();
+        let self_test_timer = MockTimer::new();
+        let pal = MockPal {};
+
+        let builder = OtaAgentBuilder::new(&mqtt, &mqtt, request_timer, pal)
+            .with_self_test_timeout(self_test_timer, 32000)
+            .allow_downgrade();
+
+        assert!(builder.config.allow_downgrade);
+        assert!(builder.self_test_timer.is_some());
+        assert_eq!(builder.config.self_test_timeout_ms, 32000);
+
+        let agent = builder.build();
+
+        assert!(agent.state.context().config.allow_downgrade);
+    }
+}
