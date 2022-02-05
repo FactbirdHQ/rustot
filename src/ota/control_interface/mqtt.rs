@@ -17,14 +17,18 @@ use crate::ota::error::OtaError;
 static REQUEST_CNT: AtomicU32 = AtomicU32::new(0);
 
 impl<T: mqttrust::Mqtt> ControlInterface for T {
-    /// Check for next available OTA job from the job service by publishing a
-    /// "get next job" message to the job service.
-    fn request_job(&self) -> Result<(), OtaError> {
-        // Subscribe to the OTA job notification topics
+    /// Initialize the control interface by subscribing to the OTA job
+    /// notification topics.
+    fn init(&self) -> Result<(), OtaError> {
         Jobs::subscribe::<1>()
             .topic(Topic::NotifyNext, QoS::AtLeastOnce)
             .send(self)?;
+        Ok(())
+    }
 
+    /// Check for next available OTA job from the job service by publishing a
+    /// "get next job" message to the job service.
+    fn request_job(&self) -> Result<(), OtaError> {
         let request_cnt = REQUEST_CNT.fetch_add(1, Ordering::Relaxed);
 
         // Obtains a unique client token on the form
@@ -41,7 +45,8 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
         Ok(())
     }
 
-    /// Update the job status on the service side with progress or completion info
+    /// Update the job status on the service side with progress or completion
+    /// info
     fn update_job_status(
         &self,
         file_ctx: &mut FileContext,
@@ -64,7 +69,8 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
                 ((file_ctx.filesize + config.block_size - 1) / config.block_size) as u32;
             let received_blocks = total_blocks - file_ctx.blocks_remaining as u32;
 
-            // Output a status update once in a while. Always update first and last status
+            // Output a status update once in a while. Always update first and
+            // last status
             if file_ctx.blocks_remaining != 0
                 && received_blocks != 0
                 && received_blocks % config.status_update_frequency != 0
@@ -87,7 +93,7 @@ impl<T: mqttrust::Mqtt> ControlInterface for T {
                     .map_err(|_| OtaError::Overflow)?;
             }
 
-            // Downgrade Progress updates to QOS 0 to avoid overloading MQTT
+            // Downgrade progress updates to QOS 0 to avoid overloading MQTT
             // buffers during active streaming
             if status == JobStatus::InProgress {
                 qos = QoS::AtMostOnce;
