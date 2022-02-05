@@ -3,9 +3,10 @@ use crate::ota::{
     pal::{ImageState, OtaPal, OtaPalError, PalImageState, Version},
 };
 
+use super::TEST_TIMER_HZ;
+
 ///
-/// Mock timer used for unit tests. Implements `embedded_hal::timer::nb::CountDown`
-/// & `embedded_hal::timer::nb::Cancel` traits.
+/// Mock timer used for unit tests. Implements `fugit_timer::Timer` trait.
 ///
 pub struct MockTimer {
     pub is_started: bool,
@@ -15,27 +16,28 @@ impl MockTimer {
         Self { is_started: false }
     }
 }
-impl embedded_hal::timer::nb::CountDown for MockTimer {
+
+impl fugit_timer::Timer<TEST_TIMER_HZ> for MockTimer {
     type Error = ();
 
-    type Time = u32;
+    fn now(&mut self) -> fugit_timer::TimerInstantU32<TEST_TIMER_HZ> {
+        todo!()
+    }
 
-    fn start<T>(&mut self, _count: T) -> Result<(), Self::Error>
-    where
-        T: Into<Self::Time>,
-    {
+    fn start(
+        &mut self,
+        duration: fugit_timer::TimerDurationU32<TEST_TIMER_HZ>,
+    ) -> Result<(), Self::Error> {
         self.is_started = true;
         Ok(())
     }
 
-    fn wait(&mut self) -> nb::Result<(), Self::Error> {
-        Ok(())
-    }
-}
-
-impl embedded_hal::timer::nb::Cancel for MockTimer {
     fn cancel(&mut self) -> Result<(), Self::Error> {
         self.is_started = false;
+        Ok(())
+    }
+
+    fn wait(&mut self) -> nb::Result<(), Self::Error> {
         Ok(())
     }
 }

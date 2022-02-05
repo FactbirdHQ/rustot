@@ -1,0 +1,230 @@
+<mxfile host="65bd71144e">
+    <diagram id="t_GnExy__YjRn7oTmzeF" name="Page-1">
+        <mxGraphModel dx="2062" dy="1127" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="66" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#60A337;gradientDirection=north;fillColor=#277116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" parent="1" vertex="1">
+                    <mxGeometry x="412.1746588693957" y="17.82608695652174" width="69.5217064750229" height="69.5217064750229" as="geometry"/>
+                </mxCell>
+                <mxCell id="65" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#60A337;gradientDirection=north;fillColor=#277116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" parent="1" vertex="1">
+                    <mxGeometry x="403.2615984405458" y="26.739130434782606" width="69.5217064750229" height="69.5217064750229" as="geometry"/>
+                </mxCell>
+                <mxCell id="31" value="" style="endArrow=classic;html=1;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="171.52202729044834" y="230.84782608695653" as="sourcePoint"/>
+                        <mxPoint x="688.4795321637426" y="239.76086956521738" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="32" value="" style="group" parent="1" vertex="1" connectable="0">
+                    <mxGeometry x="171.52202729044834" y="147.06521739130434" width="516.9575048732943" height="40.108695652173914" as="geometry"/>
+                </mxCell>
+                <mxCell id="16" value="" style="endArrow=classic;html=1;" parent="32" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint y="31.195652173913043" as="sourcePoint"/>
+                        <mxPoint x="516.9575048732943" y="40.108695652173914" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="29" value="Device connects with claim certificate to &lt;br style=&quot;font-size: 10px;&quot;&gt;AWS IoT Core @ provision.blackbird.online&amp;nbsp;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="32" vertex="1">
+                    <mxGeometry x="17.826120857699806" width="210" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="33" value="Device publishes uuid and signature to &quot;endpoint&quot;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="189.34814814814814" y="204.1086956521739" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="35" value="" style="endArrow=classic;html=1;fontSize=11;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="688.4795321637426" y="294.1304347826087" as="sourcePoint"/>
+                        <mxPoint x="171.52202729044834" y="303.04347826086956" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="36" value="Provision service publishes iotDataEndpoint &lt;br&gt;and iotCredentialsEndpoint to &quot;endpoint/accepted&quot;&amp;nbsp;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="437.5230214424951" y="258.4782608695652" width="240" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="38" value="" style="endArrow=classic;html=1;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="171.52202729044834" y="360.9782608695652" as="sourcePoint"/>
+                        <mxPoint x="430.0007797270955" y="365.4347826086956" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="39" value="Device connects with claim certificate to &lt;br style=&quot;font-size: 10px&quot;&gt;AWS IoT Core @ iotDataEndpoint&amp;nbsp;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="198.26120857699803" y="329.78260869565213" width="190" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="40" value="" style="endArrow=classic;html=1;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="171.52202729044834" y="405.54347826086956" as="sourcePoint"/>
+                        <mxPoint x="430.0007797270955" y="410" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="41" value="Device publishes {} to&lt;br&gt;&quot;$aws/certificates/create/json&quot;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="216.08732943469786" y="374.3478260869565" width="150" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="42" value="" style="endArrow=classic;html=1;fontSize=11;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="430.0007797270955" y="420.69565217391306" as="sourcePoint"/>
+                        <mxPoint x="430.0007797270955" y="483.0869565217391" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="650" y="421"/>
+                            <mxPoint x="650" y="483"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="43" value="Fleet Provisioning service creates new &lt;br&gt;certificate and private key signed with &lt;br&gt;AWS CA" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="457.4799610136452" y="433.5591304347826" width="190" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="44" value="" style="endArrow=classic;html=1;rounded=0;fontSize=11;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="430.0007797270955" y="493.78260869565213" as="sourcePoint"/>
+                        <mxPoint x="171.52202729044834" y="502.69565217391306" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="45" value="Fleet Provisioning service publishes certificate,&lt;br&gt;private key and certificate ownership token to&lt;br&gt;&quot;$aws/certificates/created/json/accepted&quot;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="198.26120857699803" y="449.2173913043478" width="220" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="46" value="" style="endArrow=classic;html=1;rounded=0;fontSize=11;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="171.52202729044834" y="511.6086956521739" as="sourcePoint"/>
+                        <mxPoint x="171.52202729044834" y="565.0869565217391" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="20" y="511.6086956521739"/>
+                            <mxPoint x="20" y="565.0869565217391"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="47" value="Device writes unique&lt;br&gt;private key and certificate&lt;br&gt;to secure storage" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="14.783060428849902" y="518.3517391304348" width="130" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="48" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;flipH=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="725.0230799220273" y="151.52173913043478" width="17.826120857699806" height="169.34782608695653" as="geometry"/>
+                </mxCell>
+                <mxCell id="49" value="Blackbird specific cloud routing" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="756.2187914230019" y="227.2826086956522" width="150" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="50" value="" style="shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;flipH=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="725.0230799220273" y="329.78260869565213" width="17.826120857699806" height="436.7391304347826" as="geometry"/>
+                </mxCell>
+                <mxCell id="51" value="Standard AWS Fleet Provisioning by claim&lt;br&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="756.2187914230019" y="538.3478260869565" width="200" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="3" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.hardware_board;" parent="1" vertex="1">
+                    <mxGeometry x="135.86978557504872" y="35.65217391304348" width="69.5217064750229" height="69.5217064750229" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="" style="endArrow=none;html=1;strokeColor=#9E9E9E;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="170.63072124756334" y="820" as="sourcePoint"/>
+                        <mxPoint x="170.63072124756334" y="142.6086956521739" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="12" value="Device" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="148.3480701754386" y="115.8695652173913" width="50" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="19" value="Blackbird Clouds" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="383.652865497076" width="110" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="2" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#60A337;gradientDirection=north;fillColor=#277116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" parent="1" vertex="1">
+                    <mxGeometry x="394.34853801169584" y="35.65217391304348" width="69.5217064750229" height="69.5217064750229" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" value="" style="endArrow=none;html=1;strokeColor=#9E9E9E;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="429.1094736842105" y="820" as="sourcePoint"/>
+                        <mxPoint x="429.1094736842105" y="142.6086956521739" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="11" value="AWS IoT Core" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="389.00070175438594" y="115.8695652173913" width="90" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#60A337;gradientDirection=north;fillColor=#277116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.iot_core;" parent="1" vertex="1">
+                    <mxGeometry x="652.827290448343" y="35.65217391304348" width="69.5217064750229" height="69.5217064750229" as="geometry"/>
+                </mxCell>
+                <mxCell id="5" value="provision.blackbird.online" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="620.7402729044834" width="150" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="8" value="" style="endArrow=none;html=1;strokeColor=#9E9E9E;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="687.5882261208577" y="820" as="sourcePoint"/>
+                        <mxPoint x="687.5882261208577" y="142.6086956521739" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="9" value="AWS IoT Core" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="647.4794541910331" y="115.8695652173913" width="90" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="52" value="" style="endArrow=classic;html=1;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="171.52202729044834" y="579.3478260869565" as="sourcePoint"/>
+                        <mxPoint x="430.0007797270955" y="583.8043478260869" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="53" value="Device publishes uuid, signature, parameters and &lt;br&gt;certificate ownership token to &lt;br&gt;&quot;$aws/provisioning-templates/{template-&lt;br&gt;name}/provision/json&quot;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="189.34814814814814" y="530.3260869565217" width="240" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="54" value="" style="endArrow=classic;html=1;fontSize=11;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="430.0007797270955" y="595.3913043478261" as="sourcePoint"/>
+                        <mxPoint x="430.0007797270955" y="657.7826086956522" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="650" y="595"/>
+                            <mxPoint x="650" y="658"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="55" value="Fleet Provisioning service validates device&lt;br&gt;and creates IoT thing, policies &lt;br&gt;and activates the certificate" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="440.0034307992203" y="604.3043478260869" width="200" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="56" value="" style="endArrow=classic;html=1;rounded=0;fontSize=11;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="171.52202729044834" y="686.3043478260869" as="sourcePoint"/>
+                        <mxPoint x="171.52202729044834" y="730.8695652173913" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="20" y="686.3043478260869"/>
+                            <mxPoint x="20" y="730.8695652173913"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="57" value="Device applies new&lt;br&gt;configuration" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="42.28265107212475" y="695.2173913043478" width="100" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="58" value="" style="endArrow=classic;html=1;rounded=0;fontSize=11;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="430.0007797270955" y="668.4782608695652" as="sourcePoint"/>
+                        <mxPoint x="171.52202729044834" y="677.3913043478261" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="59" value="Fleet Provisioning service publishes device-&lt;br&gt;specific configuration to&lt;br&gt;&quot;$aws/provisioning-templates/{template-&lt;br&gt;name}/provision/json/accepted&quot;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="202.717738791423" y="619.4565217391304" width="210" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="61" value="" style="endArrow=classic;html=1;rounded=0;" parent="1" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="171.52202729044834" y="744.2391304347826" as="sourcePoint"/>
+                        <mxPoint x="430.0007797270955" y="748.695652173913" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="62" value="Device connects with unique private key, &lt;br&gt;certificate and configuration to &lt;br style=&quot;font-size: 10px&quot;&gt;AWS IoT Core @ iotDataEndpoint&amp;nbsp;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="194.3446783625731" y="699.9969565217391" width="200" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="63" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.certificate_manager;" parent="1" vertex="1">
+                    <mxGeometry x="144.7828460038986" y="154.64130434782606" width="19.55520820592311" height="25.847813945841846" as="geometry"/>
+                </mxCell>
+                <mxCell id="64" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#BF0816;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.data_encryption_key;" parent="1" vertex="1">
+                    <mxGeometry x="118.04366471734893" y="153.75" width="21.257598710632" height="26.739117875008805" as="geometry"/>
+                </mxCell>
+                <mxCell id="68" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.certificate_manager;" parent="1" vertex="1">
+                    <mxGeometry x="140.5" y="537.35" width="18.84" height="24.91" as="geometry"/>
+                </mxCell>
+                <mxCell id="69" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#BF0816;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.data_encryption_key;" parent="1" vertex="1">
+                    <mxGeometry x="141.96" y="513.7" width="17.21" height="21.65" as="geometry"/>
+                </mxCell>
+                <mxCell id="70" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.certificate_manager;" parent="1" vertex="1">
+                    <mxGeometry x="437.52" y="451.65000000000003" width="18.84" height="24.91" as="geometry"/>
+                </mxCell>
+                <mxCell id="71" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#BF0816;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.data_encryption_key;" parent="1" vertex="1">
+                    <mxGeometry x="438.98" y="428.00000000000006" width="17.21" height="21.65" as="geometry"/>
+                </mxCell>
+                <mxCell id="72" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.certificate_manager;" parent="1" vertex="1">
+                    <mxGeometry x="139.61284600389862" y="740.891304347826" width="19.55520820592311" height="25.847813945841846" as="geometry"/>
+                </mxCell>
+                <mxCell id="73" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#BF0816;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.data_encryption_key;" parent="1" vertex="1">
+                    <mxGeometry x="112.87366471734892" y="740" width="21.257598710632" height="26.739117875008805" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

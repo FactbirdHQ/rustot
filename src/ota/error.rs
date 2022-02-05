@@ -21,6 +21,12 @@ pub enum OtaError {
     Timer,
 }
 
+impl OtaError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Encoding)
+    }
+}
+
 impl From<mqttrust::MqttError> for OtaError {
     fn from(e: mqttrust::MqttError) -> Self {
         Self::Mqtt(e)

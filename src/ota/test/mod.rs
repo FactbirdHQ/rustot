@@ -10,6 +10,8 @@ use super::{
 
 pub mod mock;
 
+pub const TEST_TIMER_HZ: u32 = 8_000_000;
+
 pub fn test_job_doc() -> OtaJob<'static> {
     OtaJob {
         protocols: heapless::Vec::from_slice(&[Protocol::Mqtt]).unwrap(),
@@ -51,11 +53,12 @@ pub mod ota_tests {
         test::mock::{MockPal, MockTimer},
     };
     use crate::test::MockMqtt;
-    use embedded_hal::timer;
     use mqttrust::encoding::v4::{decode_slice, utils::Pid, PacketType};
     use mqttrust::{MqttError, Packet, QoS, SubscribeTopic};
     use serde::Deserialize;
     use serde_json_core::from_slice;
+
+    use super::TEST_TIMER_HZ;
 
     /// All known job document that the device knows how to process.
     #[derive(Debug, PartialEq, Deserialize)]
@@ -70,7 +73,8 @@ pub mod ota_tests {
 
     fn new_agent(
         mqtt: &MockMqtt,
-    ) -> OtaAgent<'_, MockMqtt, &MockMqtt, NoInterface, MockTimer, MockTimer, MockPal> {
+    ) -> OtaAgent<'_, MockMqtt, &MockMqtt, NoInterface, MockTimer, MockTimer, MockPal, TEST_TIMER_HZ>
+    {
         let request_timer = MockTimer::new();
         let self_test_timer = MockTimer::new();
         let pal = MockPal {};
@@ -80,17 +84,15 @@ pub mod ota_tests {
             .build()
     }
 
-    fn run_to_state<'a, C, DP, DS, T, ST, PAL>(
-        agent: &mut OtaAgent<'a, C, DP, DS, T, ST, PAL>,
+    fn run_to_state<'a, C, DP, DS, T, ST, PAL, const TIMER_HZ: u32>(
+        agent: &mut OtaAgent<'a, C, DP, DS, T, ST, PAL, TIMER_HZ>,
         state: States,
     ) where
         C: ControlInterface,
         DP: DataInterface,
         DS: DataInterface,
-        T: timer::nb::CountDown + timer::nb::Cancel,
-        T::Time: From<u32>,
-        ST: timer::nb::CountDown + timer::nb::Cancel,
-        ST::Time: From<u32>,
+        T: fugit_timer::Timer<TIMER_HZ>,
+        ST: fugit_timer::Timer<TIMER_HZ>,
         PAL: OtaPal,
     {
         if agent.state.state() == &state {
@@ -256,7 +258,7 @@ pub mod ota_tests {
             ota_agent.resume().unwrap(),
             &States::RequestingJob
         ));
-        assert_eq!(mqtt.tx.borrow_mut().len(), 0);
+        assert_eq!(mqtt.tx.borrow_mut().len(), 1);
     }
 
     #[test]

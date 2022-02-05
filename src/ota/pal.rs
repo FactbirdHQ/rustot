@@ -3,8 +3,6 @@
 use core::fmt::Write;
 use core::str::FromStr;
 
-use crate::rustot_log;
-
 use super::encoding::FileContext;
 use super::state::ImageStateReason;
 
@@ -297,7 +295,7 @@ pub trait OtaPal {
             OtaEvent::SelfTestFailed => {
                 // Requires manual activation of previous image as self-test for
                 // new image downloaded failed.*/
-                rustot_log!(error, "Self-test failed, shutting down OTA Agent.");
+                error!("Self-test failed, shutting down OTA Agent.");
 
                 // Shutdown OTA Agent, if it is required that the unsubscribe operations are not
                 // performed while shutting down please set the second parameter to 0 instead of 1.

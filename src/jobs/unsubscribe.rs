@@ -2,10 +2,7 @@ use mqttrust::Mqtt;
 
 use crate::jobs::JobTopic;
 
-use super::{
-    subscribe::Topic,
-    JobError, {MAX_JOB_ID_LEN, MAX_THING_NAME_LEN},
-};
+use super::{subscribe::Topic, JobError, MAX_JOB_ID_LEN};
 
 #[derive(Default)]
 pub struct Unsubscribe<'a, const N: usize> {
@@ -39,7 +36,7 @@ impl<'a, const N: usize> Unsubscribe<'a, N> {
         self,
         client_id: &str,
     ) -> Result<heapless::Vec<heapless::String<256>, N>, JobError> {
-        assert!(client_id.len() <= MAX_THING_NAME_LEN);
+        // assert!(client_id.len() <= super::MAX_THING_NAME_LEN);
 
         self.topics
             .iter()
@@ -48,6 +45,10 @@ impl<'a, const N: usize> Unsubscribe<'a, N> {
     }
 
     pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), JobError> {
+        if self.topics.is_empty() {
+            return Ok(());
+        }
+
         let topic_paths = self.topics(mqtt.client_id())?;
         let topics: heapless::Vec<_, N> = topic_paths.iter().map(|s| s.as_str()).collect();
 

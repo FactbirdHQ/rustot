@@ -6,8 +6,6 @@ use heapless::FnvIndexMap;
 use mqttrust::Mqtt;
 use serde::Serialize;
 
-use crate::rustot_log;
-
 use self::{
     data_types::{
         CreateCertificateFromCsrResponse, CreateKeysAndCertificateResponse, ErrorResponse,
@@ -142,8 +140,7 @@ where
     ) -> Result<Response<'b, P>, Error> {
         match Topic::from_str(topic_name) {
             Some(Topic::CreateKeysAndCertificateAccepted(format)) => {
-                rustot_log!(
-                    trace,
+                trace!(
                     "Topic::CreateKeysAndCertificateAccepted {:?}. Payload len: {:?}",
                     format,
                     payload.len()
@@ -168,11 +165,7 @@ where
                 }))
             }
             Some(Topic::CreateCertificateFromCsrAccepted(format)) => {
-                rustot_log!(
-                    trace,
-                    "Topic::CreateCertificateFromCsrAccepted {:?}",
-                    format
-                );
+                trace!("Topic::CreateCertificateFromCsrAccepted {:?}", format);
 
                 let response = match format {
                     PayloadFormat::Cbor => {
@@ -193,7 +186,7 @@ where
                 }))
             }
             Some(Topic::RegisterThingAccepted(_, format)) => {
-                rustot_log!(trace, "Topic::RegisterThingAccepted {:?}", format);
+                trace!("Topic::RegisterThingAccepted {:?}", format);
 
                 let response = match format {
                     PayloadFormat::Cbor => {
@@ -222,13 +215,13 @@ where
                     PayloadFormat::Json => serde_json_core::from_slice::<ErrorResponse>(payload)?.0,
                 };
 
-                rustot_log!(error, "{:?}", response);
+                error!("{:?}", response);
 
                 return Err(Error::Response(response.status_code));
             }
 
             t => {
-                rustot_log!(trace, "{:?}", t);
+                trace!("{:?}", t);
                 Ok(Response::None)
             }
         }
@@ -240,7 +233,7 @@ where
     M: Mqtt,
 {
     fn drop(&mut self) {
-        rustot_log!(trace, "DROPPED");
+        trace!("DROPPED");
         Unsubscribe::<4>::new()
             .topic(Topic::CreateKeysAndCertificateAccepted(self.payload_format))
             .topic(Topic::CreateKeysAndCertificateRejected(self.payload_format))

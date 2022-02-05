@@ -1,4 +1,3 @@
-use embedded_hal::timer;
 use smlang::statemachine;
 
 use super::config::Config;
@@ -13,7 +12,8 @@ use super::pal::OtaPalError;
 use crate::jobs::{data_types::JobStatus, StatusDetails};
 use crate::ota::encoding::Bitmap;
 use crate::ota::pal::OtaEvent;
-use crate::rustot_log;
+
+use fugit_timer::ExtU32;
 
 use super::{
     error::OtaError,
@@ -65,7 +65,6 @@ statemachine! {
         RequestingJob + RequestTimer [request_job_handler] = WaitingForJob,
         WaitingForJob + RequestJobDocument [request_job_handler] = WaitingForJob,
         WaitingForJob + ReceivedJobDocument(JobEventData<'a>) [process_job_handler] = CreatingFile,
-        WaitingForJob + Start [request_job_handler] = WaitingForJob,
         CreatingFile + StartSelfTest [in_self_test_handler] = WaitingForJob,
         CreatingFile + CreateFile [init_file_handler] = RequestingFileBlock,
         CreatingFile + RequestTimer [init_file_handler] = RequestingFileBlock,
@@ -75,7 +74,7 @@ statemachine! {
         WaitingForFileBlock + ReceivedFileBlock(&'a mut [u8]) [process_data_handler]  = WaitingForFileBlock,
         WaitingForFileBlock + ReceivedJobDocument(JobEventData<'a>) [job_notification_handler] = RequestingJob,
         WaitingForFileBlock + CloseFile [close_file_handler] = WaitingForJob,
-        Suspended + Resume [resume_job_handler] = RequestingJob,
+        Suspended | RequestingJob | WaitingForJob | CreatingFile | RequestingFileBlock | WaitingForFileBlock + Resume [resume_job_handler] = RequestingJob,
         Ready | RequestingJob | WaitingForJob | CreatingFile | RequestingFileBlock | WaitingForFileBlock + Suspend = Suspended,
         Ready | RequestingJob | WaitingForJob | CreatingFile | RequestingFileBlock | WaitingForFileBlock + UserAbort [user_abort_handler] = WaitingForJob,
         Ready | RequestingJob | WaitingForJob | CreatingFile | RequestingFileBlock | WaitingForFileBlock + Shutdown [shutdown_handler] = Ready,
@@ -128,15 +127,13 @@ macro_rules! data_interface {
 }
 
 // Context of current OTA Job, keeping state
-pub(crate) struct SmContext<'a, C, DP, DS, T, ST, PAL, const L: usize>
+pub(crate) struct SmContext<'a, C, DP, DS, T, ST, PAL, const L: usize, const TIMER_HZ: u32>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
-    ST: timer::nb::CountDown + timer::nb::Cancel,
-    ST::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
+    ST: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
     pub(crate) events: heapless::spsc::Queue<Events<'a>, L>,
@@ -155,15 +152,14 @@ where
     pub(crate) image_state: ImageState<PAL::Error>,
 }
 
-impl<'a, C, DP, DS, T, ST, PAL, const L: usize> SmContext<'a, C, DP, DS, T, ST, PAL, L>
+impl<'a, C, DP, DS, T, ST, PAL, const L: usize, const TIMER_HZ: u32>
+    SmContext<'a, C, DP, DS, T, ST, PAL, L, TIMER_HZ>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
-    ST: timer::nb::CountDown + timer::nb::Cancel,
-    ST::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
+    ST: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
     /// Called to update the filecontext structure from the job
@@ -190,7 +186,7 @@ where
         let cur_file_ctx = self.active_interface.as_mut().map(|i| i.mut_file_ctx());
         let file_ctx = if let Some(mut file_ctx) = cur_file_ctx {
             if file_ctx.stream_name != ota_document.streamname {
-                rustot_log!(info, "New job document received, aborting current job");
+                info!("New job document received, aborting current job");
 
                 // Abort the current job
                 // TODO:??
@@ -215,7 +211,7 @@ where
                 )?)
             } else {
                 // The same job is being reported so update the url
-                rustot_log!(info, "New job document ID is identical to the current job: Updating the URL based on the new job document");
+                info!("New job document ID is identical to the current job: Updating the URL based on the new job document");
                 file_ctx.update_data_url = ota_document
                     .files
                     .get(0)
@@ -251,14 +247,11 @@ where
                 return Ok(file_ctx);
             }
             Ok(file_ctx) => {
-                rustot_log!(
-                    info,
-                    "Job document was accepted. Attempting to begin the update"
-                );
+                info!("Job document was accepted. Attempting to begin the update");
                 file_ctx
             }
             Err(file_ctx) => {
-                rustot_log!(info, "Job document for receiving an update received");
+                info!("Job document for receiving an update received");
                 // Don't create file again on update.
                 return Ok(file_ctx);
             }
@@ -311,7 +304,7 @@ where
 
     /// Validate update version when receiving job doc in self test state
     fn handle_self_test_job(&mut self, file_ctx: &mut FileContext) -> Result<(), OtaError> {
-        rustot_log!(info, "In self test mode");
+        info!("In self test mode");
 
         let active_version = self.pal.get_active_firmware_version().unwrap_or_default();
 
@@ -325,7 +318,7 @@ where
             true
         };
 
-        rustot_log!(info, "Version check: {:?}", version_check);
+        info!("Version check: {:?}", version_check);
 
         if self.config.allow_downgrade || version_check {
             // The running firmware version is newer than the firmware that
@@ -370,7 +363,7 @@ where
         file_ctx: &mut FileContext,
         image_state: ImageState<PAL::Error>,
     ) -> Result<ImageState<PAL::Error>, OtaError> {
-        // rustot_log!(debug, "set_image_state_with_reason {:?}", image_state);
+        // debug!("set_image_state_with_reason {:?}", image_state);
         // Call the platform specific code to set the image state
         let image_state = match pal.set_platform_image_state(image_state) {
             Err(e) if !matches!(image_state, ImageState::Aborted(_)) => {
@@ -472,11 +465,9 @@ where
                     .bitmap
                     .get(block.block_id - file_ctx.block_offset as usize)
             {
-                rustot_log!(
-                    info,
+                info!(
                     "Block {:?} is a DUPLICATE. {:?} blocks remaining.",
-                    block.block_id,
-                    file_ctx.blocks_remaining
+                    block.block_id, file_ctx.blocks_remaining
                 );
 
                 // Just return same progress as before
@@ -496,7 +487,7 @@ where
             file_ctx.blocks_remaining -= 1;
 
             if file_ctx.blocks_remaining == 0 {
-                rustot_log!(info, "Received final expected block of file.");
+                info!("Received final expected block of file.");
 
                 // Stop the request timer
                 self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
@@ -518,11 +509,9 @@ where
                 Ok(false)
             }
         } else {
-            rustot_log!(
-                error,
+            error!(
                 "Error! Block {:?} out of expected range! Size {:?}",
-                block.block_id,
-                block.block_size
+                block.block_id, block.block_size
             );
 
             Err(OtaError::BlockOutOfRange)
@@ -530,23 +519,21 @@ where
     }
 }
 
-impl<'a, C, DP, DS, T, ST, PAL, const L: usize> StateMachineContext
-    for SmContext<'a, C, DP, DS, T, ST, PAL, L>
+impl<'a, C, DP, DS, T, ST, PAL, const L: usize, const TIMER_HZ: u32> StateMachineContext
+    for SmContext<'a, C, DP, DS, T, ST, PAL, L, TIMER_HZ>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
-    ST: timer::nb::CountDown + timer::nb::Cancel,
-    ST::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
+    ST: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
     fn restart_handler(&mut self, reason: &RestartReason) -> Result<(), OtaError> {
-        rustot_log!(debug, "restart_handler");
+        debug!("restart_handler");
         match reason {
             RestartReason::Activate(cnt) if *cnt > self.config.activate_delay => {
-                rustot_log!(info, "Application callback! OtaEvent::Activate");
+                info!("Application callback! OtaEvent::Activate");
                 self.pal.complete_callback(OtaEvent::Activate)?;
             }
             RestartReason::Restart(cnt) if *cnt > self.config.activate_delay => {
@@ -563,13 +550,13 @@ where
 
     /// Start timers and initiate request for job document
     fn start_handler(&mut self) -> Result<(), OtaError> {
-        rustot_log!(debug, "start_handler");
+        debug!("start_handler");
         // Start self-test timer, if platform is in self-test.
         if self.platform_in_selftest() {
             // Start self-test timer
             if let Some(ref mut self_test_timer) = self.self_test_timer {
                 self_test_timer
-                    .start(self.config.self_test_timeout_ms)
+                    .start(self.config.self_test_timeout_ms.millis())
                     .map_err(|_| OtaError::Timer)?;
             }
         }
@@ -584,7 +571,11 @@ where
     }
 
     fn resume_job_handler(&mut self) -> Result<(), OtaError> {
-        rustot_log!(debug, "resume_job_handler");
+        debug!("resume_job_handler");
+        
+        // Initialize the control interface
+        self.control.init()?;
+
         // Send signal to request job document
         self.events
             .enqueue(Events::RequestJobDocument)
@@ -593,13 +584,13 @@ where
 
     /// Initiate a request for a job
     fn request_job_handler(&mut self) -> Result<(), OtaError> {
-        rustot_log!(debug, "request_job_handler");
+        debug!("request_job_handler");
         match self.control.request_job() {
             Err(e) => {
                 if self.request_momentum < self.config.max_request_momentum {
                     // Start request timer
                     self.request_timer
-                        .start(self.config.request_wait_ms)
+                        .start(self.config.request_wait_ms.millis())
                         .map_err(|_| OtaError::Timer)?;
 
                     self.request_momentum += 1;
@@ -632,13 +623,13 @@ where
 
     /// Initialize and handle file transfer
     fn init_file_handler(&mut self) -> Result<(), OtaError> {
-        rustot_log!(debug, "init_file_handler");
+        debug!("init_file_handler");
         match data_interface!(self.init_file_transfer) {
             Err(e) => {
                 if self.request_momentum < self.config.max_request_momentum {
                     // Start request timer
                     self.request_timer
-                        .start(self.config.request_wait_ms)
+                        .start(self.config.request_wait_ms.millis())
                         .map_err(|_| OtaError::Timer)?;
 
                     self.request_momentum += 1;
@@ -665,7 +656,7 @@ where
 
                 // TODO: Reset the OTA statistics
 
-                rustot_log!(info, "Initialized file handler! Requesting file blocks");
+                info!("Initialized file handler! Requesting file blocks");
 
                 self.events
                     .enqueue(Events::RequestFileBlock)
@@ -678,7 +669,7 @@ where
 
     /// Handle self test
     fn in_self_test_handler(&mut self) -> Result<(), OtaError> {
-        rustot_log!(info, "Beginning self-test");
+        info!("Beginning self-test");
         // Check the platform's OTA update image state. It should also be in
         // self test
         let in_self_test = self.platform_in_selftest();
@@ -691,7 +682,7 @@ where
 
         if in_self_test {
             self.pal.complete_callback(OtaEvent::StartTest)?;
-            rustot_log!(info, "Application callback! OtaEvent::StartTest");
+            info!("Application callback! OtaEvent::StartTest");
 
             self.image_state = ImageState::Accepted;
             self.control.update_job_status(
@@ -718,7 +709,7 @@ where
             // could be an attack on the platform image state. Reject the update
             // (this should also cause the image to be erased), aborting the job
             // and reset the device.
-            rustot_log!(error,"Rejecting new image and rebooting: the job is in the self-test state while the platform is not.");
+            error!("Rejecting new image and rebooting: the job is in the self-test state while the platform is not.");
             self.image_state = Self::set_image_state_with_reason(
                 self.control,
                 &mut self.pal,
@@ -750,16 +741,14 @@ where
 
         match self.select_interface(file_ctx, &ota_document.protocols) {
             Ok(interface) => {
-                rustot_log!(info, "Setting OTA data interface");
+                info!("Setting OTA data interface");
                 self.active_interface = Some(interface);
             }
             Err(mut file_ctx) => {
                 // Failed to set the data interface so abort the OTA. If there
                 // is a valid job id, then a job status update will be sent.
-                rustot_log!(
-                    error,
-                    "Failed to set OTA data interface. Aborting current update."
-                );
+
+                error!("Failed to set OTA data interface. Aborting current update.");
 
                 self.image_state = Self::set_image_state_with_reason(
                     self.control,
@@ -798,7 +787,7 @@ where
             } else {
                 // Received a job that is not in self-test but platform is, so
                 // reboot the device to allow roll back to previous image.
-                rustot_log!(error, "Rejecting new image and rebooting: The platform is in the self-test state while the job is not.");
+                error!("Rejecting new image and rebooting: The platform is in the self-test state while the job is not.");
                 self.events
                     .enqueue(Events::Restart(RestartReason::Restart(0)))
                     .map_err(|_| OtaError::SignalEventFailed)?;
@@ -809,6 +798,7 @@ where
 
     /// Request for data blocks
     fn request_data_handler(&mut self) -> Result<(), OtaError> {
+        debug!("request_data_handler");
         let file_ctx = self
             .active_interface
             .as_mut()
@@ -817,7 +807,7 @@ where
         if file_ctx.blocks_remaining > 0 {
             // Start the request timer
             self.request_timer
-                .start(self.config.request_wait_ms)
+                .start(self.config.request_wait_ms.millis())
                 .map_err(|_| OtaError::Timer)?;
 
             if self.request_momentum <= self.config.max_request_momentum {
@@ -841,7 +831,7 @@ where
                     ImageState::Aborted(ImageStateReason::MomentumAbort),
                 )?;
 
-                rustot_log!(warn, "Shutdown [request_data_handler]");
+                warn!("Shutdown [request_data_handler]");
                 self.events
                     .enqueue(Events::Shutdown)
                     .map_err(|_| OtaError::SignalEventFailed)?;
@@ -945,13 +935,16 @@ where
                 } else {
                     // Start the request timer.
                     self.request_timer
-                        .start(self.config.request_wait_ms)
+                        .start(self.config.request_wait_ms.millis())
                         .map_err(|_| OtaError::Timer)?;
 
                     self.events
                         .enqueue(Events::RequestFileBlock)
                         .map_err(|_| OtaError::SignalEventFailed)?;
                 }
+            }
+            Err(e) if e.is_retryable() => {
+                warn!("Failed to ingest data block, Error is retryable! ingest_data_block returned error {:?}", e);
             }
             Err(e) => {
                 let file_ctx = self
@@ -960,9 +953,7 @@ where
                     .ok_or(OtaError::InvalidInterface)?
                     .mut_file_ctx();
 
-                rustot_log!(error,
-                    "Failed to ingest data block, rejecting image: ingest_data_block returned error"
-                );
+                error!("Failed to ingest data block, rejecting image: ingest_data_block returned error {:?}", e);
 
                 // Call the platform specific code to reject the image
                 // TODO: This should never write to current image flags?!
@@ -987,7 +978,7 @@ where
                     .map_err(|_| OtaError::SignalEventFailed)?;
 
                 self.pal.complete_callback(OtaEvent::Fail)?;
-                rustot_log!(info, "Application callback! OtaEvent::Fail");
+                info!("Application callback! OtaEvent::Fail");
                 return Err(e);
             }
         }
@@ -1004,7 +995,7 @@ where
 
     /// Handle user interrupt to abort task
     fn user_abort_handler(&mut self) -> Result<(), OtaError> {
-        rustot_log!(warn, "User abort OTA!");
+        warn!("User abort OTA!");
         if let Some(ref mut interface) = self.active_interface {
             self.image_state = Self::set_image_state_with_reason(
                 self.control,
@@ -1021,7 +1012,7 @@ where
 
     /// Handle user interrupt to abort task
     fn shutdown_handler(&mut self) -> Result<(), OtaError> {
-        rustot_log!(warn, "Shutting down OTA!");
+        warn!("Shutting down OTA!");
         if let Some(ref mut interface) = self.active_interface {
             self.image_state = Self::set_image_state_with_reason(
                 self.control,

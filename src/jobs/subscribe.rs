@@ -2,9 +2,7 @@ use mqttrust::{Mqtt, QoS, SubscribeTopic};
 
 use crate::jobs::JobError;
 
-use super::{
-    JobTopic, {MAX_JOB_ID_LEN, MAX_THING_NAME_LEN},
-};
+use super::{JobTopic, MAX_JOB_ID_LEN};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Topic<'a> {
@@ -107,9 +105,7 @@ impl<'a, const N: usize> Subscribe<'a, N> {
         self,
         client_id: &str,
     ) -> Result<heapless::Vec<(heapless::String<256>, QoS), N>, JobError> {
-        assert!(client_id.len() <= MAX_THING_NAME_LEN);
-        Ok(self
-            .topics
+        self.topics
             .iter()
             .map(|(topic, qos)| {
                 (
@@ -117,10 +113,14 @@ impl<'a, const N: usize> Subscribe<'a, N> {
                     *qos,
                 )
             })
-            .collect())
+            .collect()
     }
 
     pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), JobError> {
+        if self.topics.is_empty() {
+            return Ok(());
+        }
+
         let topic_paths = self.topics(mqtt.client_id())?;
 
         let topics: heapless::Vec<_, N> = topic_paths
@@ -131,7 +131,7 @@ impl<'a, const N: usize> Subscribe<'a, N> {
             })
             .collect();
 
-        crate::rustot_log!(debug, "Subscribing!");
+        debug!("Subscribing!");
 
         for t in topics.chunks(5) {
             mqtt.subscribe(t)?;
