@@ -1,4 +1,4 @@
-#[cfg(feature = "ota_mqtt_data")]
+#[cfg(feature = "cbor")]
 pub mod cbor;
 pub mod json;
 
@@ -109,12 +109,12 @@ impl FileContext {
         let bitmap = Bitmap::new(file_desc.filesize, config.block_size, block_offset);
 
         Ok(FileContext {
-            filepath: file_desc.filepath,
+            filepath: heapless::String::from(file_desc.filepath),
             filesize: file_desc.filesize,
             fileid: file_desc.fileid,
-            certfile: file_desc.certfile,
-            update_data_url: file_desc.update_data_url,
-            auth_scheme: file_desc.auth_scheme,
+            certfile: heapless::String::from(file_desc.certfile),
+            update_data_url: file_desc.update_data_url.map(heapless::String::from),
+            auth_scheme: file_desc.auth_scheme.map(heapless::String::from),
             signature,
             file_type: file_desc.file_type,
 
@@ -124,7 +124,7 @@ impl FileContext {
             block_offset,
             request_block_remaining: bitmap.len() as u32,
             blocks_remaining: (file_desc.filesize + config.block_size - 1) / config.block_size,
-            stream_name: ota_job.streamname.clone(),
+            stream_name: heapless::String::from(ota_job.streamname),
             bitmap,
         })
     }

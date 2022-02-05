@@ -10,15 +10,15 @@ use super::{
 
 pub mod mock;
 
-pub fn test_job_doc() -> OtaJob {
+pub fn test_job_doc() -> OtaJob<'static> {
     OtaJob {
         protocols: heapless::Vec::from_slice(&[Protocol::Mqtt]).unwrap(),
-        streamname: heapless::String::from("test_stream"),
+        streamname: "test_stream",
         files: heapless::Vec::from_slice(&[FileDescription {
-            filepath: heapless::String::from(""),
+            filepath: "",
             filesize: 123456,
             fileid: 0,
-            certfile: heapless::String::from("cert"),
+            certfile: "cert",
             update_data_url: None,
             auth_scheme: None,
             sha1_rsa: Some(heapless::String::from("")),
@@ -59,9 +59,10 @@ pub mod ota_tests {
 
     /// All known job document that the device knows how to process.
     #[derive(Debug, PartialEq, Deserialize)]
-    pub enum JobDetails {
+    pub enum JobDetails<'a> {
         #[serde(rename = "afr_ota")]
-        Ota(OtaJob),
+        #[serde(borrow)]
+        Ota(OtaJob<'a>),
 
         #[serde(other)]
         Unknown,
@@ -489,14 +490,12 @@ pub mod ota_tests {
                     execution_number: Some(1),
                     job_document: Some(JobDetails::Ota(OtaJob {
                         protocols: heapless::Vec::from_slice(&[Protocol::Mqtt]).unwrap(),
-                        streamname: heapless::String::from(
-                            "AFR_OTA-0ba01295-9417-4ba7-9a99-4b31fb03d252"
-                        ),
+                        streamname: "AFR_OTA-0ba01295-9417-4ba7-9a99-4b31fb03d252",
                         files: heapless::Vec::from_slice(&[FileDescription {
-                            filepath: heapless::String::from("IMG_test.jpg"),
+                            filepath: "IMG_test.jpg",
                             filesize: 2674792,
                             fileid: 0,
-                            certfile: heapless::String::from("nope"),
+                            certfile: "nope",
                             update_data_url: None,
                             auth_scheme: None,
                             sha1_rsa: None,
@@ -509,7 +508,7 @@ pub mod ota_tests {
                         }])
                         .unwrap(),
                     })),
-                    job_id: heapless::String::from("AFR_OTA-rustot_test_1"),
+                    job_id: "AFR_OTA-rustot_test_1",
                     last_updated_at: 1624440618,
                     queued_at: 1624440618,
                     status_details: None,

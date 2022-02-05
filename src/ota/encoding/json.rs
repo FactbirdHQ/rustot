@@ -5,10 +5,10 @@ use serde::Deserialize;
 /// OTA job document, compatible with FreeRTOS OTA process
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(rename = "afr_ota")]
-pub struct OtaJob {
+pub struct OtaJob<'a> {
     pub protocols: heapless::Vec<Protocol, 2>,
-    pub streamname: heapless::String<64>,
-    pub files: heapless::Vec<FileDescription, 1>,
+    pub streamname: &'a str,
+    pub files: heapless::Vec<FileDescription<'a>, 1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -24,21 +24,21 @@ pub enum Signature {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct FileDescription {
+pub struct FileDescription<'a> {
     #[serde(rename = "filepath")]
-    pub filepath: heapless::String<64>,
+    pub filepath: &'a str,
     #[serde(rename = "filesize")]
     pub filesize: usize,
     #[serde(rename = "fileid")]
     pub fileid: u8,
     #[serde(rename = "certfile")]
-    pub certfile: heapless::String<64>,
+    pub certfile: &'a str,
     #[serde(rename = "update_data_url")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub update_data_url: Option<heapless::String<64>>,
+    pub update_data_url: Option<&'a str>,
     #[serde(rename = "auth_scheme")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_scheme: Option<heapless::String<64>>,
+    pub auth_scheme: Option<&'a str>,
 
     #[serde(rename = "sig-sha1-rsa")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,7 +58,7 @@ pub struct FileDescription {
     pub file_type: Option<u32>,
 }
 
-impl FileDescription {
+impl<'a> FileDescription<'a> {
     pub fn signature(&self) -> Signature {
         if let Some(ref sig) = self.sha1_rsa {
             return Signature::Sha1Rsa(sig.clone());
