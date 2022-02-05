@@ -35,7 +35,7 @@ impl<'a> From<Credentials<'a>> for OwnedCredentials {
 
 fn provision_credentials<'a, const L: usize>(
     hostname: &'a str,
-    mqtt_eventloop: &mut EventLoop<'a, 'a, TcpSocket<TlsStream<TcpStream>>, SysClock, L>,
+    mqtt_eventloop: &mut EventLoop<'a, 'a, TcpSocket<TlsStream<TcpStream>>, SysClock, 1000, L>,
     mqtt_client: &mqttrust_core::Client<L>,
 ) -> Result<OwnedCredentials, ()> {
     let connector = TlsConnector::builder()

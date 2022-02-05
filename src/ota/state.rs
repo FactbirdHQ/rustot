@@ -61,7 +61,7 @@ statemachine! {
     guard_error: OtaError,
     transitions: {
         *Ready + Start [start_handler] = RequestingJob,
-        RequestingJob + RequestJobDocument [request_job_handler] = WaitingForJob,
+        RequestingJob | WaitingForFileBlock + RequestJobDocument [request_job_handler] = WaitingForJob,
         RequestingJob + RequestTimer [request_job_handler] = WaitingForJob,
         WaitingForJob + RequestJobDocument [request_job_handler] = WaitingForJob,
         WaitingForJob + ReceivedJobDocument(JobEventData<'a>) [process_job_handler] = CreatingFile,
@@ -69,36 +69,16 @@ statemachine! {
         CreatingFile + StartSelfTest [in_self_test_handler] = WaitingForJob,
         CreatingFile + CreateFile [init_file_handler] = RequestingFileBlock,
         CreatingFile + RequestTimer [init_file_handler] = RequestingFileBlock,
-        CreatingFile + Restart(RestartReason) [restart_handler] = Restarting,
-        RequestingFileBlock + RequestFileBlock [request_data_handler] = WaitingForFileBlock,
-        RequestingFileBlock + RequestTimer [request_data_handler] = WaitingForFileBlock,
+        CreatingFile | WaitingForJob | Restarting + Restart(RestartReason) [restart_handler] = Restarting,
+        RequestingFileBlock | WaitingForFileBlock + RequestFileBlock [request_data_handler] = WaitingForFileBlock,
+        RequestingFileBlock | WaitingForFileBlock + RequestTimer [request_data_handler] = WaitingForFileBlock,
         WaitingForFileBlock + ReceivedFileBlock(&'a mut [u8]) [process_data_handler]  = WaitingForFileBlock,
-        WaitingForFileBlock + RequestTimer [request_data_handler] = WaitingForFileBlock,
-        WaitingForFileBlock + RequestFileBlock [request_data_handler] = WaitingForFileBlock,
-        WaitingForFileBlock + RequestJobDocument [request_job_handler] = WaitingForJob,
         WaitingForFileBlock + ReceivedJobDocument(JobEventData<'a>) [job_notification_handler] = RequestingJob,
         WaitingForFileBlock + CloseFile [close_file_handler] = WaitingForJob,
-        WaitingForJob + Restart(RestartReason) [restart_handler] = Restarting,
-        Restarting + Restart(RestartReason) [restart_handler] = Restarting,
         Suspended + Resume [resume_job_handler] = RequestingJob,
-        Ready + Suspend = Suspended,
-        RequestingJob + Suspend = Suspended,
-        WaitingForJob + Suspend = Suspended,
-        CreatingFile + Suspend = Suspended,
-        RequestingFileBlock + Suspend = Suspended,
-        WaitingForFileBlock + Suspend = Suspended,
-        Ready + UserAbort [user_abort_handler] = WaitingForJob,
-        RequestingJob + UserAbort [user_abort_handler] = WaitingForJob,
-        WaitingForJob + UserAbort [user_abort_handler] = WaitingForJob,
-        CreatingFile + UserAbort [user_abort_handler] = WaitingForJob,
-        RequestingFileBlock + UserAbort [user_abort_handler] = WaitingForJob,
-        WaitingForFileBlock + UserAbort [user_abort_handler] = WaitingForJob,
-        Ready + Shutdown [shutdown_handler] = Ready,
-        RequestingJob + Shutdown [shutdown_handler] = Ready,
-        WaitingForJob + Shutdown [shutdown_handler] = Ready,
-        CreatingFile + Shutdown [shutdown_handler] = Ready,
-        RequestingFileBlock + Shutdown [shutdown_handler] = Ready,
-        WaitingForFileBlock + Shutdown [shutdown_handler] = Ready,
+        Ready | RequestingJob | WaitingForJob | CreatingFile | RequestingFileBlock | WaitingForFileBlock + Suspend = Suspended,
+        Ready | RequestingJob | WaitingForJob | CreatingFile | RequestingFileBlock | WaitingForFileBlock + UserAbort [user_abort_handler] = WaitingForJob,
+        Ready | RequestingJob | WaitingForJob | CreatingFile | RequestingFileBlock | WaitingForFileBlock + Shutdown [shutdown_handler] = Ready,
     }
 }
 
@@ -153,9 +133,9 @@ where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
-    ST: timer::CountDown + timer::Cancel,
+    ST: timer::nb::CountDown + timer::nb::Cancel,
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -180,9 +160,9 @@ where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
-    ST: timer::CountDown + timer::Cancel,
+    ST: timer::nb::CountDown + timer::nb::Cancel,
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -519,9 +499,7 @@ where
                 rustot_log!(info, "Received final expected block of file.");
 
                 // Stop the request timer
-                self.request_timer
-                    .try_cancel()
-                    .map_err(|_| OtaError::Timer)?;
+                self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
 
                 self.pal.close_file(file_ctx)?;
 
@@ -558,9 +536,9 @@ where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
-    ST: timer::CountDown + timer::Cancel,
+    ST: timer::nb::CountDown + timer::nb::Cancel,
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -591,7 +569,7 @@ where
             // Start self-test timer
             if let Some(ref mut self_test_timer) = self.self_test_timer {
                 self_test_timer
-                    .try_start(self.config.self_test_timeout_ms)
+                    .start(self.config.self_test_timeout_ms)
                     .map_err(|_| OtaError::Timer)?;
             }
         }
@@ -621,16 +599,14 @@ where
                 if self.request_momentum < self.config.max_request_momentum {
                     // Start request timer
                     self.request_timer
-                        .try_start(self.config.request_wait_ms)
+                        .start(self.config.request_wait_ms)
                         .map_err(|_| OtaError::Timer)?;
 
                     self.request_momentum += 1;
                     Err(e)
                 } else {
                     // Stop request timer
-                    self.request_timer
-                        .try_cancel()
-                        .map_err(|_| OtaError::Timer)?;
+                    self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
 
                     // Send shutdown event to the OTA Agent task
                     self.events
@@ -645,9 +621,7 @@ where
             }
             Ok(_) => {
                 // Stop request timer
-                self.request_timer
-                    .try_cancel()
-                    .map_err(|_| OtaError::Timer)?;
+                self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
 
                 // Reset the request momentum
                 self.request_momentum = 0;
@@ -664,16 +638,14 @@ where
                 if self.request_momentum < self.config.max_request_momentum {
                     // Start request timer
                     self.request_timer
-                        .try_start(self.config.request_wait_ms)
+                        .start(self.config.request_wait_ms)
                         .map_err(|_| OtaError::Timer)?;
 
                     self.request_momentum += 1;
                     Err(e)
                 } else {
                     // Stop request timer
-                    self.request_timer
-                        .try_cancel()
-                        .map_err(|_| OtaError::Timer)?;
+                    self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
 
                     // Send shutdown event to the OTA Agent task
                     self.events
@@ -739,7 +711,7 @@ where
 
             // Stop the self test timer as it is no longer required
             if let Some(ref mut self_test_timer) = self.self_test_timer {
-                self_test_timer.try_cancel().map_err(|_| OtaError::Timer)?;
+                self_test_timer.cancel().map_err(|_| OtaError::Timer)?;
             }
         } else {
             // The job is in self test but the platform image state is not so it
@@ -845,7 +817,7 @@ where
         if file_ctx.blocks_remaining > 0 {
             // Start the request timer
             self.request_timer
-                .try_start(self.config.request_wait_ms)
+                .start(self.config.request_wait_ms)
                 .map_err(|_| OtaError::Timer)?;
 
             if self.request_momentum <= self.config.max_request_momentum {
@@ -858,9 +830,7 @@ where
                 data_interface!(self.request_file_block, &self.config)
             } else {
                 // Stop the request timer
-                self.request_timer
-                    .try_cancel()
-                    .map_err(|_| OtaError::Timer)?;
+                self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
 
                 // Failed to send data request abort and close file.
                 self.image_state = Self::set_image_state_with_reason(
@@ -893,9 +863,7 @@ where
     /// initiate new download
     fn job_notification_handler(&mut self, _data: &JobEventData<'_>) -> Result<(), OtaError> {
         // Stop the request timer
-        self.request_timer
-            .try_cancel()
-            .map_err(|_| OtaError::Timer)?;
+        self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
 
         // Abort the current job
         // TODO: This should never write to current image flags?!
@@ -977,7 +945,7 @@ where
                 } else {
                     // Start the request timer.
                     self.request_timer
-                        .try_start(self.config.request_wait_ms)
+                        .start(self.config.request_wait_ms)
                         .map_err(|_| OtaError::Timer)?;
 
                     self.events
@@ -1011,9 +979,7 @@ where
                 )?;
 
                 // Stop the request timer.
-                self.request_timer
-                    .try_cancel()
-                    .map_err(|_| OtaError::Timer)?;
+                self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
 
                 // Send event to close file.
                 self.events
