@@ -1114,11 +1114,14 @@ mod tests {
         )
         .unwrap();
 
-        let mut context = agent.state.context_mut();
+        let context = agent.state.context_mut();
 
         assert_eq!(context.handle_self_test_job(&mut file_ctx), Ok(()));
 
-        assert_eq!(context.image_state, ImageState::Testing);
+        assert!(
+            matches!(context.image_state, ImageState::Testing(_)),
+            "Unexpected image state"
+        );
     }
 
     #[test]
@@ -1144,11 +1147,14 @@ mod tests {
         )
         .unwrap();
 
-        let mut context = agent.state.context_mut();
+        let context = agent.state.context_mut();
 
         assert_eq!(context.handle_self_test_job(&mut file_ctx), Ok(()));
 
-        assert_eq!(context.image_state, ImageState::Rejected);
+        assert!(
+            matches!(context.image_state, ImageState::Rejected(_)),
+            "Unexpected image state"
+        );
     }
 
     #[test]
@@ -1175,10 +1181,13 @@ mod tests {
         )
         .unwrap();
 
-        let mut context = agent.state.context_mut();
+        let context = agent.state.context_mut();
 
         assert_eq!(context.handle_self_test_job(&mut file_ctx), Ok(()));
 
-        assert_eq!(context.image_state, ImageState::Testing);
+        assert!(
+            matches!(context.image_state, ImageState::Testing(_)),
+            "Unexpected image state"
+        );
     }
 }
