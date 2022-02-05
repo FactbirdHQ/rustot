@@ -1,5 +1,4 @@
-use embedded_hal::timer::{Cancel, CountDown};
-use embedded_time::{clock::Error, rate::Fraction, Clock};
+use embedded_hal::timer::nb::{Cancel, CountDown};
 use std::time::{SystemTime, UNIX_EPOCH};
 pub struct SysClock {
     start_time: u32,
@@ -26,12 +25,23 @@ impl SysClock {
     }
 }
 
-impl Clock for SysClock {
-    const SCALING_FACTOR: Fraction = Fraction::new(1, 1000);
-    type T = u32;
+impl fugit_timer::Timer<1000> for SysClock {
+    type Error = std::convert::Infallible;
 
-    fn try_now(&self) -> Result<embedded_time::Instant<Self>, Error> {
-        Ok(embedded_time::Instant::new(self.now()))
+    fn now(&mut self) -> fugit_timer::TimerInstantU32<1000> {
+        fugit_timer::TimerInstantU32::from_ticks(SysClock::now(self))
+    }
+
+    fn start(&mut self, duration: fugit_timer::TimerDurationU32<1000>) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn wait(&mut self) -> nb::Result<(), Self::Error> {
+        todo!()
     }
 }
 
@@ -40,7 +50,7 @@ impl CountDown for SysClock {
 
     type Time = u32;
 
-    fn try_start<T>(&mut self, count: T) -> Result<(), Self::Error>
+    fn start<T>(&mut self, count: T) -> Result<(), Self::Error>
     where
         T: Into<Self::Time>,
     {
@@ -49,7 +59,7 @@ impl CountDown for SysClock {
         Ok(())
     }
 
-    fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
+    fn wait(&mut self) -> nb::Result<(), Self::Error> {
         match self.countdown_end.map(|end| end <= self.now()) {
             Some(true) => {
                 self.countdown_end.take();
@@ -62,7 +72,7 @@ impl CountDown for SysClock {
 }
 
 impl Cancel for SysClock {
-    fn try_cancel(&mut self) -> Result<(), Self::Error> {
+    fn cancel(&mut self) -> Result<(), Self::Error> {
         self.countdown_end.take();
         Ok(())
     }

@@ -87,9 +87,9 @@ pub mod ota_tests {
         C: ControlInterface,
         DP: DataInterface,
         DS: DataInterface,
-        T: timer::CountDown + timer::Cancel,
+        T: timer::nb::CountDown + timer::nb::Cancel,
         T::Time: From<u32>,
-        ST: timer::CountDown + timer::Cancel,
+        ST: timer::nb::CountDown + timer::nb::Cancel,
         ST::Time: From<u32>,
         PAL: OtaPal,
     {

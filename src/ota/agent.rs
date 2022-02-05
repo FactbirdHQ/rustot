@@ -16,9 +16,9 @@ where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
-    ST: timer::CountDown + timer::Cancel,
+    ST: timer::nb::CountDown + timer::nb::Cancel,
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -32,9 +32,9 @@ where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
-    ST: timer::CountDown + timer::Cancel,
+    ST: timer::nb::CountDown + timer::nb::Cancel,
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -49,7 +49,7 @@ impl<'a, C, DP, T, PAL> OtaAgent<'a, C, DP, NoInterface, T, NoTimer, PAL>
 where
     C: ControlInterface,
     DP: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -69,9 +69,9 @@ where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
-    ST: timer::CountDown + timer::Cancel,
+    ST: timer::nb::CountDown + timer::nb::Cancel,
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -95,12 +95,12 @@ where
 
     pub fn timer_callback(&mut self) -> Result<(), Error> {
         let ctx = self.state.context_mut();
-        if ctx.request_timer.try_wait().is_ok() {
+        if ctx.request_timer.wait().is_ok() {
             return self.state.process_event(Events::RequestTimer).map(drop);
         }
 
         if let Some(ref mut self_test_timer) = ctx.self_test_timer {
-            if self_test_timer.try_wait().is_ok() {
+            if self_test_timer.wait().is_ok() {
                 rustot_log!(
                     error,
                     "Self test failed to complete within {} ms",
@@ -141,7 +141,7 @@ where
 
     pub fn suspend(&mut self) -> Result<&States, Error> {
         // Stop the request timer
-        self.state.context_mut().request_timer.try_cancel().ok();
+        self.state.context_mut().request_timer.cancel().ok();
 
         // Send event to OTA agent task.
         self.state.process_event(Events::Suspend)

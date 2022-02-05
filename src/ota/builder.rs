@@ -12,12 +12,12 @@ use super::{agent::OtaAgent, data_interface::NoInterface, pal::ImageState};
 
 pub struct NoTimer;
 
-impl timer::CountDown for NoTimer {
+impl timer::nb::CountDown for NoTimer {
     type Error = ();
 
     type Time = u32;
 
-    fn try_start<T>(&mut self, _count: T) -> Result<(), Self::Error>
+    fn start<T>(&mut self, _count: T) -> Result<(), Self::Error>
     where
         T: Into<Self::Time>,
     {
@@ -25,14 +25,14 @@ impl timer::CountDown for NoTimer {
         unreachable!()
     }
 
-    fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
+    fn wait(&mut self) -> nb::Result<(), Self::Error> {
         // `NoTimer` is only here for type purposes, and should never end up being called!
         unreachable!()
     }
 }
 
-impl timer::Cancel for NoTimer {
-    fn try_cancel(&mut self) -> Result<(), Self::Error> {
+impl timer::nb::Cancel for NoTimer {
+    fn cancel(&mut self) -> Result<(), Self::Error> {
         // `NoTimer` is only here for type purposes, and should never end up being called!
         unreachable!()
     }
@@ -43,9 +43,9 @@ where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
-    ST: timer::CountDown + timer::Cancel,
+    ST: timer::nb::CountDown + timer::nb::Cancel,
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -65,7 +65,7 @@ impl<'a, C, DP, T, PAL> OtaAgentBuilder<'a, C, DP, NoInterface, T, NoTimer, PAL>
 where
     C: ControlInterface,
     DP: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -90,9 +90,9 @@ where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::CountDown + timer::Cancel,
+    T: timer::nb::CountDown + timer::nb::Cancel,
     T::Time: From<u32>,
-    ST: timer::CountDown + timer::Cancel,
+    ST: timer::nb::CountDown + timer::nb::Cancel,
     ST::Time: From<u32>,
     PAL: OtaPal,
 {
@@ -178,7 +178,7 @@ where
         timeout_ms: u32,
     ) -> OtaAgentBuilder<'a, C, DP, DS, T, NST, PAL>
     where
-        NST: timer::CountDown + timer::Cancel,
+        NST: timer::nb::CountDown + timer::nb::Cancel,
         NST::Time: From<u32>,
     {
         OtaAgentBuilder {
