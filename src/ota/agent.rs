@@ -114,9 +114,10 @@ where
 
     pub fn process_event(&mut self) -> Result<&States, Error> {
         if let Some(event) = self.state.context_mut().events.dequeue() {
-            self.state.process_event(event)?;
+            self.state.process_event(event)
+        } else {
+            Ok(self.state())
         }
-        Ok(self.state())
     }
 
     pub fn handle_message(&mut self, payload: &mut [u8]) -> Result<&States, Error> {
@@ -124,7 +125,14 @@ where
     }
 
     pub fn check_for_update(&mut self) -> Result<&States, Error> {
-        self.state.process_event(Events::RequestJobDocument)
+        if matches!(
+            self.state(),
+            States::WaitingForJob | States::RequestingJob | States::WaitingForFileBlock
+        ) {
+            self.state.process_event(Events::RequestJobDocument)
+        } else {
+            Ok(self.state())
+        }
     }
 
     pub fn abort(&mut self) -> Result<&States, Error> {

@@ -46,7 +46,7 @@ native-tls = { version = "^0.2" }
 embedded-nal = "0.6.0"
 embedded-time = "0.11.0"
 dns-lookup = "1.0.3"
-mqttrust_core = { version = "0.4.1", features = ["x86"] }
+mqttrust_core = { version = "0.4.1" }
 env_logger = "0.8.4"
 sha2 = "0.10.1"
 
@@ -66,7 +66,3 @@ defmt-debug = ["defmt-impl"]
 defmt-info = ["defmt-impl"]
 defmt-warn = ["defmt-impl"]
 defmt-error = ["defmt-impl"]
-
-[patch.crates-io]
-mqttrust = { git = "https://github.com/BlackbirdHQ/mqttrust.git" }
-mqttrust_core = { git = "https://github.com/BlackbirdHQ/mqttrust.git" }
