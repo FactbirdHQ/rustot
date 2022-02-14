@@ -3,17 +3,25 @@ mod error;
 mod topics;
 
 use core::convert::TryFrom;
-
-pub use error::Error;
-use topics::{Direction, Subscribe, Topic, Unsubscribe};
-
 use mqttrust::{Mqtt, QoS};
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::shadows::{data_types::ErrorResponse, error::ShadowError};
+pub use error::Error;
+
+use data_types::{ErrorResponse, State};
+use error::ShadowError;
+use topics::{Direction, Subscribe, Topic, Unsubscribe};
 
 const MAX_TOPIC_LEN: usize = 128;
 const MAX_PAYLOAD_SIZE: usize = 512;
+const PARTIAL_REQUEST_OVERHEAD: usize = 64;
+
+// const fn topic_len(topic: Topic, shadow_name: Option<&'static str>) -> usize {
+//     match shadow_name {
+//         Some(s) => topic.fixed_len() + s.len(),
+//         None => topic.fixed_len(),
+//     }
+// }
 
 pub trait ShadowState: Serialize {
     const NAME: Option<&'static str>;
@@ -27,12 +35,13 @@ pub trait ShadowState: Serialize {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum CallbackEvent {
+pub enum CallbackEvent<Delta> {
     GetAccepted,
     GetRejected(error::ShadowError),
     UpdateRejected(error::ShadowError),
     DeleteAccepted,
     DeleteRejected(error::ShadowError),
+    Delta(Delta),
 }
 
 #[derive(Debug, Default)]
@@ -51,7 +60,7 @@ where
     pub fn with_callback<'a, M: Mqtt, const C: usize>(
         self,
         mqtt: &'a M,
-        callback_producer: heapless::spsc::Producer<'a, CallbackEvent, C>,
+        callback_producer: heapless::spsc::Producer<'a, CallbackEvent<S::PartialState>, C>,
     ) -> Result<Shadow<'a, S, M, C>, Error> {
         let handler = Shadow {
             mqtt,
@@ -80,7 +89,7 @@ where
 pub struct Shadow<'a, S: ShadowState, M: Mqtt, const C: usize> {
     state: S,
     mqtt: &'a M,
-    callback_producer: Option<heapless::spsc::Producer<'a, CallbackEvent, C>>,
+    callback_producer: Option<heapless::spsc::Producer<'a, CallbackEvent<S::PartialState>, C>>,
     in_sync: bool,
 }
 
@@ -126,6 +135,10 @@ where
     fn init(&self) -> Result<(), Error> {
         self.subscribe()?;
 
+        Ok(())
+    }
+
+    pub fn get_shadow(&self) -> Result<(), Error> {
         let get_topic = Topic::Get.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
         self.mqtt
             .publish(get_topic.as_str(), b"", QoS::AtLeastOnce)?;
@@ -133,7 +146,7 @@ where
     }
 
     #[must_use]
-    pub fn handle_message(&mut self, topic: &str, payload: &[u8]) -> Result<(), Error> {
+    pub fn handle_message(&mut self, topic: &str, payload: &[u8]) -> Result<Option<&S>, Error> {
         let (topic, thing_name, shadow_name) =
             Topic::from_str(topic).ok_or(Error::WrongShadowName)?;
 
@@ -178,15 +191,14 @@ where
                 // device state.
 
                 // TODO: What is the difference between `UpdateAccepted` & `UpdateDocuments`?
-            }
-            Topic::UpdateDocuments => {
-                // Confirm the updated state in the message body matches the
-                // device's state.
-
                 let (opt, _) =
                     serde_json_core::from_slice(payload).map_err(|_| Error::InvalidPayload)?;
                 self.state.apply_options(opt);
                 self.in_sync = true;
+            }
+            Topic::UpdateDocuments => {
+                // Confirm the updated state in the message body matches the
+                // device's state.
             }
             Topic::UpdateRejected => {
                 // Respond to the error message in the message body.
@@ -230,7 +242,7 @@ where
             }
         }
 
-        Ok(())
+        Ok(self.get().ok())
     }
 
     // TODO: Does this make sense as `nb`? Test it out in actual application
@@ -240,6 +252,27 @@ where
         } else {
             Err(nb::Error::WouldBlock)
         }
+    }
+
+    pub fn report(&self) -> Result<(), Error> {
+        let partial_request_state = data_types::Request {
+            state: State::Reported(&self.state),
+            client_token: None,
+            version: None,
+        };
+
+        let payload =
+            serde_json_core::to_vec::<_, { MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD }>(
+                &partial_request_state,
+            )
+            .map_err(|_| Error::Overflow)?;
+
+        // send update
+        let update_topic = Topic::Update.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
+        self.mqtt
+            .publish(update_topic.as_str(), &payload, QoS::AtLeastOnce)?;
+
+        Ok(())
     }
 
     /// Update the state of the shadow.
@@ -253,15 +286,16 @@ where
 
         self.in_sync = false;
 
-        // TODO:
-        let reported_state = data_types::AcceptedResponse {
-            state: data_types::Desired { desired },
-            timestamp: 0,
+        let partial_request_state = data_types::Request {
+            state: State::Desired(desired),
             client_token: None,
             version: None,
         };
 
-        let payload = serde_json_core::to_vec::<_, MAX_PAYLOAD_SIZE>(&reported_state)
+        let payload =
+            serde_json_core::to_vec::<_, { MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD }>(
+                &partial_request_state,
+            )
             .map_err(|_| Error::Overflow)?;
 
         // send update
@@ -298,11 +332,20 @@ mod tests {
     use serde::Deserialize;
 
     // ########## START DERIVE(ShadowState) ##############
+    //
+    // NOTE: Derive should check for public fields!
+    // #[derive(ShadowState)]
+    // #[shadow(name = "dev_config", size = 512)]
+    // pub struct Config {
+    //     id: u8,
+    // }
+    //
+    // Expands to:
 
     #[derive(Debug, OptionalStruct, Default, Serialize)]
     #[optional_derive(Default, Deserialize, Serialize)]
     pub struct Config {
-        pub id: u8,
+        id: u8,
     }
 
     impl ShadowState for Config {
@@ -329,6 +372,8 @@ mod tests {
         let mut config_default_handler = Builder::<Config>::default()
             .with_callback(mqtt, producer)
             .unwrap();
+
+        config_default_handler.report().unwrap();
 
         let (name_prefix, shadow_name) = Config::NAME.map(|n| ("/name/", n)).unwrap_or_default();
 
@@ -362,6 +407,8 @@ mod tests {
 
         let config = Config::default();
         let mut config_handler = Builder::new(config).build(mqtt).unwrap();
+
+        config_handler.report().unwrap();
 
         // Check that we have 2 subscribe packets + 1 publish packet (get request)
         assert_eq!(mqtt.tx.borrow_mut().len(), 3);

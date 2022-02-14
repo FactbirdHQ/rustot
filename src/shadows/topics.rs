@@ -34,6 +34,22 @@ pub enum Topic {
 impl Topic {
     const PREFIX: &'static str = "$aws/things";
 
+    pub const fn fixed_len(&self) -> usize {
+        match self {
+            Topic::Get => Self::PREFIX.len() + 12,
+            Topic::Update => Self::PREFIX.len() + 10,
+            Topic::Delete => Self::PREFIX.len() + 10,
+            Topic::GetAccepted => Self::PREFIX.len() + 10,
+            Topic::GetRejected => Self::PREFIX.len() + 10,
+            Topic::UpdateDelta => Self::PREFIX.len() + 10,
+            Topic::UpdateAccepted => Self::PREFIX.len() + 10,
+            Topic::UpdateDocuments => Self::PREFIX.len() + 10,
+            Topic::UpdateRejected => Self::PREFIX.len() + 10,
+            Topic::DeleteAccepted => Self::PREFIX.len() + 10,
+            Topic::DeleteRejected => Self::PREFIX.len() + 10,
+        }
+    }
+
     pub fn from_str(s: &str) -> Option<(Self, &str, Option<&str>)> {
         let tt = s.splitn(9, '/').collect::<heapless::Vec<&str, 9>>();
         match (tt.get(0), tt.get(1), tt.get(2), tt.get(3)) {
@@ -77,7 +93,7 @@ impl Topic {
         }
     }
 
-    pub fn direction(&self) -> Direction {
+    pub const fn direction(&self) -> Direction {
         if matches!(self, Topic::Get | Topic::Update | Topic::Delete) {
             Direction::Outgoing
         } else {
@@ -233,7 +249,7 @@ impl<const N: usize> Subscribe<N> {
             })
             .collect();
 
-        crate::rustot_log!(debug, "Subscribing!");
+        debug!("Subscribing!");
 
         for t in topics.chunks(5) {
             mqtt.subscribe(t)?;

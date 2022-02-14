@@ -9,16 +9,16 @@ pub enum State<T> {
 }
 
 /// A request state document has the following format:
-/// - **state** — Updates affect only the fields specified. Typically, you'll use
-///   either the desired or the reported property, but not both in the same
+/// - **state** — Updates affect only the fields specified. Typically, you'll
+///   use either the desired or the reported property, but not both in the same
 ///   request.
-/// - **desired** — The state properties and values requested to be updated in the
-///   device.
+/// - **desired** — The state properties and values requested to be updated in
+///   the device.
 /// - **reported** — The state properties and values reported by the device.
 /// - **clientToken** — If used, you can match the request and corresponding
 ///   response by the client token.
-/// - **version** — If used, the Device Shadow service processes the update only if
-///   the specified version matches the latest version it has.
+/// - **version** — If used, the Device Shadow service processes the update only
+///   if the specified version matches the latest version it has.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request<'a, T> {
     pub state: State<T>,
@@ -91,7 +91,7 @@ pub struct AcceptedResponse<'a, T> {
 ///   document.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeltaResponse<'a, T> {
-    pub state: Desired<T>,
+    pub state: T,
     pub timestamp: u64,
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]

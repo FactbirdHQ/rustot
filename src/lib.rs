@@ -6,11 +6,8 @@ pub(crate) mod fmt;
 pub mod jobs;
 #[cfg(any(feature = "ota_mqtt_data", feature = "ota_http_data"))]
 pub mod ota;
-<<<<<<< HEAD
 pub mod provisioning;
-=======
 pub mod shadows;
->>>>>>> 2981062 (Initial commit of IoT Shadows support)
 
 #[cfg(test)]
 pub mod test;
