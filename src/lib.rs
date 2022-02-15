@@ -6,7 +6,6 @@ pub(crate) mod fmt;
 pub mod jobs;
 pub mod ota;
 pub mod provisioning;
-// pub mod shadows;
 
 #[cfg(test)]
 pub mod test;

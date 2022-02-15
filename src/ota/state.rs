@@ -572,7 +572,7 @@ where
 
     fn resume_job_handler(&mut self) -> Result<(), OtaError> {
         debug!("resume_job_handler");
-        
+
         // Initialize the control interface
         self.control.init()?;
 

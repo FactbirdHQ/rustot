@@ -26,7 +26,7 @@ impl fugit_timer::Timer<TEST_TIMER_HZ> for MockTimer {
 
     fn start(
         &mut self,
-        duration: fugit_timer::TimerDurationU32<TEST_TIMER_HZ>,
+        _duration: fugit_timer::TimerDurationU32<TEST_TIMER_HZ>,
     ) -> Result<(), Self::Error> {
         self.is_started = true;
         Ok(())

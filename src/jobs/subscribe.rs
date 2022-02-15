@@ -108,10 +108,9 @@ impl<'a, const N: usize> Subscribe<'a, N> {
         self.topics
             .iter()
             .map(|(topic, qos)| {
-                (
-                    JobTopic::from(topic).format::<256>(client_id).unwrap(),
-                    *qos,
-                )
+                JobTopic::from(topic)
+                    .format::<256>(client_id)
+                    .map(|s| (s, *qos))
             })
             .collect()
     }

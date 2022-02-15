@@ -17,7 +17,10 @@ impl<const TIMER_HZ: u32> fugit_timer::Timer<TIMER_HZ> for NoTimer {
         todo!()
     }
 
-    fn start(&mut self, _duration: fugit_timer::TimerDurationU32<TIMER_HZ>) -> Result<(), Self::Error> {
+    fn start(
+        &mut self,
+        _duration: fugit_timer::TimerDurationU32<TIMER_HZ>,
+    ) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -28,7 +31,6 @@ impl<const TIMER_HZ: u32> fugit_timer::Timer<TIMER_HZ> for NoTimer {
     fn wait(&mut self) -> nb::Result<(), Self::Error> {
         todo!()
     }
-
 }
 
 pub struct OtaAgentBuilder<'a, C, DP, DS, T, ST, PAL, const TIMER_HZ: u32>
@@ -90,7 +92,7 @@ where
     pub fn data_secondary<D: DataInterface>(
         self,
         interface: D,
-    ) -> OtaAgentBuilder<'a, C, DP, D, T, ST, PAL> {
+    ) -> OtaAgentBuilder<'a, C, DP, D, T, ST, PAL, TIMER_HZ> {
         OtaAgentBuilder {
             control: self.control,
             data_primary: self.data_primary,
