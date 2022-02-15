@@ -1,5 +1,3 @@
-use embedded_hal::timer;
-
 use super::{
     builder::{self, NoTimer},
     control_interface::ControlInterface,
@@ -8,34 +6,31 @@ use super::{
     pal::OtaPal,
     state::{Error, Events, JobEventData, SmContext, StateMachine, States},
 };
-use crate::{jobs::StatusDetails, rustot_log};
+use crate::jobs::StatusDetails;
 
 // OTA Agent driving the FSM of an OTA update
-pub struct OtaAgent<'a, C, DP, DS, T, ST, PAL>
+pub struct OtaAgent<'a, C, DP, DS, T, ST, PAL, const TIMER_HZ: u32>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
-    ST: timer::nb::CountDown + timer::nb::Cancel,
-    ST::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
+    ST: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
-    pub(crate) state: StateMachine<SmContext<'a, C, DP, DS, T, ST, PAL, 3>>,
+    pub(crate) state: StateMachine<SmContext<'a, C, DP, DS, T, ST, PAL, 3, TIMER_HZ>>,
 }
 
 // Make sure any active OTA session is cleaned up, and the topics are
 // unsubscribed on drop.
-impl<'a, C, DP, DS, T, ST, PAL> Drop for OtaAgent<'a, C, DP, DS, T, ST, PAL>
+impl<'a, C, DP, DS, T, ST, PAL, const TIMER_HZ: u32> Drop
+    for OtaAgent<'a, C, DP, DS, T, ST, PAL, TIMER_HZ>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
-    ST: timer::nb::CountDown + timer::nb::Cancel,
-    ST::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
+    ST: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
     fn drop(&mut self) {
@@ -45,12 +40,12 @@ where
     }
 }
 
-impl<'a, C, DP, T, PAL> OtaAgent<'a, C, DP, NoInterface, T, NoTimer, PAL>
+impl<'a, C, DP, T, PAL, const TIMER_HZ: u32>
+    OtaAgent<'a, C, DP, NoInterface, T, NoTimer, PAL, TIMER_HZ>
 where
     C: ControlInterface,
     DP: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
     pub fn builder(
@@ -58,25 +53,27 @@ where
         data_primary: DP,
         request_timer: T,
         pal: PAL,
-    ) -> builder::OtaAgentBuilder<'a, C, DP, NoInterface, T, NoTimer, PAL> {
+    ) -> builder::OtaAgentBuilder<'a, C, DP, NoInterface, T, NoTimer, PAL, TIMER_HZ> {
         builder::OtaAgentBuilder::new(control_interface, data_primary, request_timer, pal)
     }
 }
 
 /// Public interface of the OTA Agent
-impl<'a, C, DP, DS, T, ST, PAL> OtaAgent<'a, C, DP, DS, T, ST, PAL>
+impl<'a, C, DP, DS, T, ST, PAL, const TIMER_HZ: u32> OtaAgent<'a, C, DP, DS, T, ST, PAL, TIMER_HZ>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
-    ST: timer::nb::CountDown + timer::nb::Cancel,
-    ST::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
+    ST: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
     pub fn init(&mut self) {
-        self.state.process_event(Events::Start).ok();
+        if matches!(self.state(), &States::Ready) {
+            self.state.process_event(Events::Start).ok();
+        } else {
+            self.state.process_event(Events::Resume).ok();
+        }
     }
 
     pub fn job_update(
@@ -101,8 +98,7 @@ where
 
         if let Some(ref mut self_test_timer) = ctx.self_test_timer {
             if self_test_timer.wait().is_ok() {
-                rustot_log!(
-                    error,
+                error!(
                     "Self test failed to complete within {} ms",
                     ctx.config.self_test_timeout_ms
                 );

@@ -1,5 +1,3 @@
-use embedded_hal::timer;
-
 use crate::ota::{
     config::Config,
     control_interface::ControlInterface,
@@ -12,41 +10,36 @@ use super::{agent::OtaAgent, data_interface::NoInterface, pal::ImageState};
 
 pub struct NoTimer;
 
-impl timer::nb::CountDown for NoTimer {
+impl<const TIMER_HZ: u32> fugit_timer::Timer<TIMER_HZ> for NoTimer {
     type Error = ();
 
-    type Time = u32;
+    fn now(&mut self) -> fugit_timer::TimerInstantU32<TIMER_HZ> {
+        todo!()
+    }
 
-    fn start<T>(&mut self, _count: T) -> Result<(), Self::Error>
-    where
-        T: Into<Self::Time>,
-    {
-        // `NoTimer` is only here for type purposes, and should never end up being called!
-        unreachable!()
+    fn start(
+        &mut self,
+        _duration: fugit_timer::TimerDurationU32<TIMER_HZ>,
+    ) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        todo!()
     }
 
     fn wait(&mut self) -> nb::Result<(), Self::Error> {
-        // `NoTimer` is only here for type purposes, and should never end up being called!
-        unreachable!()
+        todo!()
     }
 }
 
-impl timer::nb::Cancel for NoTimer {
-    fn cancel(&mut self) -> Result<(), Self::Error> {
-        // `NoTimer` is only here for type purposes, and should never end up being called!
-        unreachable!()
-    }
-}
-
-pub struct OtaAgentBuilder<'a, C, DP, DS, T, ST, PAL>
+pub struct OtaAgentBuilder<'a, C, DP, DS, T, ST, PAL, const TIMER_HZ: u32>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
-    ST: timer::nb::CountDown + timer::nb::Cancel,
-    ST::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
+    ST: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
     control: &'a C,
@@ -61,12 +54,12 @@ where
     config: Config,
 }
 
-impl<'a, C, DP, T, PAL> OtaAgentBuilder<'a, C, DP, NoInterface, T, NoTimer, PAL>
+impl<'a, C, DP, T, PAL, const TIMER_HZ: u32>
+    OtaAgentBuilder<'a, C, DP, NoInterface, T, NoTimer, PAL, TIMER_HZ>
 where
     C: ControlInterface,
     DP: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
     pub fn new(control_interface: &'a C, data_primary: DP, request_timer: T, pal: PAL) -> Self {
@@ -85,22 +78,21 @@ where
     }
 }
 
-impl<'a, C, DP, DS, T, ST, PAL> OtaAgentBuilder<'a, C, DP, DS, T, ST, PAL>
+impl<'a, C, DP, DS, T, ST, PAL, const TIMER_HZ: u32>
+    OtaAgentBuilder<'a, C, DP, DS, T, ST, PAL, TIMER_HZ>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: timer::nb::CountDown + timer::nb::Cancel,
-    T::Time: From<u32>,
-    ST: timer::nb::CountDown + timer::nb::Cancel,
-    ST::Time: From<u32>,
+    T: fugit_timer::Timer<TIMER_HZ>,
+    ST: fugit_timer::Timer<TIMER_HZ>,
     PAL: OtaPal,
 {
     #[cfg(all(feature = "ota_mqtt_data", feature = "ota_http_data"))]
     pub fn data_secondary<D: DataInterface>(
         self,
         interface: D,
-    ) -> OtaAgentBuilder<'a, C, DP, D, T, ST, PAL> {
+    ) -> OtaAgentBuilder<'a, C, DP, D, T, ST, PAL, TIMER_HZ> {
         OtaAgentBuilder {
             control: self.control,
             data_primary: self.data_primary,
@@ -176,10 +168,9 @@ where
         self,
         timer: NST,
         timeout_ms: u32,
-    ) -> OtaAgentBuilder<'a, C, DP, DS, T, NST, PAL>
+    ) -> OtaAgentBuilder<'a, C, DP, DS, T, NST, PAL, TIMER_HZ>
     where
-        NST: timer::nb::CountDown + timer::nb::Cancel,
-        NST::Time: From<u32>,
+        NST: fugit_timer::Timer<TIMER_HZ>,
     {
         OtaAgentBuilder {
             control: self.control,
@@ -195,7 +186,7 @@ where
         }
     }
 
-    pub fn build(self) -> OtaAgent<'a, C, DP, DS, T, ST, PAL> {
+    pub fn build(self) -> OtaAgent<'a, C, DP, DS, T, ST, PAL, TIMER_HZ> {
         OtaAgent {
             state: StateMachine::new(SmContext {
                 events: heapless::spsc::Queue::new(),

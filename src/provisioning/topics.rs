@@ -259,7 +259,7 @@ impl<'a, const N: usize> Subscribe<'a, N> {
             })
             .collect();
 
-        crate::rustot_log!(debug, "Subscribing!");
+        debug!("Subscribing!");
 
         for t in topics.chunks(5) {
             mqtt.subscribe(t)?;
