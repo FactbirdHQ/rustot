@@ -22,8 +22,7 @@ maintenance = { status = "actively-developed" }
 bitmaps = { version = "^3.1", default-features = false }
 embedded-hal = "=1.0.0-alpha.6"
 heapless = { version = "0.7.0", features = ["serde"] }
-mqttrust = { path = "../mqttrust/mqttrust" }
-# mqttrust = { version = "0.5.0" }
+mqttrust = { version = "0.5.0" }
 nb = "1"
 serde = { version = "1.0.126", default-features = false, features = ["derive"] }
 serde_cbor = { version = "^0.11", default-features = false, optional = true }
@@ -38,8 +37,7 @@ defmt = { version = "^0.3", optional = true }
 native-tls = { version = "^0.2" }
 embedded-nal = "0.6.0"
 dns-lookup = "1.0.3"
-mqttrust_core = { path = "../mqttrust/mqttrust_core", features = ["log"] }
-# mqttrust_core = { version = "0.5.0", features = ["log"] }
+mqttrust_core = { version = "0.5.0", features = ["log"] }
 env_logger = "0.9.0"
 sha2 = "0.10.1"
 ecdsa = { version = "0.13.4", features = ["pkcs8"] }
