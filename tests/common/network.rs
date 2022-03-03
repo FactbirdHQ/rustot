@@ -1,5 +1,5 @@
 use embedded_nal::{AddrType, Dns, IpAddr, SocketAddr, TcpClientStack};
-use native_tls::{TlsConnector, TlsStream};
+use native_tls::{MidHandshakeTlsStream, TlsConnector, TlsStream};
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::net::TcpStream;
@@ -59,8 +59,13 @@ pub(crate) fn to_nb(e: std::io::Error) -> nb::Error<std::io::Error> {
     }
 }
 
+pub enum TlsState<T> {
+    MidHandshake(MidHandshakeTlsStream<TcpStream>),
+    Connected(T),
+}
+
 pub struct TcpSocket<T> {
-    pub stream: Option<T>,
+    pub stream: Option<TlsState<T>>,
 }
 
 impl<T> TcpSocket<T> {
@@ -70,7 +75,7 @@ impl<T> TcpSocket<T> {
 
     pub fn get_running(&mut self) -> std::io::Result<&mut T> {
         match self.stream {
-            Some(ref mut s) => Ok(s),
+            Some(TlsState::Connected(ref mut s)) => Ok(s),
             _ => OutOfOrder.into(),
         }
     }
@@ -124,11 +129,19 @@ impl TcpClientStack for Network<TlsStream<TcpStream>> {
         buf: &[u8],
     ) -> nb::Result<usize, Self::Error> {
         let socket = network.get_running()?;
-        socket.write(buf).map_err(to_nb)
+        socket.write(buf).map_err(|e| {
+            if !matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) {
+                log::error!("{:?}", e);
+            }
+            to_nb(e)
+        })
     }
 
     fn is_connected(&mut self, network: &Self::TcpSocket) -> Result<bool, Self::Error> {
-        Ok(network.stream.is_some())
+        Ok(matches!(network.stream, Some(TlsState::Connected(_))))
     }
 
     fn connect(
@@ -136,20 +149,42 @@ impl TcpClientStack for Network<TlsStream<TcpStream>> {
         network: &mut Self::TcpSocket,
         remote: SocketAddr,
     ) -> nb::Result<(), Self::Error> {
-        let soc = TcpStream::connect(format!("{}", remote))?;
+        let tls_stream = match network.stream.take() {
+            None => {
+                let soc = TcpStream::connect(remote.to_string())?;
+                soc.set_nonblocking(true)?;
 
-        let (connector, hostname) = self.tls_connector.as_ref().unwrap();
+                let (connector, hostname) = self.tls_connector.as_ref().unwrap();
 
-        let mut tls_stream = connector.connect(hostname, soc).map_err(|e| match e {
-            native_tls::HandshakeError::Failure(_) => nb::Error::Other(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed TLS handshake",
-            )),
-            native_tls::HandshakeError::WouldBlock(_) => nb::Error::WouldBlock,
-        })?;
+                let mut tls_stream = connector.connect(hostname, soc).map_err(|e| match e {
+                    native_tls::HandshakeError::Failure(_) => nb::Error::Other(
+                        std::io::Error::new(std::io::ErrorKind::Other, "Failed TLS handshake"),
+                    ),
+                    native_tls::HandshakeError::WouldBlock(h) => {
+                        network.stream.replace(TlsState::MidHandshake(h));
+                        nb::Error::WouldBlock
+                    }
+                })?;
+                tls_stream.get_mut().set_nonblocking(true)?;
+                tls_stream
+            }
+            Some(TlsState::MidHandshake(h)) => {
+                let mut tls_stream = h.handshake().map_err(|e| match e {
+                    native_tls::HandshakeError::Failure(_) => nb::Error::Other(
+                        std::io::Error::new(std::io::ErrorKind::Other, "Failed TLS handshake"),
+                    ),
+                    native_tls::HandshakeError::WouldBlock(h) => {
+                        network.stream.replace(TlsState::MidHandshake(h));
+                        nb::Error::WouldBlock
+                    }
+                })?;
+                tls_stream.get_mut().set_nonblocking(true)?;
+                tls_stream
+            }
+            Some(TlsState::Connected(_)) => return Ok(()),
+        };
 
-        tls_stream.get_mut().set_nonblocking(true)?;
-        network.stream.replace(tls_stream);
+        network.stream.replace(TlsState::Connected(tls_stream));
 
         Ok(())
     }
@@ -191,7 +226,7 @@ impl TcpClientStack for Network<TcpStream> {
     }
 
     fn is_connected(&mut self, network: &Self::TcpSocket) -> Result<bool, Self::Error> {
-        Ok(network.stream.is_some())
+        Ok(matches!(network.stream, Some(TlsState::Connected(_))))
     }
 
     fn connect(
@@ -201,7 +236,7 @@ impl TcpClientStack for Network<TcpStream> {
     ) -> nb::Result<(), Self::Error> {
         let soc = TcpStream::connect(format!("{}", remote))?;
         soc.set_nonblocking(true)?;
-        network.stream.replace(soc);
+        network.stream.replace(TlsState::Connected(soc));
 
         Ok(())
     }

@@ -474,6 +474,8 @@ where
                 return Ok(false);
             }
 
+            info!("Received block {}. {:?} blocks remaining.", block.block_id, file_ctx.blocks_remaining);
+
             self.pal.write_block(
                 file_ctx,
                 block.block_id * self.config.block_size,
@@ -864,6 +866,7 @@ where
 
     /// Process incoming data blocks
     fn process_data_handler(&mut self, payload: &mut [u8]) -> Result<(), OtaError> {
+        debug!("process_data_handler");
         // Decode the file block received
         match self.ingest_data_block(payload) {
             Ok(true) => {

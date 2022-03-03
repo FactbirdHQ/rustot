@@ -215,7 +215,7 @@ where
                     PayloadFormat::Json => serde_json_core::from_slice::<ErrorResponse>(payload)?.0,
                 };
 
-                error!("{:?}", response);
+                error!("{:?}: {:?}", topic_name, response);
 
                 return Err(Error::Response(response.status_code));
             }
@@ -233,7 +233,6 @@ where
     M: Mqtt,
 {
     fn drop(&mut self) {
-        trace!("DROPPED");
         Unsubscribe::<4>::new()
             .topic(Topic::CreateKeysAndCertificateAccepted(self.payload_format))
             .topic(Topic::CreateKeysAndCertificateRejected(self.payload_format))
