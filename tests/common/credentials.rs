@@ -6,12 +6,19 @@ use pkcs8::DecodePrivateKey;
 
 pub fn identity() -> (&'static str, Identity) {
     let pw = env::var("DEVICE_ADVISOR_PASSWORD").unwrap_or_default();
-    ("rustot-test", Identity::from_pkcs12(include_bytes!("../secrets/identity.pfx"), pw.as_str()).unwrap())
+    (
+        "rustot-test",
+        Identity::from_pkcs12(include_bytes!("../secrets/identity.pfx"), pw.as_str()).unwrap(),
+    )
 }
 
 pub fn claim_identity() -> (&'static str, Identity) {
     let pw = env::var("DEVICE_ADVISOR_PASSWORD").unwrap_or_default();
-    ("rustot-provision", Identity::from_pkcs12(include_bytes!("../secrets/claim_identity.pfx"), pw.as_str()).unwrap())
+    (
+        "rustot-provision",
+        Identity::from_pkcs12(include_bytes!("../secrets/claim_identity.pfx"), pw.as_str())
+            .unwrap(),
+    )
 }
 
 pub fn root_ca() -> Certificate {

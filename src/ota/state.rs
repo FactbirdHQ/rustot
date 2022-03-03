@@ -474,7 +474,10 @@ where
                 return Ok(false);
             }
 
-            info!("Received block {}. {:?} blocks remaining.", block.block_id, file_ctx.blocks_remaining);
+            info!(
+                "Received block {}. {:?} blocks remaining.",
+                block.block_id, file_ctx.blocks_remaining
+            );
 
             self.pal.write_block(
                 file_ctx,
