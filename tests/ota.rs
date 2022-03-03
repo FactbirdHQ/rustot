@@ -87,8 +87,7 @@ pub struct FileInfo {
 fn test_mqtt_ota() {
     // Make sure this times out in case something went wrong setting up the OTA
     // job in AWS IoT before starting.
-    // timebomb::timeout_ms(test_mqtt_ota_inner, 100_000)
-    test_mqtt_ota_inner()
+    timebomb::timeout_ms(test_mqtt_ota_inner, 100_000)
 }
 
 fn test_mqtt_ota_inner() {
