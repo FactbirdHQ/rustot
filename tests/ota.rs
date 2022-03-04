@@ -119,10 +119,7 @@ fn test_mqtt_ota_inner() {
     let file_handler = FileHandler::new();
 
     let mut ota_agent =
-        OtaAgent::builder(&mqtt_client, &mqtt_client, SysClock::new(), file_handler)
-            .request_wait_ms(16000)
-            .block_size(256)
-            .build();
+        OtaAgent::builder(&mqtt_client, &mqtt_client, SysClock::new(), file_handler).build();
 
     let mut file_info = None;
 
