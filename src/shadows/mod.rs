@@ -7,6 +7,7 @@ use mqttrust::{Mqtt, QoS};
 use serde::{de::DeserializeOwned, Serialize};
 
 pub use error::Error;
+pub use optional_struct::OptionalStruct;
 
 use data_types::{ErrorResponse, State};
 use error::ShadowError;
