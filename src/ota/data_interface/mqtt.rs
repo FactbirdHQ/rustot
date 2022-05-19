@@ -131,7 +131,7 @@ where
             qos: mqttrust::QoS::AtLeastOnce,
         };
 
-        // rustot_log!(debug, "Subscribing to: [{:?}]", topic);
+        debug!("Subscribing to: [{:?}]", &topic_path);
 
         self.subscribe(&[topic])?;
 

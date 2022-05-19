@@ -11,7 +11,7 @@ pub use optional_struct::OptionalStruct;
 
 use data_types::{ErrorResponse, State};
 use error::ShadowError;
-use topics::{Direction, Subscribe, Topic, Unsubscribe};
+use topics::{Subscribe, Topic, Unsubscribe};
 
 const MAX_TOPIC_LEN: usize = 128;
 const MAX_PAYLOAD_SIZE: usize = 512;
@@ -36,13 +36,13 @@ pub trait ShadowState: Serialize {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum CallbackEvent<Delta> {
+pub enum CallbackEvent {
     GetAccepted,
     GetRejected(error::ShadowError),
     UpdateRejected(error::ShadowError),
     DeleteAccepted,
     DeleteRejected(error::ShadowError),
-    Delta(Delta),
+    Delta,
 }
 
 #[derive(Debug, Default)]
@@ -61,7 +61,7 @@ where
     pub fn with_callback<'a, M: Mqtt, const C: usize>(
         self,
         mqtt: &'a M,
-        callback_producer: heapless::spsc::Producer<'a, CallbackEvent<S::PartialState>, C>,
+        callback_producer: heapless::spsc::Producer<'a, CallbackEvent, C>,
     ) -> Result<Shadow<'a, S, M, C>, Error> {
         let handler = Shadow {
             mqtt,
@@ -90,7 +90,7 @@ where
 pub struct Shadow<'a, S: ShadowState, M: Mqtt, const C: usize> {
     state: S,
     mqtt: &'a M,
-    callback_producer: Option<heapless::spsc::Producer<'a, CallbackEvent<S::PartialState>, C>>,
+    callback_producer: Option<heapless::spsc::Producer<'a, CallbackEvent, C>>,
     in_sync: bool,
 }
 
@@ -152,7 +152,7 @@ where
             Topic::from_str(topic).ok_or(Error::WrongShadowName)?;
 
         assert_eq!(thing_name, self.mqtt.client_id());
-        assert_eq!(topic.direction(), Direction::Incoming);
+        // assert_eq!(topic.direction(), Direction::Incoming);
 
         if shadow_name != S::NAME {
             return Err(Error::WrongShadowName);

@@ -203,20 +203,43 @@ jobs:
           command: doc
           args: --verbose --no-deps --features ${{ env.ALL_FEATURES }}
 
-      # - name: Finalize documentation
-      #   run: |
-      #     CRATE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]' | cut -f2 -d"/")
-      #     echo "<meta http-equiv=\"refresh\" content=\"0; url=${CRATE_NAME/-/_}\">" > target/doc/index.html
-      #     touch target/doc/.nojekyll
-      # - name: Upload as artifact
-      #   uses: actions/upload-artifact@v2
-      #   with:
-      #     name: Documentation
-      #     path: target/doc
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: ['test', 'rustfmt', 'clippy']
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
 
-      # - name: Deploy
-      #   uses: JamesIves/github-pages-deploy-action@releases/v3
-      #   with:
-      #     ACCESS_TOKEN: ${{ secrets.GH_PAT }}
-      #     BRANCH: gh-pages
-      #     FOLDER: target/doc
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: thumbv7m-none-eabi
+          override: true
+      - name: Create OTA Job
+        run: |
+          ./scripts/create_ota.sh
+        env:
+          AWS_DEFAULT_REGION: ${{ secrets.MGMT_AWS_DEFAULT_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MGMT_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MGMT_AWS_SECRET_ACCESS_KEY }}
+
+      - name: Integration Tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --test '*' --features "ota_mqtt_data,log"
+        env:
+          DEVICE_ADVISOR_PASSWORD: ${{ secrets.DEVICE_ADVISOR_PASSWORD }}
+          AWS_HOSTNAME: a1vq3mi5y3c6j5-ats.iot.eu-west-1.amazonaws.com
+
+      - name: Cleanup OTA Jobs
+        if: ${{ always() }}
+        run: |
+          ./scripts/cleanup_ota.sh
+        env:
+          AWS_DEFAULT_REGION: ${{ secrets.MGMT_AWS_DEFAULT_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MGMT_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MGMT_AWS_SECRET_ACCESS_KEY }}
