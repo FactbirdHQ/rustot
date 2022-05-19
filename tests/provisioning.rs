@@ -1,21 +1,19 @@
 mod common;
 
-use mqttrust::{Mqtt, QoS, SubscribeTopic};
+use mqttrust::Mqtt;
 use mqttrust_core::{bbqueue::BBBuffer, EventLoop, MqttOptions, Notification, PublishNotification};
 
 use common::clock::SysClock;
-use common::file_handler::FileHandler;
 use common::network::{Network, TcpSocket};
-use native_tls::{TlsConnector, TlsStream};
+use native_tls::{Identity, TlsConnector, TlsStream};
+use p256::ecdsa::signature::Signer;
 use rustot::provisioning::{topics::Topic, Credentials, FleetProvisioner, Response};
+use std::net::TcpStream;
 use std::ops::DerefMut;
-use std::{net::TcpStream, thread};
 
 use common::credentials;
 
 static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer::new();
-
-const THING_NAME: &str = "rustot-test";
 
 pub struct OwnedCredentials {
     certificate_id: String,
@@ -35,18 +33,17 @@ impl<'a> From<Credentials<'a>> for OwnedCredentials {
 
 fn provision_credentials<'a, const L: usize>(
     hostname: &'a str,
+    identity: Identity,
     mqtt_eventloop: &mut EventLoop<'a, 'a, TcpSocket<TlsStream<TcpStream>>, SysClock, 1000, L>,
     mqtt_client: &mqttrust_core::Client<L>,
 ) -> Result<OwnedCredentials, ()> {
     let connector = TlsConnector::builder()
-        .identity(credentials::claim_identity())
+        .identity(identity)
         .add_root_certificate(credentials::root_ca())
         .build()
         .unwrap();
 
     let mut network = Network::new_tls(connector, String::from(hostname));
-
-    mqtt_eventloop.options = MqttOptions::new(THING_NAME, hostname.into(), 8883);
 
     nb::block!(mqtt_eventloop.connect(&mut network))
         .expect("To connect to MQTT with claim credentials");
@@ -54,14 +51,18 @@ fn provision_credentials<'a, const L: usize>(
     log::info!("Successfully connected to broker with claim credentials");
 
     #[cfg(feature = "cbor")]
-    let mut provisioner = FleetProvisioner::new(mqtt_client, "provision_template");
+    let mut provisioner = FleetProvisioner::new(mqtt_client, "duoProvisioningTemplate");
     #[cfg(not(feature = "cbor"))]
-    let mut provisioner = FleetProvisioner::new_json(mqtt_client, "provision_template");
+    let mut provisioner = FleetProvisioner::new_json(mqtt_client, "duoProvisioningTemplate");
+
     provisioner
         .initialize()
         .expect("Failed to initialize FleetProvisioner");
 
     let mut provisioned_credentials: Option<OwnedCredentials> = None;
+
+    let signing_key = credentials::signing_key();
+    let signature = hex::encode(signing_key.sign(mqtt_client.client_id().as_bytes()));
 
     let result = loop {
         match mqtt_eventloop.yield_event(&mut network) {
@@ -78,7 +79,8 @@ fn provision_credentials<'a, const L: usize>(
                         provisioned_credentials = Some(credentials.into());
 
                         let mut parameters = heapless::IndexMap::new();
-                        parameters.insert("deviceId", THING_NAME).unwrap();
+                        parameters.insert("uuid", mqtt_client.client_id()).unwrap();
+                        parameters.insert("signature", &signature).unwrap();
 
                         provisioner
                             .register_thing::<2>(Some(parameters))
@@ -94,6 +96,7 @@ fn provision_credentials<'a, const L: usize>(
                     Ok(Response::None) => {}
                     Err(e) => {
                         log::error!("Got provision error! {:?}", e);
+                        provisioned_credentials = None;
 
                         break Err(());
                     }
@@ -116,47 +119,29 @@ fn provision_credentials<'a, const L: usize>(
     result.and_then(|_| provisioned_credentials.ok_or(()))
 }
 
-fn main() {
+#[test]
+fn test_provisioning() {
     env_logger::init();
 
     let (p, c) = unsafe { Q.try_split_framed().unwrap() };
 
-    log::info!("Starting provisioning example...");
+    log::info!("Starting provisioning test...");
 
-    let mut mqtt_eventloop = EventLoop::new(
-        c,
-        SysClock::new(),
-        MqttOptions::new(THING_NAME, "".into(), 8883),
-    );
-
-    let mqtt_client = mqttrust_core::Client::new(p, THING_NAME);
+    let (thing_name, claim_identity) = credentials::claim_identity();
 
     // Connect to AWS IoT Core with provisioning claim credentials
     let hostname = credentials::HOSTNAME.unwrap();
 
-    let credentials = provision_credentials(hostname, &mut mqtt_eventloop, &mqtt_client).unwrap();
+    let mut mqtt_eventloop = EventLoop::new(
+        c,
+        SysClock::new(),
+        MqttOptions::new(thing_name, hostname.into(), 8883),
+    );
 
-    // TODO: PKCS#8 -> PKCS#12, or
-    // https://github.com/sfackler/rust-native-tls/pull/209 whichever comes
-    // first.
-    let provisioned_identity = credentials::identity();
+    let mqtt_client = mqttrust_core::Client::new(p, thing_name);
 
-    // Connect to AWS IoT Core with provisioned certificate
-    let connector = TlsConnector::builder()
-        .identity(provisioned_identity)
-        .add_root_certificate(credentials::root_ca())
-        .build()
-        .unwrap();
+    let credentials =
+        provision_credentials(hostname, claim_identity, &mut mqtt_eventloop, &mqtt_client).unwrap();
 
-    let mut network = Network::new_tls(connector, String::from(hostname));
-    mqtt_eventloop.options = MqttOptions::new(THING_NAME, hostname.into(), 8883);
-
-    nb::block!(mqtt_eventloop.connect(&mut network))
-        .expect("To connect to MQTT with provisioned credentials");
-
-    log::info!("Successfully connected to broker with provisioned credentials");
-
-    loop {
-        thread::sleep(std::time::Duration::from_millis(5000));
-    }
+    assert!(credentials.certificate_id.len() > 0);
 }

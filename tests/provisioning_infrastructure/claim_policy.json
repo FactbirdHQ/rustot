@@ -16,7 +16,7 @@
         ],
         "Resource": [
           "arn:aws:iot:eu-west-1:XXXXXXXXXXXX:topic/$aws/certificates/create/*",
-          "arn:aws:iot:eu-west-1:XXXXXXXXXXXX:topic/$aws/provisioning-templates/provision_template/provision/*"
+          "arn:aws:iot:eu-west-1:XXXXXXXXXXXX:topic/$aws/provisioning-templates/provision_template_name/provision/*"
         ]
       },
       {
@@ -24,7 +24,7 @@
         "Action": "iot:Subscribe",
         "Resource": [
           "arn:aws:iot:eu-west-1:XXXXXXXXXXXX:topicfilter/$aws/certificates/create/*",
-          "arn:aws:iot:eu-west-1:XXXXXXXXXXXX:topicfilter/$aws/provisioning-templates/provision_template/provision/*"
+          "arn:aws:iot:eu-west-1:XXXXXXXXXXXX:topicfilter/$aws/provisioning-templates/provision_template_name/provision/*"
         ]
       }
     ]

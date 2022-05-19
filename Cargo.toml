@@ -12,17 +12,8 @@ edition = "2018"
 documentation = "https://docs.rs/rustot"
 exclude = ["/documentation"]
 
-
 [lib]
 name = "rustot"
-
-[[example]]
-name = "ota"
-required-features = ["ota_mqtt_data", "log"]
-
-[[example]]
-name = "provisioning"
-required-features = ["log"]
 
 [badges]
 maintenance = { status = "actively-developed" }
@@ -49,6 +40,11 @@ dns-lookup = "1.0.3"
 mqttrust_core = { version = "0.5.0", features = ["log"] }
 env_logger = "0.9.0"
 sha2 = "0.10.1"
+ecdsa = { version = "0.13.4", features = ["pkcs8"] }
+p256 = "0.10.1"
+pkcs8 = { version = "0.8", features = ["encryption", "pem"] }
+timebomb = "0.1.2"
+hex = "0.4.3"
 
 [features]
 default = ["ota_mqtt_data"]
