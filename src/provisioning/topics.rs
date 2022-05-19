@@ -8,12 +8,14 @@ use mqttrust::{Mqtt, QoS, SubscribeTopic};
 use super::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum Direction {
     Incoming,
     Outgoing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum PayloadFormat {
     Cbor,
     Json,
@@ -41,6 +43,7 @@ impl FromStr for PayloadFormat {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum Topic<'a> {
     // ---- Outgoing Topics
     /// `$aws/provisioning-templates/<templateName>/provision/<payloadFormat>`

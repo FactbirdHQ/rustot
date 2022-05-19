@@ -131,7 +131,7 @@ where
             qos: mqttrust::QoS::AtLeastOnce,
         };
 
-        debug!("Subscribing to: [{:?}]", topic);
+        debug!("Subscribing to: [{:?}]", &topic_path);
 
         self.subscribe(&[topic])?;
 
