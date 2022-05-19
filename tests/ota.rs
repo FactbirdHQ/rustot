@@ -84,6 +84,7 @@ pub struct FileInfo {
 }
 
 #[test]
+#[ignore]
 fn test_mqtt_ota() {
     // Make sure this times out in case something went wrong setting up the OTA
     // job in AWS IoT before starting.
