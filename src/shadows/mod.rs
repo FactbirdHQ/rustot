@@ -11,7 +11,10 @@ pub use shadow_derive as derive;
 
 use topics::{Subscribe, Topic, Unsubscribe};
 
-use crate::shadows::{data_types::{AcceptedResponse, DeltaResponse, ErrorResponse}, topics::Direction};
+use crate::shadows::{
+    data_types::{AcceptedResponse, DeltaResponse, ErrorResponse},
+    topics::Direction,
+};
 
 const MAX_TOPIC_LEN: usize = 128;
 const MAX_PAYLOAD_SIZE: usize = 512;
@@ -248,8 +251,8 @@ mod tests {
     use super::*;
     use crate as rustot;
     use crate::test::MockMqtt;
-    use serde::Deserialize;
     use derive::ShadowState;
+    use serde::Deserialize;
 
     #[derive(Debug, Default, Serialize, ShadowState, PartialEq)]
     pub struct SerdeRename {
