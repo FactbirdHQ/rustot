@@ -1,11 +1,21 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum State<T> {
+pub struct State<T> {
     #[serde(rename = "desired")]
-    Desired(T),
+    pub desired: Option<T>,
     #[serde(rename = "reported")]
-    Reported(T),
+    pub reported: Option<T>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeltaState<T> {
+    #[serde(rename = "desired")]
+    pub desired: Option<T>,
+    #[serde(rename = "reported")]
+    pub reported: Option<T>,
+    #[serde(rename = "delta")]
+    pub delta: Option<T>,
 }
 
 /// A request state document has the following format:
@@ -27,11 +37,6 @@ pub struct Request<'a, T> {
     pub client_token: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<i64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Desired<T> {
-    pub desired: T,
 }
 
 /// Response accepted state documents have the following format:
@@ -56,7 +61,7 @@ pub struct Desired<T> {
 ///   document.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AcceptedResponse<'a, T> {
-    pub state: Desired<T>,
+    pub state: DeltaState<T>,
     pub timestamp: u64,
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,19 +71,7 @@ pub struct AcceptedResponse<'a, T> {
 }
 
 /// Response accepted state documents have the following format:
-/// - **previous** — After a successful update, contains the state of the object
-///   before the update.
-/// - **current** — After a successful update, contains the state of the object
-///   after the update.
 /// - **state**
-///     - reported — Present only if a thing reported any data in the reported
-///       section and contains only fields that were in the request state
-///       document.
-///     - desired — Present only if a device reported any data in the desired
-///       section and contains only fields that were in the request state
-///       document.
-///     - delta — Present only if the desired data differs from the shadow's
-///       current reported data.
 /// - **metadata** — Contains the timestamps for each attribute in the desired
 ///   and reported sections so that you can determine when the state was
 ///   updated.
@@ -91,7 +84,7 @@ pub struct AcceptedResponse<'a, T> {
 ///   document.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeltaResponse<'a, T> {
-    pub state: T,
+    pub state: Option<T>,
     pub timestamp: u64,
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]

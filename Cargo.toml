@@ -1,3 +1,6 @@
+[workspace]
+members = ["shadow_derive"]
+
 [package]
 name = "rustot"
 version = "0.3.2"
@@ -8,7 +11,7 @@ keywords = ["iot", "no-std"]
 categories = ["embedded", "no-std"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/BlackbirdHQ/rustot"
-edition = "2018"
+edition = "2021"
 documentation = "https://docs.rs/rustot"
 exclude = ["/documentation"]
 
@@ -29,7 +32,7 @@ serde_cbor = { version = "^0.11", default-features = false, optional = true }
 serde-json-core = { version = "0.4.0" }
 smlang = "0.5.0"
 fugit-timer = "0.1.2"
-optional_struct = "0.2.0"
+shadow-derive = { path = "shadow_derive", version = "0.1.0" }
 
 log = { version = "^0.4", default-features = false, optional = true }
 defmt = { version = "^0.3", optional = true }

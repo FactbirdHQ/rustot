@@ -1,0 +1,17 @@
+[package]
+name = "shadow-derive"
+version = "0.1.0"
+authors = ["Mathias Koch <mk@blackbird.online>"]
+description = "Procedual macros for rustot crate shadow state"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/BlackbirdHQ/rustot"
+edition = "2021"
+readme = "../README.md"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "1.0.95"
+quote = "1.0.18"
+proc-macro2 = "^1"
