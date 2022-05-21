@@ -120,6 +120,7 @@ fn provision_credentials<'a, const L: usize>(
 }
 
 #[test]
+#[ignore]
 fn test_provisioning() {
     env_logger::init();
 
