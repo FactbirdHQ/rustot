@@ -1,34 +1,26 @@
 mod data_types;
 mod error;
+mod shadow_diff;
 mod topics;
 
 use mqttrust::{Mqtt, QoS};
-use serde::{de::DeserializeOwned, Serialize};
 
 pub use error::Error;
-
 pub use shadow_derive as derive;
+pub use shadow_diff::ShadowDiff;
 
-use topics::{Subscribe, Topic, Unsubscribe};
-
-use crate::shadows::{
-    data_types::{AcceptedResponse, DeltaResponse, ErrorResponse},
-    topics::Direction,
-};
+use data_types::{AcceptedResponse, DeltaResponse, ErrorResponse};
+use topics::{Direction, Subscribe, Topic, Unsubscribe};
 
 const MAX_TOPIC_LEN: usize = 128;
 const MAX_PAYLOAD_SIZE: usize = 512;
 const PARTIAL_REQUEST_OVERHEAD: usize = 64;
 
-pub trait ShadowState: Serialize {
+pub trait ShadowState: ShadowDiff {
     const NAME: Option<&'static str>;
 
     // TODO: Move MAX_PAYLOAD_SIZE here once const_generics supports it
     // const MAX_PAYLOAD_SIZE: usize;
-
-    type PartialState: Serialize + DeserializeOwned + Default + Clone;
-
-    fn apply_patch(&mut self, opt: Self::PartialState);
 }
 
 pub struct Shadow<'a, S: ShadowState, M: Mqtt> {
@@ -49,7 +41,7 @@ where
     }
 
     /// Subscribes to all the topics required for keeping a shadow in sync
-    fn subscribe(&self) -> Result<(), Error> {
+    pub fn subscribe(&self) -> Result<(), Error> {
         Subscribe::<5>::new()
             .topic(Topic::GetAccepted, QoS::AtLeastOnce)
             .topic(Topic::GetRejected, QoS::AtLeastOnce)
@@ -62,7 +54,7 @@ where
     }
 
     /// Unsubscribes from all the topics required for keeping a shadow in sync
-    fn unsubscribe(&self) -> Result<(), Error> {
+    pub fn unsubscribe(&self) -> Result<(), Error> {
         Unsubscribe::<5>::new()
             .topic(Topic::GetAccepted)
             .topic(Topic::GetRejected)
@@ -78,10 +70,12 @@ where
     /// state, and update the cloud shadow.
     fn change_shadow_value(
         &mut self,
-        delta: S::PartialState,
+        delta: Option<S::PartialState>,
         update_desired: Option<bool>,
     ) -> Result<(), Error> {
-        self.state.apply_patch(delta.clone());
+        if let Some(ref delta) = delta {
+            self.state.apply_patch(delta.clone());
+        }
 
         debug!(
             "[{:?}] Updating reported shadow value.",
@@ -91,8 +85,8 @@ where
         if let Some(update_desired) = update_desired {
             let request = data_types::Request {
                 state: data_types::State {
-                    reported: Some(delta.clone()),
-                    desired: update_desired.then(|| delta),
+                    reported: Some(&self.state),
+                    desired: update_desired.then(|| &self.state),
                 },
                 client_token: None,
                 version: None,
@@ -113,8 +107,26 @@ where
         Ok(())
     }
 
+    /// Helper function to check whether a topic name is relevant for this
+    /// particular shadow.
+    pub fn should_handle_topic(&mut self, topic: &str) -> bool {
+        if let Some((_, thing_name, shadow_name)) = Topic::from_str(topic) {
+            return thing_name == self.mqtt.client_id() && shadow_name == S::NAME;
+        }
+        false
+    }
+
     #[must_use]
-    pub fn handle_message(&mut self, topic: &str, payload: &[u8]) -> Result<Option<&S>, Error> {
+    /// Handle incomming publish messages from the cloud on any topics relevant
+    /// for this particular shadow.
+    ///
+    /// This function needs to be fed all relevant incoming MQTT payloads in
+    /// order for the shadow manager to work.
+    pub fn handle_message(
+        &mut self,
+        topic: &str,
+        payload: &[u8],
+    ) -> Result<(&S, Option<S::PartialState>), Error> {
         let (topic, thing_name, shadow_name) =
             Topic::from_str(topic).ok_or(Error::WrongShadowName)?;
 
@@ -129,18 +141,23 @@ where
             Topic::GetAccepted => {
                 // The actions necessary to process the state document in the
                 // message body.
-                match serde_json_core::from_slice::<AcceptedResponse<S::PartialState>>(payload) {
+                return match serde_json_core::from_slice::<AcceptedResponse<S::PartialState>>(
+                    payload,
+                ) {
                     Ok((response, _)) => {
-                        if let Some(delta) = response.state.delta {
-                            self.change_shadow_value(delta, Some(false))?;
-                        } else if let Some(reported) = response.state.reported {
-                            self.change_shadow_value(reported, None)?;
+                        if response.state.delta.is_some() {
+                            debug!(
+                                "[{:?}] Received delta state",
+                                S::NAME.unwrap_or_else(|| "Classic")
+                            );
+                            self.change_shadow_value(response.state.delta.clone(), Some(false))?;
+                        } else if response.state.reported.is_some() {
+                            self.change_shadow_value(response.state.reported, None)?;
                         }
+                        Ok((self.get(), response.state.delta))
                     }
-                    _ => {}
-                }
-
-                return Ok(Some(self.get()));
+                    _ => Ok((self.get(), None)),
+                };
             }
             Topic::GetRejected | Topic::UpdateRejected => {
                 // Respond to the error message in the message body.
@@ -150,7 +167,8 @@ where
                             debug!(
                                 "[{:?}] Thing has no shadow document. Creating with defaults...",
                                 S::NAME.unwrap_or_else(|| "Classic")
-                            )
+                            );
+                            self.report_shadow()?;
                         } else {
                             error!(
                                 "{:?} request was rejected. code: {:?} message:'{:?}'",
@@ -175,19 +193,20 @@ where
                     S::NAME.unwrap_or_else(|| "Classic")
                 );
 
-                match serde_json_core::from_slice::<DeltaResponse<S::PartialState>>(payload) {
+                return match serde_json_core::from_slice::<DeltaResponse<S::PartialState>>(payload)
+                {
                     Ok((delta, _)) => {
-                        if let Some(delta) = delta.state {
+                        if let Some(delta) = delta.state.clone() {
                             debug!(
                                 "[{:?}] Delta reports new desired value. Changing local value...",
                                 S::NAME.unwrap_or_else(|| "Classic")
                             );
-                            self.change_shadow_value(delta, Some(false))?;
-                            return Ok(Some(self.get()));
+                            self.change_shadow_value(Some(delta), Some(false))?;
                         }
+                        Ok((self.get(), delta.state))
                     }
-                    _ => {}
-                }
+                    _ => Ok((self.get(), None)),
+                };
             }
             Topic::UpdateAccepted => {
                 // Confirm the updated data in the message body matches the
@@ -200,17 +219,25 @@ where
             _ => {}
         }
 
-        Ok(None)
+        Ok((self.get(), None))
     }
 
+    /// Get an immutable reference to the internal local state.
     pub fn get(&self) -> &S {
         &self.state
     }
 
+    /// Initiate a `GetShadow` request, updating the local state from the cloud.
     pub fn get_shadow(&self) -> Result<(), Error> {
         let get_topic = Topic::Get.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
         self.mqtt
             .publish(get_topic.as_str(), b"", QoS::AtLeastOnce)?;
+        Ok(())
+    }
+
+    /// Initiate an `UpdateShadow` request, reporting the local state to the cloud.
+    pub fn report_shadow(&mut self) -> Result<(), Error> {
+        self.change_shadow_value(None, Some(false))?;
         Ok(())
     }
 
@@ -223,7 +250,7 @@ where
         let mut desired = S::PartialState::default();
         f(&self.state, &mut desired);
 
-        self.change_shadow_value(desired, Some(true))?;
+        self.change_shadow_value(Some(desired), Some(true))?;
 
         Ok(())
     }
@@ -234,6 +261,37 @@ where
     //         .publish(delete_topic.as_str(), b"", QoS::AtLeastOnce)?;
     //     Ok(())
     // }
+}
+
+impl<'a, S, M> core::fmt::Debug for Shadow<'a, S, M>
+where
+    S: ShadowState + core::fmt::Debug,
+    M: Mqtt,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "[{:?}] = {:?}",
+            S::NAME.unwrap_or_else(|| "Classic"),
+            self.get()
+        )
+    }
+}
+
+#[cfg(feature = "defmt-impl")]
+impl<'a, S, M> defmt::Format for Shadow<'a, S, M>
+where
+    S: ShadowState + defmt::Format,
+    M: Mqtt,
+{
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(
+            fmt,
+            "[{:?}] = {:?}",
+            S::NAME.unwrap_or_else(|| "Classic"),
+            self.get()
+        )
+    }
 }
 
 impl<'a, S, M> Drop for Shadow<'a, S, M>
@@ -251,8 +309,11 @@ mod tests {
     use super::*;
     use crate as rustot;
     use crate::test::MockMqtt;
-    use derive::ShadowState;
-    use serde::Deserialize;
+    use derive::{ShadowDiff, ShadowState};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Default, Clone, Serialize, ShadowDiff, Deserialize, PartialEq)]
+    pub struct Test {}
 
     #[derive(Debug, Default, Serialize, ShadowState, PartialEq)]
     pub struct SerdeRename {
@@ -282,7 +343,7 @@ mod tests {
         const RENAMED_STATE_FIELD: &[u8] = b"{\"SomeRenamedField\":  100}";
         const RENAMED_STATE_ALL: &[u8] = b"{\"TEST\":  100}";
 
-        let (state, _) = serde_json_core::from_slice::<<SerdeRename as ShadowState>::PartialState>(
+        let (state, _) = serde_json_core::from_slice::<<SerdeRename as ShadowDiff>::PartialState>(
             RENAMED_STATE_FIELD,
         )
         .unwrap();
@@ -290,7 +351,7 @@ mod tests {
         assert!(state.some_renamed_field.is_some());
 
         let (state, _) =
-            serde_json_core::from_slice::<<SerdeRenameAll as ShadowState>::PartialState>(
+            serde_json_core::from_slice::<<SerdeRenameAll as ShadowDiff>::PartialState>(
                 RENAMED_STATE_ALL,
             )
             .unwrap();
@@ -310,7 +371,7 @@ mod tests {
 
         mqtt.tx.borrow_mut().clear();
 
-        let updated = config_shadow
+        let (updated, _) = config_shadow
             .handle_message(
                 &format!(
                     "$aws/things/{}/shadow/{}update/delta",
@@ -324,7 +385,7 @@ mod tests {
 
         assert_eq!(mqtt.tx.borrow_mut().len(), 1);
 
-        assert_eq!(updated, Some(&Config { id: 100 }));
+        assert_eq!(updated, &Config { id: 100 });
     }
 
     #[test]
