@@ -84,7 +84,6 @@ pub struct FileInfo {
 }
 
 #[test]
-#[ignore]
 fn test_mqtt_ota() {
     // Make sure this times out in case something went wrong setting up the OTA
     // job in AWS IoT before starting.
@@ -121,7 +120,7 @@ fn test_mqtt_ota_inner() {
 
     let mut ota_agent =
         OtaAgent::builder(&mqtt_client, &mqtt_client, SysClock::new(), file_handler)
-            .request_wait_ms(16000)
+            .request_wait_ms(3000)
             .block_size(256)
             .build();
 
@@ -157,7 +156,6 @@ fn test_mqtt_ota_inner() {
                             .expect("Failed to start OTA job");
                     }
                     Ok(OtaUpdate::Data(payload)) => {
-                        log::info!("GOT DATA!");
                         if ota_agent.handle_message(payload).is_err() {
                             match ota_agent.state() {
                                 States::CreatingFile => log::info!("State: CreatingFile"),
@@ -193,7 +191,7 @@ fn test_mqtt_ota_inner() {
         }
     }
 
-    let mut expected_file = File::open("assets/ota_file").unwrap();
+    let mut expected_file = File::open("tests/assets/ota_file").unwrap();
     let mut expected_data = Vec::new();
     expected_file.read_to_end(&mut expected_data).unwrap();
     let mut expected_hasher = Sha256::new();
@@ -202,9 +200,16 @@ fn test_mqtt_ota_inner() {
 
     let file_info = file_info.unwrap();
 
-    let mut file = File::open(format!("assets/{}", file_info.file_path)).unwrap();
+    log::info!(
+        "Comparing {:?} with {:?}",
+        "tests/assets/ota_file",
+        file_info.file_path
+    );
+    let mut file = File::open(file_info.file_path.clone()).unwrap();
     let mut data = Vec::new();
     file.read_to_end(&mut data).unwrap();
+    drop(file);
+    std::fs::remove_file(file_info.file_path).unwrap();
 
     assert_eq!(data.len(), file_info.filesize);
 
@@ -214,11 +219,17 @@ fn test_mqtt_ota_inner() {
 
     // Check file signature
     match file_info.signature {
-        ota::encoding::json::Signature::Sha1Rsa(_) => panic!(),
-        ota::encoding::json::Signature::Sha256Rsa(_) => panic!(),
-        ota::encoding::json::Signature::Sha1Ecdsa(_) => panic!(),
+        ota::encoding::json::Signature::Sha1Rsa(_) => {
+            panic!("Unexpected signature format: Sha1Rsa. Expected Sha256Ecdsa")
+        }
+        ota::encoding::json::Signature::Sha256Rsa(_) => {
+            panic!("Unexpected signature format: Sha256Rsa. Expected Sha256Ecdsa")
+        }
+        ota::encoding::json::Signature::Sha1Ecdsa(_) => {
+            panic!("Unexpected signature format: Sha1Ecdsa. Expected Sha256Ecdsa")
+        }
         ota::encoding::json::Signature::Sha256Ecdsa(sig) => {
-            assert_eq!(&sig, "This is my custom signature")
+            assert_eq!(&sig, "This is my custom signature\\n")
         }
     }
 }
