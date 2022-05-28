@@ -34,6 +34,7 @@ smlang = "0.5.0"
 fugit-timer = "0.1.2"
 shadow-derive = { path = "shadow_derive", version = "0.1.0" }
 static_assertions = "1.1.0"
+embedded-storage = "0.2.0"
 
 log = { version = "^0.4", default-features = false, optional = true }
 defmt = { version = "^0.3", optional = true }
@@ -58,5 +59,7 @@ ota_mqtt_data = ["cbor"]
 ota_http_data = []
 
 cbor = ["serde_cbor"]
+
+std = []
 
 defmt-impl = ["defmt", "mqttrust/defmt-impl", "heapless/defmt-impl"]

@@ -64,7 +64,7 @@ impl core::fmt::Debug for States {
 }
 
 pub struct TestContext<'a> {
-    shadow: Shadow<'a, SensorConf, mqttrust_core::Client<'static, 'static, Q_SIZE>>,
+    shadow: Shadow<'a, SensorConf, mqttrust_core::Client<'static, 'static, Q_SIZE>, ()>,
 }
 
 impl<'a> StateMachineContext for TestContext<'a> {
@@ -138,7 +138,7 @@ impl<'a> StateMachine<TestContext<'a>> {
     }
 }
 
-#[derive(Debug, Default, Serialize, ShadowState)]
+#[derive(Debug, Default, Serialize, Deserialize, ShadowState)]
 pub struct SensorConf {
     sensor_type: SensorType,
 }

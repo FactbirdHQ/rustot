@@ -11,6 +11,9 @@ use super::data_types::ErrorResponse;
 #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum Error {
     Overflow,
+    NoPersistance,
+    DaoRead,
+    DaoWrite,
     InvalidPayload,
     WrongShadowName,
     Mqtt(MqttError),

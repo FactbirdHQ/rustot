@@ -94,7 +94,7 @@ fn create_assertions(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
     fields
         .iter()
         .map(|field| {
-            let ref type_name = &field.ty;
+            let type_name = &field.ty;
             quote! { rustot::assert_impl_all!(#type_name: rustot::shadows::ShadowDiff); }
         })
         .collect::<Vec<_>>()
@@ -104,8 +104,8 @@ fn create_assigners(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
     fields
         .iter()
         .filter_map(|field| {
-            let ref type_name = &field.ty;
-            let ref field_name = &field.ident.clone().unwrap();
+            let type_name = &field.ty;
+            let field_name = &field.ident.clone().unwrap();
 
             let type_name_string = quote! {#type_name}.to_string();
             let type_name_string: String = type_name_string.chars().filter(|&c| c != ' ').collect();
@@ -196,7 +196,7 @@ fn generate_shadow_diff(input: &ParseInput) -> proc_macro2::TokenStream {
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let optional_ident = format_ident!("Optional{}", ident);
+    let optional_ident = format_ident!("Partial{}", ident);
 
     let assigners = create_assigners(&shadow_fields);
     let optional_fields = create_optional_fields(&shadow_fields);

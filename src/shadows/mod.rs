@@ -1,3 +1,4 @@
+pub mod dao;
 mod data_types;
 mod error;
 mod shadow_diff;
@@ -12,6 +13,8 @@ pub use shadow_diff::ShadowDiff;
 use data_types::{AcceptedResponse, DeltaResponse, ErrorResponse};
 use topics::{Direction, Subscribe, Topic, Unsubscribe};
 
+use self::dao::ShadowDAO;
+
 const MAX_TOPIC_LEN: usize = 128;
 const MAX_PAYLOAD_SIZE: usize = 512;
 const PARTIAL_REQUEST_OVERHEAD: usize = 64;
@@ -23,21 +26,50 @@ pub trait ShadowState: ShadowDiff {
     // const MAX_PAYLOAD_SIZE: usize;
 }
 
-pub struct Shadow<'a, S: ShadowState, M: Mqtt> {
+pub struct Shadow<'a, S: ShadowState, M: Mqtt, D: ShadowDAO> {
     state: S,
     mqtt: &'a M,
+    dao: Option<D>,
 }
 
-impl<'a, S, M> Shadow<'a, S, M>
+impl<'a, S, M> Shadow<'a, S, M, ()>
 where
     S: ShadowState,
     M: Mqtt,
 {
     pub fn new(state: S, mqtt: &'a M) -> Result<Self, Error> {
-        let handler = Shadow { mqtt, state };
+        let handler = Shadow {
+            mqtt,
+            state,
+            dao: None,
+        };
 
         handler.subscribe()?;
         Ok(handler)
+    }
+}
+
+impl<'a, S, M, D> Shadow<'a, S, M, D>
+where
+    S: ShadowState,
+    M: Mqtt,
+    D: ShadowDAO,
+{
+    pub fn new_persisted(initial_state: S, mqtt: &'a M, mut dao: D) -> Result<Self, Error> {
+        let state = dao.read().unwrap_or(initial_state);
+        let handler = Shadow {
+            mqtt,
+            state,
+            dao: Some(dao),
+        };
+
+        handler.subscribe()?;
+        Ok(handler)
+    }
+
+    #[cfg(test)]
+    fn steal_dao(&mut self) -> D {
+        self.dao.take().unwrap()
     }
 
     /// Subscribes to all the topics required for keeping a shadow in sync
@@ -75,6 +107,9 @@ where
     ) -> Result<(), Error> {
         if let Some(ref delta) = delta {
             self.state.apply_patch(delta.clone());
+            if let Some(dao) = &mut self.dao {
+                dao.write(&self.state)?;
+            }
         }
 
         debug!(
@@ -116,12 +151,12 @@ where
         false
     }
 
-    #[must_use]
     /// Handle incomming publish messages from the cloud on any topics relevant
     /// for this particular shadow.
     ///
     /// This function needs to be fed all relevant incoming MQTT payloads in
     /// order for the shadow manager to work.
+    #[must_use]
     pub fn handle_message(
         &mut self,
         topic: &str,
@@ -263,10 +298,11 @@ where
     // }
 }
 
-impl<'a, S, M> core::fmt::Debug for Shadow<'a, S, M>
+impl<'a, S, M, D> core::fmt::Debug for Shadow<'a, S, M, D>
 where
     S: ShadowState + core::fmt::Debug,
     M: Mqtt,
+    D: ShadowDAO,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
@@ -279,10 +315,11 @@ where
 }
 
 #[cfg(feature = "defmt-impl")]
-impl<'a, S, M> defmt::Format for Shadow<'a, S, M>
+impl<'a, S, M, D> defmt::Format for Shadow<'a, S, M, D>
 where
     S: ShadowState + defmt::Format,
     M: Mqtt,
+    D: ShadowDAO,
 {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(
@@ -294,10 +331,11 @@ where
     }
 }
 
-impl<'a, S, M> Drop for Shadow<'a, S, M>
+impl<'a, S, M, D> Drop for Shadow<'a, S, M, D>
 where
     S: ShadowState,
     M: Mqtt,
+    D: ShadowDAO,
 {
     fn drop(&mut self) {
         self.unsubscribe().ok();
@@ -309,25 +347,26 @@ mod tests {
     use super::*;
     use crate as rustot;
     use crate::test::MockMqtt;
+    use dao::StdIODAO;
     use derive::{ShadowDiff, ShadowState};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Default, Clone, Serialize, ShadowDiff, Deserialize, PartialEq)]
     pub struct Test {}
 
-    #[derive(Debug, Default, Serialize, ShadowState, PartialEq)]
+    #[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
     pub struct SerdeRename {
         #[serde(rename = "SomeRenamedField")]
         some_renamed_field: u8,
     }
 
-    #[derive(Debug, Default, Serialize, ShadowState, PartialEq)]
+    #[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
     #[serde(rename_all = "UPPERCASE")]
     pub struct SerdeRenameAll {
         test: u8,
     }
 
-    #[derive(Debug, Default, Serialize, ShadowState, PartialEq)]
+    #[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
     #[shadow("config")]
     pub struct Config {
         id: u8,
@@ -407,5 +446,35 @@ mod tests {
 
         // Check that we have 1 publish packet (update request)
         assert_eq!(mqtt.tx.borrow_mut().len(), 1);
+    }
+
+    #[test]
+    fn persists_state() {
+        let mqtt = &MockMqtt::new();
+        let config = Config::default();
+
+        let storage = std::io::Cursor::new(std::vec::Vec::with_capacity(1024));
+        let shadow_dao = StdIODAO::new(storage);
+        let mut config_shadow = Shadow::new_persisted(config, mqtt, shadow_dao).unwrap();
+
+        mqtt.tx.borrow_mut().clear();
+
+        config_shadow
+            .update(|_, desired| {
+                desired.id = Some(100);
+            })
+            .unwrap();
+
+        let updated = config_shadow.get();
+
+        assert_eq!(mqtt.tx.borrow_mut().len(), 1);
+        assert_eq!(updated, &Config { id: 100 });
+
+        let dao = config_shadow.steal_dao();
+        assert_eq!(dao.storage.position(), 10);
+
+        let dao_storage = dao.storage.into_inner();
+        assert_eq!(dao_storage.len(), 10);
+        assert_eq!(&dao_storage, b"{\"id\":100}");
     }
 }
