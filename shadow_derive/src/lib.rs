@@ -13,7 +13,7 @@ use syn::Ident;
 use syn::Result;
 use syn::{parenthesized, Attribute, Error, Field, LitStr};
 
-#[proc_macro_derive(ShadowState, attributes(shadow))]
+#[proc_macro_derive(ShadowState, attributes(static_shadow, shadow))]
 pub fn shadow_state(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ParseInput);
     let shadow_diff = generate_shadow_diff(&input);
