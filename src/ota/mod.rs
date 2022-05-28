@@ -12,7 +12,7 @@
 //! - $aws/things/{thing_name}/streams/{stream_id}/get/cbor
 //!
 //! Most of the data structures for the Jobs API has been copied from Rusoto:
-//! https://docs.rs/rusoto_iot_jobs_data/0.43.0/rusoto_iot_jobs_data/
+//! <https://docs.rs/rusoto_iot_jobs_data/0.43.0/rusoto_iot_jobs_data/>
 //!
 //! ### OTA Flow:
 //! 1. Device subscribes to notification topics for AWS IoT jobs and listens for

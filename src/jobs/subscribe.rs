@@ -105,13 +105,10 @@ impl<'a, const N: usize> Subscribe<'a, N> {
         self,
         client_id: &str,
     ) -> Result<heapless::Vec<(heapless::String<256>, QoS), N>, JobError> {
+        // assert!(client_id.len() <= super::MAX_THING_NAME_LEN);
         self.topics
             .iter()
-            .map(|(topic, qos)| {
-                JobTopic::from(topic)
-                    .format::<256>(client_id)
-                    .map(|s| (s, *qos))
-            })
+            .map(|(topic, qos)| Ok((JobTopic::from(topic).format(client_id)?, *qos)))
             .collect()
     }
 
@@ -119,7 +116,6 @@ impl<'a, const N: usize> Subscribe<'a, N> {
         if self.topics.is_empty() {
             return Ok(());
         }
-
         let topic_paths = self.topics(mqtt.client_id())?;
 
         let topics: heapless::Vec<_, N> = topic_paths

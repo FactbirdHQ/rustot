@@ -217,7 +217,7 @@ where
 
                 error!("{:?}: {:?}", topic_name, response);
 
-                return Err(Error::Response(response.status_code));
+                Err(Error::Response(response.status_code))
             }
 
             t => {

@@ -113,7 +113,7 @@ use self::{
 };
 pub use subscribe::Topic;
 
-/// https://docs.aws.amazon.com/iot/latest/apireference/API_DescribeThing.html
+/// <https://docs.aws.amazon.com/iot/latest/apireference/API_DescribeThing.html>
 pub const MAX_THING_NAME_LEN: usize = 128;
 pub const MAX_CLIENT_TOKEN_LEN: usize = MAX_THING_NAME_LEN + 10;
 pub const MAX_JOB_ID_LEN: usize = 64;

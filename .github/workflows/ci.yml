@@ -56,7 +56,7 @@ jobs:
         with:
           profile: minimal
           toolchain: nightly
-          target: thumbv7m-none-eabi
+          target: x86_64-unknown-linux-gnu
           override: true
 
       - name: Install grcov
@@ -67,13 +67,13 @@ jobs:
           # version: latest
           # use-tool-cache: true
           command: install
-          args: grcov --git https://github.com/mozilla/grcov
+          args: --locked grcov --git https://github.com/mozilla/grcov
 
       - name: Test
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib --no-fail-fast --features ${{ env.ALL_FEATURES }}
+          args: --lib --no-fail-fast --features "ota_mqtt_data,ota_http_data,log"
         env:
           CARGO_INCREMENTAL: "0"
           RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=unwind -Zpanic_abort_tests"
@@ -216,7 +216,7 @@ jobs:
         with:
           profile: minimal
           toolchain: stable
-          target: thumbv7m-none-eabi
+          target: x86_64-unknown-linux-gnu
           override: true
       - name: Create OTA Job
         run: |
@@ -225,12 +225,11 @@ jobs:
           AWS_DEFAULT_REGION: ${{ secrets.MGMT_AWS_DEFAULT_REGION }}
           AWS_ACCESS_KEY_ID: ${{ secrets.MGMT_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MGMT_AWS_SECRET_ACCESS_KEY }}
-
       - name: Integration Tests
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --test '*' --features "ota_mqtt_data,log"
+          args: --test '*' --features "ota_mqtt_data,log" --target x86_64-unknown-linux-gnu
         env:
           DEVICE_ADVISOR_PASSWORD: ${{ secrets.DEVICE_ADVISOR_PASSWORD }}
           AWS_HOSTNAME: a1vq3mi5y3c6j5-ats.iot.eu-west-1.amazonaws.com
