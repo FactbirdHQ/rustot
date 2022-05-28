@@ -17,7 +17,7 @@ use rustot::{
     ota::{self, agent::OtaAgent, encoding::json::OtaJob},
 };
 
-static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer::new();
+static mut Q: BBBuffer<{ 1024 * 10 }> = BBBuffer::new();
 
 #[derive(Debug, Deserialize)]
 pub enum Jobs<'a> {

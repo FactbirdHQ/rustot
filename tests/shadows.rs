@@ -89,6 +89,10 @@ impl<'a> StateMachine<TestContext<'a>> {
     pub fn spin(&mut self, notification: Notification) -> bool {
         log::info!("State: {:?}", self.state());
         match (self.state(), notification) {
+            (&States::Begin, Notification::Suback(_)) => {
+                self.context_mut().shadow.get_shadow().unwrap();
+                self.process_event(Events::Run).unwrap();
+            }
             (&States::Update(desired_type), Notification::Publish(_)) => {
                 self.context_mut()
                     .shadow
@@ -165,7 +169,7 @@ fn test_shadows() {
     let mut mqtt_eventloop = EventLoop::new(
         c,
         SysClock::new(),
-        MqttOptions::new(thing_name, hostname.into(), 8883),
+        MqttOptions::new(thing_name, hostname.into(), 8883).set_clean_session(true),
     );
 
     let mqtt_client = mqttrust_core::Client::new(p, thing_name);
@@ -177,8 +181,6 @@ fn test_shadows() {
     loop {
         if nb::block!(mqtt_eventloop.connect(&mut network)).expect("to connect to mqtt") {
             log::info!("Successfully connected to broker");
-            test_state.context_mut().shadow.get_shadow().unwrap();
-            test_state.process_event(Events::Run).unwrap();
         }
 
         let notification = nb::block!(mqtt_eventloop.yield_event(&mut network)).unwrap();

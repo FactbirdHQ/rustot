@@ -471,9 +471,9 @@ mod tests {
         assert_eq!(updated, &Config { id: 100 });
 
         let dao = config_shadow.steal_dao();
-        assert_eq!(dao.storage.position(), 10);
+        assert_eq!(dao.0.position(), 10);
 
-        let dao_storage = dao.storage.into_inner();
+        let dao_storage = dao.0.into_inner();
         assert_eq!(dao_storage.len(), 10);
         assert_eq!(&dao_storage, b"{\"id\":100}");
     }

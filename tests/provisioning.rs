@@ -13,7 +13,7 @@ use std::ops::DerefMut;
 
 use common::credentials;
 
-static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer::new();
+static mut Q: BBBuffer<{ 1024 * 10 }> = BBBuffer::new();
 
 pub struct OwnedCredentials {
     certificate_id: String,
@@ -135,7 +135,7 @@ fn test_provisioning() {
     let mut mqtt_eventloop = EventLoop::new(
         c,
         SysClock::new(),
-        MqttOptions::new(thing_name, hostname.into(), 8883),
+        MqttOptions::new(thing_name, hostname.into(), 8883).set_clean_session(true),
     );
 
     let mqtt_client = mqttrust_core::Client::new(p, thing_name);

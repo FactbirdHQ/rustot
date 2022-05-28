@@ -15,35 +15,39 @@ impl ShadowDAO for () {
     }
 }
 
-pub struct EmbeddedStorageDAO<T: embedded_storage::Storage> {
-    storage: T,
-    offset: u32,
-}
+pub struct EmbeddedStorageDAO<T: embedded_storage::Storage, const OFFSET: u32>(T);
 
-impl<T> EmbeddedStorageDAO<T>
+impl<T, const OFFSET: u32> From<T> for EmbeddedStorageDAO<T, OFFSET>
 where
     T: embedded_storage::Storage,
 {
-    pub fn new(storage: T, offset: u32) -> Self {
-        Self { storage, offset }
+    fn from(v: T) -> Self {
+        Self::new(v)
     }
 }
 
-impl<T> ShadowDAO for EmbeddedStorageDAO<T>
+impl<T, const OFFSET: u32> EmbeddedStorageDAO<T, OFFSET>
+where
+    T: embedded_storage::Storage,
+{
+    pub fn new(storage: T) -> Self {
+        Self(storage)
+    }
+}
+
+impl<T, const OFFSET: u32> ShadowDAO for EmbeddedStorageDAO<T, OFFSET>
 where
     T: embedded_storage::Storage,
 {
     fn read<S: ShadowState>(&mut self) -> Result<S, Error> {
         let bytes = &mut [0u8; MAX_PAYLOAD_SIZE];
 
-        self.storage
-            .read(self.offset, bytes)
-            .map_err(|_| Error::DaoRead)?;
+        self.0.read(OFFSET, bytes).map_err(|_| Error::DaoRead)?;
         serde_cbor::de::from_mut_slice(bytes).map_err(|_| Error::InvalidPayload)
     }
 
     fn write<S: ShadowState>(&mut self, state: &S) -> Result<(), Error> {
-        assert!(MAX_PAYLOAD_SIZE <= self.storage.capacity() - self.offset as usize);
+        assert!(MAX_PAYLOAD_SIZE <= self.0.capacity() - OFFSET as usize);
 
         let bytes = &mut [0u8; MAX_PAYLOAD_SIZE];
 
@@ -54,15 +58,23 @@ where
             .map_err(|_| Error::InvalidPayload)?;
         let len = serializer.into_inner().bytes_written();
 
-        self.storage
-            .write(self.offset, &bytes[..len])
+        self.0
+            .write(OFFSET, &bytes[..len])
             .map_err(|_| Error::DaoWrite)
     }
 }
 
 #[cfg(any(feature = "std", test))]
-pub struct StdIODAO<T: std::io::Write + std::io::Read> {
-    pub(crate) storage: T,
+pub struct StdIODAO<T: std::io::Write + std::io::Read>(pub(crate) T);
+
+#[cfg(any(feature = "std", test))]
+impl<T> StdIODAO<T>
+where
+    T: std::io::Write + std::io::Read,
+{
+    fn from(v: T) -> Self {
+        Self::new(v)
+    }
 }
 
 #[cfg(any(feature = "std", test))]
@@ -71,7 +83,7 @@ where
     T: std::io::Write + std::io::Read,
 {
     pub fn new(storage: T) -> Self {
-        Self { storage }
+        Self(storage)
     }
 }
 
@@ -83,7 +95,7 @@ where
     fn read<S: ShadowState>(&mut self) -> Result<S, Error> {
         let bytes = &mut [0u8; MAX_PAYLOAD_SIZE];
 
-        self.storage.read(bytes).map_err(|_| Error::DaoRead)?;
+        self.0.read(bytes).map_err(|_| Error::DaoRead)?;
         let (shadow, _) = serde_json_core::from_slice(bytes).map_err(|_| Error::InvalidPayload)?;
         Ok(shadow)
     }
@@ -92,7 +104,7 @@ where
         let bytes =
             serde_json_core::to_vec::<_, MAX_PAYLOAD_SIZE>(state).map_err(|_| Error::Overflow)?;
 
-        self.storage.write(&bytes).map_err(|_| Error::DaoWrite)?;
+        self.0.write(&bytes).map_err(|_| Error::DaoWrite)?;
         Ok(())
     }
 }
