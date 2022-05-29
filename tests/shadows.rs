@@ -3,7 +3,7 @@ mod common;
 use common::{clock::SysClock, credentials, network::Network};
 use mqttrust_core::{bbqueue::BBBuffer, EventLoop, MqttOptions, Notification};
 use native_tls::TlsConnector;
-use rustot::shadows::{derive::ShadowState, Shadow, ShadowDiff};
+use rustot::shadows::{derive::ShadowState, Shadow};
 use serde::{Deserialize, Serialize};
 
 use smlang::statemachine;
@@ -17,16 +17,6 @@ pub enum SensorType {
     Npn,
     Pnp,
     Analog,
-}
-
-impl ShadowDiff for SensorType {
-    type PartialState = Option<SensorType>;
-
-    fn apply_patch(&mut self, opt: Self::PartialState) {
-        if let Some(v) = opt {
-            *self = v;
-        }
-    }
 }
 
 impl Default for SensorType {
@@ -142,8 +132,9 @@ impl<'a> StateMachine<TestContext<'a>> {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, ShadowState)]
+#[derive(Debug, Default, ShadowState, Serialize)]
 pub struct SensorConf {
+    #[unit_shadow_field]
     sensor_type: SensorType,
 }
 

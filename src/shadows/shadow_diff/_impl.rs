@@ -25,6 +25,14 @@ impl_shadow_diff!(i8, i16, i32, i64, i128, isize);
 impl_shadow_diff!(f32, f64);
 impl_shadow_diff!(char);
 
+impl<T: DeserializeOwned + Serialize + Clone> ShadowDiff for Option<T> {
+    type PartialState = Option<T>;
+
+    fn apply_patch(&mut self, opt: Self::PartialState) {
+        *self = opt;
+    }
+}
+
 // Heapless stuff
 impl<const N: usize> ShadowDiff for heapless::String<N> {
     type PartialState = Option<heapless::String<N>>;
