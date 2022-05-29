@@ -13,7 +13,10 @@ use syn::Ident;
 use syn::Result;
 use syn::{parenthesized, Attribute, Error, Field, LitStr};
 
-#[proc_macro_derive(ShadowState, attributes(static_shadow, shadow))]
+#[proc_macro_derive(
+    ShadowState,
+    attributes(shadow, unit_shadow_field, static_shadow_field)
+)]
 pub fn shadow_state(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ParseInput);
     let shadow_diff = generate_shadow_diff(&input);
@@ -26,7 +29,7 @@ pub fn shadow_state(input: TokenStream) -> TokenStream {
     TokenStream::from(implementation)
 }
 
-#[proc_macro_derive(ShadowDiff, attributes(static_shadow, serde))]
+#[proc_macro_derive(ShadowDiff, attributes(unit_shadow_field, static_shadow_field, serde))]
 pub fn shadow_diff(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ParseInput);
     TokenStream::from(generate_shadow_diff(&input))
@@ -93,9 +96,20 @@ impl Parse for ParseInput {
 fn create_assertions(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
     fields
         .iter()
-        .map(|field| {
-            let type_name = &field.ty;
-            quote! { rustot::assert_impl_all!(#type_name: rustot::shadows::ShadowDiff); }
+        .filter_map(|field| {
+            if field
+                .attrs
+                .iter()
+                .find(|a| {
+                    a.path.is_ident("unit_shadow_field") || a.path.is_ident("static_shadow_field")
+                })
+                .is_some()
+            {
+                None
+            } else {
+                let type_name = &field.ty;
+                Some(quote! { rustot::assert_impl_all!(#type_name: rustot::shadows::ShadowDiff); })
+            }
         })
         .collect::<Vec<_>>()
 }
@@ -113,11 +127,16 @@ fn create_assigners(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
             if field
                 .attrs
                 .iter()
-                .find(|a| a.path.is_ident("static_shadow"))
+                .find(|a| a.path.is_ident("static_shadow_field"))
                 .is_some()
             {
                 None
-            } else {
+            } else if field
+                .attrs
+                .iter()
+                .find(|a| a.path.is_ident("unit_shadow_field"))
+                .is_some()
+            {
                 Some(if type_name_string.starts_with("Option<") {
                     quote! { self.#field_name = opt.#field_name; }
                 } else {
@@ -127,6 +146,8 @@ fn create_assigners(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
                         }
                     }
                 })
+            } else {
+                Some(quote! { self.#field_name.apply_patch(opt.#field_name); })
             }
         })
         .collect::<Vec<_>>()
@@ -137,7 +158,13 @@ fn create_optional_fields(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> 
         .iter()
         .filter_map(|field| {
             let type_name = &field.ty;
-            let attrs = field.attrs.clone();
+            let attrs = field
+                .attrs
+                .iter()
+                .filter(|a| {
+                    !a.path.is_ident("static_shadow_field") && !a.path.is_ident("unit_shadow_field")
+                })
+                .collect::<Vec<_>>();
             let field_name = &field.ident.clone().unwrap();
 
             let type_name_string = quote! {#type_name}.to_string();
@@ -146,7 +173,7 @@ fn create_optional_fields(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> 
             if field
                 .attrs
                 .iter()
-                .find(|a| a.path.is_ident("static_shadow"))
+                .find(|a| a.path.is_ident("static_shadow_field"))
                 .is_some()
             {
                 None

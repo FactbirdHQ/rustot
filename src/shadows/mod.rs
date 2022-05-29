@@ -7,6 +7,7 @@ mod topics;
 use mqttrust::{Mqtt, QoS};
 
 pub use error::Error;
+use serde::de::DeserializeOwned;
 pub use shadow_derive as derive;
 pub use shadow_diff::ShadowDiff;
 
@@ -51,7 +52,7 @@ where
 
 impl<'a, S, M, D> Shadow<'a, S, M, D>
 where
-    S: ShadowState,
+    S: ShadowState + DeserializeOwned,
     M: Mqtt,
     D: ShadowDAO,
 {
@@ -71,7 +72,14 @@ where
     fn steal_dao(&mut self) -> D {
         self.dao.take().unwrap()
     }
+}
 
+impl<'a, S, M, D> Shadow<'a, S, M, D>
+where
+    S: ShadowState,
+    M: Mqtt,
+    D: ShadowDAO,
+{
     /// Subscribes to all the topics required for keeping a shadow in sync
     pub fn subscribe(&self) -> Result<(), Error> {
         Subscribe::<5>::new()
@@ -348,15 +356,16 @@ mod tests {
     use crate as rustot;
     use crate::test::MockMqtt;
     use dao::StdIODAO;
-    use derive::{ShadowDiff, ShadowState};
+    use derive::ShadowState;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Default, Clone, Serialize, ShadowDiff, Deserialize, PartialEq)]
-    pub struct Test {}
+    // #[derive(Debug, Default, Clone, Serialize, ShadowDiff, Deserialize, PartialEq)]
+    // pub struct Test {}
 
     #[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
     pub struct SerdeRename {
         #[serde(rename = "SomeRenamedField")]
+        #[unit_shadow_field]
         some_renamed_field: u8,
     }
 

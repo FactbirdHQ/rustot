@@ -1,12 +1,14 @@
+use serde::de::DeserializeOwned;
+
 use super::{Error, ShadowState, MAX_PAYLOAD_SIZE};
 
 pub trait ShadowDAO {
-    fn read<S: ShadowState>(&mut self) -> Result<S, Error>;
+    fn read<S: ShadowState + DeserializeOwned>(&mut self) -> Result<S, Error>;
     fn write<S: ShadowState>(&mut self, state: &S) -> Result<(), Error>;
 }
 
 impl ShadowDAO for () {
-    fn read<S: ShadowState>(&mut self) -> Result<S, Error> {
+    fn read<S: ShadowState + DeserializeOwned>(&mut self) -> Result<S, Error> {
         Err(Error::NoPersistance)
     }
 
@@ -39,7 +41,7 @@ impl<T, const OFFSET: u32> ShadowDAO for EmbeddedStorageDAO<T, OFFSET>
 where
     T: embedded_storage::Storage,
 {
-    fn read<S: ShadowState>(&mut self) -> Result<S, Error> {
+    fn read<S: ShadowState + DeserializeOwned>(&mut self) -> Result<S, Error> {
         let bytes = &mut [0u8; MAX_PAYLOAD_SIZE];
 
         self.0.read(OFFSET, bytes).map_err(|_| Error::DaoRead)?;
@@ -92,7 +94,7 @@ impl<T> ShadowDAO for StdIODAO<T>
 where
     T: std::io::Write + std::io::Read,
 {
-    fn read<S: ShadowState>(&mut self) -> Result<S, Error> {
+    fn read<S: ShadowState + DeserializeOwned>(&mut self) -> Result<S, Error> {
         let bytes = &mut [0u8; MAX_PAYLOAD_SIZE];
 
         self.0.read(bytes).map_err(|_| Error::DaoRead)?;
