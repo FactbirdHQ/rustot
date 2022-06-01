@@ -24,62 +24,115 @@ pub trait ShadowState: ShadowDiff {
     const NAME: Option<&'static str>;
 
     // TODO: Move MAX_PAYLOAD_SIZE here once const_generics supports it
-    // const MAX_PAYLOAD_SIZE: usize;
+    const MAX_PAYLOAD_SIZE: usize = MAX_PAYLOAD_SIZE;
 }
 
-pub struct Shadow<'a, S: ShadowState, M: Mqtt, D: ShadowDAO> {
-    state: S,
-    mqtt: &'a M,
-    dao: Option<D>,
+pub struct PersistedShadow<'a, S: ShadowState + DeserializeOwned, M: Mqtt, D: ShadowDAO<S>> {
+    shadow: Shadow<'a, S, M>,
+    pub(crate) dao: D,
 }
 
-impl<'a, S, M> Shadow<'a, S, M, ()>
-where
-    S: ShadowState,
-    M: Mqtt,
-{
-    pub fn new(state: S, mqtt: &'a M) -> Result<Self, Error> {
-        let handler = Shadow {
-            mqtt,
-            state,
-            dao: None,
-        };
-
-        handler.subscribe()?;
-        Ok(handler)
-    }
-}
-
-impl<'a, S, M, D> Shadow<'a, S, M, D>
+impl<'a, S, M, D> PersistedShadow<'a, S, M, D>
 where
     S: ShadowState + DeserializeOwned,
     M: Mqtt,
-    D: ShadowDAO,
+    D: ShadowDAO<S>,
 {
-    pub fn new_persisted(initial_state: S, mqtt: &'a M, mut dao: D) -> Result<Self, Error> {
+    /// Instantiate a new shadow that will be automatically persisted to NVM
+    /// based on the passed `DAO`.
+    pub fn new(initial_state: S, mqtt: &'a M, mut dao: D) -> Result<Self, Error> {
         let state = dao.read().unwrap_or(initial_state);
-        let handler = Shadow {
-            mqtt,
-            state,
-            dao: Some(dao),
-        };
+        Ok(Self {
+            shadow: Shadow::new(state, mqtt)?,
+            dao,
+        })
+    }
+
+    /// Subscribes to all the topics required for keeping a shadow in sync
+    pub fn subscribe(&self) -> Result<(), Error> {
+        self.shadow.subscribe()
+    }
+
+    /// Unsubscribes from all the topics required for keeping a shadow in sync
+    pub fn unsubscribe(&self) -> Result<(), Error> {
+        self.shadow.unsubscribe()
+    }
+
+    /// Helper function to check whether a topic name is relevant for this
+    /// particular shadow.
+    pub fn should_handle_topic(&mut self, topic: &str) -> bool {
+        self.shadow.should_handle_topic(topic)
+    }
+
+    /// Handle incomming publish messages from the cloud on any topics relevant
+    /// for this particular shadow.
+    ///
+    /// This function needs to be fed all relevant incoming MQTT payloads in
+    /// order for the shadow manager to work.
+    #[must_use]
+    pub fn handle_message(
+        &mut self,
+        topic: &str,
+        payload: &[u8],
+    ) -> Result<(&S, Option<S::PartialState>), Error> {
+        let result = self.shadow.handle_message(topic, payload);
+        if let Ok((state, Some(_))) = result {
+            // Something has changed as part of handling a message. Persist it
+            // to NVM storage.
+            self.dao.write(state)?;
+        }
+        result
+    }
+
+    /// Get an immutable reference to the internal local state.
+    pub fn get(&self) -> &S {
+        self.shadow.get()
+    }
+
+    /// Initiate a `GetShadow` request, updating the local state from the cloud.
+    pub fn get_shadow(&self) -> Result<(), Error> {
+        self.shadow.get_shadow()
+    }
+
+    /// Initiate an `UpdateShadow` request, reporting the local state to the cloud.
+    pub fn report_shadow(&mut self) -> Result<(), Error> {
+        self.shadow.report_shadow()
+    }
+
+    /// Update the state of the shadow.
+    ///
+    /// This function will update the desired state of the shadow in the cloud,
+    /// and depending on whether the state update is rejected or accepted, it
+    /// will automatically update the local version after response
+    pub fn update<F: FnOnce(&S, &mut S::PartialState)>(&mut self, f: F) -> Result<(), Error> {
+        self.shadow.update(f)?;
+        self.dao.write(self.shadow.get())?;
+        Ok(())
+    }
+
+    // pub fn delete(&mut self) -> Result<(), Error> {
+    //     self.shadow.delete()
+    // }
+}
+
+pub struct Shadow<'a, S: ShadowState, M: Mqtt> {
+    state: S,
+    mqtt: &'a M,
+}
+
+impl<'a, S, M> Shadow<'a, S, M>
+where
+    S: ShadowState,
+    M: Mqtt,
+{
+    /// Instantiate a new non-persisted shadow
+    pub fn new(state: S, mqtt: &'a M) -> Result<Self, Error> {
+        let handler = Shadow { mqtt, state };
 
         handler.subscribe()?;
         Ok(handler)
     }
 
-    #[cfg(test)]
-    fn steal_dao(&mut self) -> D {
-        self.dao.take().unwrap()
-    }
-}
-
-impl<'a, S, M, D> Shadow<'a, S, M, D>
-where
-    S: ShadowState,
-    M: Mqtt,
-    D: ShadowDAO,
-{
     /// Subscribes to all the topics required for keeping a shadow in sync
     pub fn subscribe(&self) -> Result<(), Error> {
         Subscribe::<5>::new()
@@ -115,9 +168,6 @@ where
     ) -> Result<(), Error> {
         if let Some(ref delta) = delta {
             self.state.apply_patch(delta.clone());
-            if let Some(dao) = &mut self.dao {
-                dao.write(&self.state)?;
-            }
         }
 
         debug!(
@@ -306,11 +356,10 @@ where
     // }
 }
 
-impl<'a, S, M, D> core::fmt::Debug for Shadow<'a, S, M, D>
+impl<'a, S, M> core::fmt::Debug for Shadow<'a, S, M>
 where
     S: ShadowState + core::fmt::Debug,
     M: Mqtt,
-    D: ShadowDAO,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
@@ -323,11 +372,10 @@ where
 }
 
 #[cfg(feature = "defmt-impl")]
-impl<'a, S, M, D> defmt::Format for Shadow<'a, S, M, D>
+impl<'a, S, M> defmt::Format for Shadow<'a, S, M>
 where
     S: ShadowState + defmt::Format,
     M: Mqtt,
-    D: ShadowDAO,
 {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(
@@ -339,11 +387,10 @@ where
     }
 }
 
-impl<'a, S, M, D> Drop for Shadow<'a, S, M, D>
+impl<'a, S, M> Drop for Shadow<'a, S, M>
 where
     S: ShadowState,
     M: Mqtt,
-    D: ShadowDAO,
 {
     fn drop(&mut self) {
         self.unsubscribe().ok();
@@ -464,7 +511,7 @@ mod tests {
 
         let storage = std::io::Cursor::new(std::vec::Vec::with_capacity(1024));
         let shadow_dao = StdIODAO::new(storage);
-        let mut config_shadow = Shadow::new_persisted(config, mqtt, shadow_dao).unwrap();
+        let mut config_shadow = PersistedShadow::new(config, mqtt, shadow_dao).unwrap();
 
         mqtt.tx.borrow_mut().clear();
 
@@ -479,7 +526,7 @@ mod tests {
         assert_eq!(mqtt.tx.borrow_mut().len(), 1);
         assert_eq!(updated, &Config { id: 100 });
 
-        let dao = config_shadow.steal_dao();
+        let dao = config_shadow.dao;
         assert_eq!(dao.0.position(), 10);
 
         let dao_storage = dao.0.into_inner();

@@ -2,17 +2,17 @@ use serde::de::DeserializeOwned;
 
 use super::{Error, ShadowState, MAX_PAYLOAD_SIZE};
 
-pub trait ShadowDAO {
-    fn read<S: ShadowState + DeserializeOwned>(&mut self) -> Result<S, Error>;
-    fn write<S: ShadowState>(&mut self, state: &S) -> Result<(), Error>;
+pub trait ShadowDAO<S: ShadowState + DeserializeOwned> {
+    fn read(&mut self) -> Result<S, Error>;
+    fn write(&mut self, state: &S) -> Result<(), Error>;
 }
 
-impl ShadowDAO for () {
-    fn read<S: ShadowState + DeserializeOwned>(&mut self) -> Result<S, Error> {
+impl<S: ShadowState + DeserializeOwned> ShadowDAO<S> for () {
+    fn read(&mut self) -> Result<S, Error> {
         Err(Error::NoPersistance)
     }
 
-    fn write<S: ShadowState>(&mut self, _state: &S) -> Result<(), Error> {
+    fn write(&mut self, _state: &S) -> Result<(), Error> {
         Err(Error::NoPersistance)
     }
 }
@@ -37,32 +37,63 @@ where
     }
 }
 
-impl<T, const OFFSET: u32> ShadowDAO for EmbeddedStorageDAO<T, OFFSET>
+const U32_SIZE: usize = core::mem::size_of::<u32>();
+
+impl<S, T, const OFFSET: u32> ShadowDAO<S> for EmbeddedStorageDAO<T, OFFSET>
 where
+    S: ShadowState + DeserializeOwned,
     T: embedded_storage::Storage,
 {
-    fn read<S: ShadowState + DeserializeOwned>(&mut self) -> Result<S, Error> {
-        let bytes = &mut [0u8; MAX_PAYLOAD_SIZE];
+    fn read(&mut self) -> Result<S, Error> {
+        let buf = &mut [0u8; MAX_PAYLOAD_SIZE];
 
-        self.0.read(OFFSET, bytes).map_err(|_| Error::DaoRead)?;
-        serde_cbor::de::from_mut_slice(bytes).map_err(|_| Error::InvalidPayload)
+        self.0.read(OFFSET, buf).map_err(|_| Error::DaoRead)?;
+
+        match buf[..U32_SIZE].try_into() {
+            Ok(len_bytes) => {
+                let len = u32::from_le_bytes(len_bytes);
+                if len == 0xFFFFFFFF || len as usize + U32_SIZE > buf.len() {
+                    return Err(Error::InvalidPayload);
+                }
+
+                // FIXME: Choose this size as narrow as possible?
+                let scratch = &mut [0u8; 256];
+
+                Ok(serde_cbor::de::from_slice_with_scratch::<S>(
+                    &buf[U32_SIZE..len as usize + U32_SIZE],
+                    scratch,
+                )
+                .map_err(|_| Error::InvalidPayload)?)
+            }
+            _ => Err(Error::InvalidPayload),
+        }
     }
 
-    fn write<S: ShadowState>(&mut self, state: &S) -> Result<(), Error> {
+    fn write(&mut self, state: &S) -> Result<(), Error> {
         assert!(MAX_PAYLOAD_SIZE <= self.0.capacity() - OFFSET as usize);
 
-        let bytes = &mut [0u8; MAX_PAYLOAD_SIZE];
+        let buf = &mut [0u8; MAX_PAYLOAD_SIZE];
 
-        let mut serializer =
-            serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(bytes));
+        let mut serializer = serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(
+            &mut buf[U32_SIZE..],
+        ))
+        .packed_format();
         state
             .serialize(&mut serializer)
             .map_err(|_| Error::InvalidPayload)?;
         let len = serializer.into_inner().bytes_written();
 
+        if len > MAX_PAYLOAD_SIZE {
+            return Err(Error::Overflow);
+        }
+
+        buf[..U32_SIZE].copy_from_slice(&(len as u32).to_le_bytes());
+
         self.0
-            .write(OFFSET, &bytes[..len])
-            .map_err(|_| Error::DaoWrite)
+            .write(OFFSET, &buf[..len + U32_SIZE])
+            .map_err(|_| Error::DaoWrite)?;
+
+        Ok(())
     }
 }
 
@@ -90,11 +121,12 @@ where
 }
 
 #[cfg(any(feature = "std", test))]
-impl<T> ShadowDAO for StdIODAO<T>
+impl<S, T> ShadowDAO<S> for StdIODAO<T>
 where
+    S: ShadowState + DeserializeOwned,
     T: std::io::Write + std::io::Read,
 {
-    fn read<S: ShadowState + DeserializeOwned>(&mut self) -> Result<S, Error> {
+    fn read(&mut self) -> Result<S, Error> {
         let bytes = &mut [0u8; MAX_PAYLOAD_SIZE];
 
         self.0.read(bytes).map_err(|_| Error::DaoRead)?;
@@ -102,7 +134,7 @@ where
         Ok(shadow)
     }
 
-    fn write<S: ShadowState>(&mut self, state: &S) -> Result<(), Error> {
+    fn write(&mut self, state: &S) -> Result<(), Error> {
         let bytes =
             serde_json_core::to_vec::<_, MAX_PAYLOAD_SIZE>(state).map_err(|_| Error::Overflow)?;
 
