@@ -231,7 +231,7 @@ jobs:
           command: test
           args: --test '*' --features "ota_mqtt_data,log" --target x86_64-unknown-linux-gnu
         env:
-          DEVICE_ADVISOR_PASSWORD: ${{ secrets.DEVICE_ADVISOR_PASSWORD }}
+          IDENTITY_PASSWORD: ${{ secrets.DEVICE_ADVISOR_PASSWORD }}
           AWS_HOSTNAME: a1vq3mi5y3c6j5-ats.iot.eu-west-1.amazonaws.com
 
       - name: Cleanup OTA Jobs

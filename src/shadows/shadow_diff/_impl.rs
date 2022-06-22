@@ -1,17 +1,17 @@
 use serde::{de::DeserializeOwned, Serialize};
 
-use super::ShadowDiff;
+use crate::shadows::data_types::Patch;
 
-macro_rules! impl_shadow_diff {
+use super::ShadowPatch;
+
+macro_rules! impl_shadow_patch {
     ($($ident: ty),+) => {
         $(
-            impl ShadowDiff for $ident {
-                type PartialState = Option<$ident>;
+            impl ShadowPatch for $ident {
+                type PatchState = $ident;
 
-                fn apply_patch(&mut self, opt: Self::PartialState) {
-                    if let Some(v) = opt {
-                        *self = v;
-                    }
+                fn apply_patch(&mut self, opt: Self::PatchState) {
+                    *self = opt;
                 }
             }
         )+
@@ -19,37 +19,37 @@ macro_rules! impl_shadow_diff {
 }
 
 // Rust primitive types: https://doc.rust-lang.org/reference/types.html
-impl_shadow_diff!(bool);
-impl_shadow_diff!(u8, u16, u32, u64, u128, usize);
-impl_shadow_diff!(i8, i16, i32, i64, i128, isize);
-impl_shadow_diff!(f32, f64);
-impl_shadow_diff!(char);
+impl_shadow_patch!(bool);
+impl_shadow_patch!(u8, u16, u32, u64, u128, usize);
+impl_shadow_patch!(i8, i16, i32, i64, i128, isize);
+impl_shadow_patch!(f32, f64);
+impl_shadow_patch!(char);
 
-impl<T: DeserializeOwned + Serialize + Clone> ShadowDiff for Option<T> {
-    type PartialState = Option<T>;
+impl<T: DeserializeOwned + Serialize + Clone> ShadowPatch for Option<T> {
+    type PatchState = Patch<T>;
 
-    fn apply_patch(&mut self, opt: Self::PartialState) {
-        *self = opt;
+    fn apply_patch(&mut self, opt: Self::PatchState) {
+        if let Patch::Set(v) = opt {
+            *self = Some(v);
+        } else {
+            *self = None;
+        }
     }
 }
 
 // Heapless stuff
-impl<const N: usize> ShadowDiff for heapless::String<N> {
-    type PartialState = Option<heapless::String<N>>;
+impl<const N: usize> ShadowPatch for heapless::String<N> {
+    type PatchState = heapless::String<N>;
 
-    fn apply_patch(&mut self, opt: Self::PartialState) {
-        if let Some(v) = opt {
-            *self = v;
-        }
+    fn apply_patch(&mut self, opt: Self::PatchState) {
+        *self = opt;
     }
 }
 
-impl<T: Clone + Serialize + DeserializeOwned, const N: usize> ShadowDiff for heapless::Vec<T, N> {
-    type PartialState = Option<heapless::Vec<T, N>>;
+impl<T: Clone + Serialize + DeserializeOwned, const N: usize> ShadowPatch for heapless::Vec<T, N> {
+    type PatchState = heapless::Vec<T, N>;
 
-    fn apply_patch(&mut self, opt: Self::PartialState) {
-        if let Some(v) = opt {
-            *self = v;
-        }
+    fn apply_patch(&mut self, opt: Self::PatchState) {
+        *self = opt;
     }
 }

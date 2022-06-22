@@ -4,6 +4,7 @@ pub mod topics;
 
 use heapless::FnvIndexMap;
 use mqttrust::Mqtt;
+#[cfg(feature = "provision_cbor")]
 use serde::Serialize;
 
 use self::{
@@ -49,16 +50,17 @@ where
             mqtt,
             template_name,
             ownership_token: None,
-            payload_format: PayloadFormat::Cbor,
+            payload_format: PayloadFormat::Json,
         }
     }
 
-    pub fn new_json(mqtt: &'a M, template_name: &'a str) -> Self {
+    #[cfg(feature = "provision_cbor")]
+    pub fn new_cbor(mqtt: &'a M, template_name: &'a str) -> Self {
         Self {
             mqtt,
             template_name,
             ownership_token: None,
-            payload_format: PayloadFormat::Json,
+            payload_format: PayloadFormat::Cbor,
         }
     }
 
@@ -113,6 +115,7 @@ where
         let payload = &mut [0u8; 1024];
 
         let payload_len = match self.payload_format {
+            #[cfg(feature = "provision_cbor")]
             PayloadFormat::Cbor => {
                 let mut serializer =
                     serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(payload));
@@ -147,6 +150,7 @@ where
                 );
 
                 let response = match format {
+                    #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
                         serde_cbor::de::from_mut_slice::<CreateKeysAndCertificateResponse>(payload)?
                     }
@@ -168,6 +172,7 @@ where
                 trace!("Topic::CreateCertificateFromCsrAccepted {:?}", format);
 
                 let response = match format {
+                    #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
                         serde_cbor::de::from_mut_slice::<CreateCertificateFromCsrResponse>(payload)?
                     }
@@ -189,6 +194,7 @@ where
                 trace!("Topic::RegisterThingAccepted {:?}", format);
 
                 let response = match format {
+                    #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
                         serde_cbor::de::from_mut_slice::<RegisterThingResponse<'_, P>>(payload)?
                     }
@@ -209,6 +215,7 @@ where
                 | Topic::RegisterThingRejected(_, format),
             ) => {
                 let response = match format {
+                    #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
                         serde_cbor::de::from_mut_slice::<ErrorResponse>(payload)?
                     }

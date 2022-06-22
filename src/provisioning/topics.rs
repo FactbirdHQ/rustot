@@ -17,6 +17,7 @@ pub enum Direction {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum PayloadFormat {
+    #[cfg(feature = "provision_cbor")]
     Cbor,
     Json,
 }
@@ -24,6 +25,7 @@ pub enum PayloadFormat {
 impl Display for PayloadFormat {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            #[cfg(feature = "provision_cbor")]
             Self::Cbor => write!(f, "cbor"),
             Self::Json => write!(f, "json"),
         }
@@ -35,6 +37,7 @@ impl FromStr for PayloadFormat {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            #[cfg(feature = "provision_cbor")]
             "cbor" => Ok(Self::Cbor),
             "json" => Ok(Self::Json),
             _ => Err(()),

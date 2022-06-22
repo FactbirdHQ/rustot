@@ -1,5 +1,37 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Patch<T> {
+    #[serde(rename = "unset")]
+    Unset,
+    #[serde(rename = "set")]
+    Set(T),
+}
+
+impl<T> Default for Patch<T> {
+    fn default() -> Self {
+        Self::Unset
+    }
+}
+
+impl<T> Clone for Patch<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Self::Unset => Self::Unset,
+            Self::Set(v) => Self::Set(v.clone()),
+        }
+    }
+}
+
+impl<T> From<T> for Patch<T> {
+    fn from(v: T) -> Self {
+        Self::Set(v)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct State<T> {
     #[serde(rename = "desired")]
@@ -30,6 +62,7 @@ pub struct DeltaState<T> {
 /// - **version** — If used, the Device Shadow service processes the update only
 ///   if the specified version matches the latest version it has.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Request<'a, T> {
     pub state: State<T>,
     #[serde(rename = "clientToken")]
@@ -104,7 +137,88 @@ pub struct DeltaResponse<'a, T> {
 pub struct ErrorResponse<'a> {
     pub code: u16,
     pub message: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<u64>,
     #[serde(rename = "clientToken")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_token: Option<&'a str>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+    struct Test {
+        field: bool,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+    struct TestMap(heapless::LinearMap<heapless::String<3>, Patch<Test>, 5>);
+
+    #[test]
+    fn deserialize_patch_unset() {
+        let payload = "\"unset\"";
+
+        let (patch, _) = serde_json_core::from_str::<Patch<()>>(payload).unwrap();
+        assert_eq!(patch, Patch::Unset);
+    }
+
+    #[test]
+    fn serialize_map_patch_delta() {
+        let payload = "{\"1\":{\"set\":{\"field\":true}}}";
+
+        let mut exp_map = TestMap(heapless::LinearMap::default());
+        exp_map
+            .0
+            .insert(
+                heapless::String::from("1"),
+                Patch::Set(Test { field: true }),
+            )
+            .unwrap();
+
+        let patch = serde_json_core::to_string::<_, 512>(&exp_map).unwrap();
+        assert_eq!(patch.as_str(), payload);
+    }
+
+    #[test]
+    fn deserialize_map_patch_delta() {
+        let payload = "{\"1\":{\"set\":{\"field\":true}}}";
+
+        let mut exp_map = TestMap(heapless::LinearMap::default());
+        exp_map
+            .0
+            .insert(
+                heapless::String::from("1"),
+                Patch::Set(Test { field: true }),
+            )
+            .unwrap();
+
+        let (patch, _) = serde_json_core::from_str::<TestMap>(payload).unwrap();
+        assert_eq!(patch, exp_map);
+    }
+
+    #[test]
+    fn deserialize_map_patch_missing() {
+        let payload = "{}";
+
+        let exp_map = TestMap(heapless::LinearMap::default());
+
+        let (patch, _) = serde_json_core::from_str::<TestMap>(payload).unwrap();
+        assert_eq!(patch, exp_map);
+    }
+
+    #[test]
+    fn deserialize_map_patch_unset() {
+        let payload = "{\"1\":\"unset\"}";
+
+        let mut exp_map = TestMap(heapless::LinearMap::default());
+        exp_map
+            .0
+            .insert(heapless::String::from("1"), Patch::Unset)
+            .unwrap();
+
+        let (patch, _) = serde_json_core::from_str::<TestMap>(payload).unwrap();
+        assert_eq!(patch, exp_map);
+    }
 }

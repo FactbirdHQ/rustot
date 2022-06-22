@@ -37,11 +37,12 @@ pub enum Topic {
 
 impl Topic {
     const PREFIX: &'static str = "$aws/things";
+    const SHADOW: &'static str = "shadow";
 
     pub fn from_str(s: &str) -> Option<(Self, &str, Option<&str>)> {
         let tt = s.splitn(9, '/').collect::<heapless::Vec<&str, 9>>();
         match (tt.get(0), tt.get(1), tt.get(2), tt.get(3)) {
-            (Some(&"$aws"), Some(&"things"), Some(thing_name), Some(&"shadow")) => {
+            (Some(&"$aws"), Some(&"things"), Some(thing_name), Some(&Self::SHADOW)) => {
                 // This is a shadow topic, now figure out which one.
                 let (shadow_name, next_index) = if let Some(&"name") = tt.get(4) {
                     (tt.get(5).map(|s| *s), 6)
@@ -99,80 +100,91 @@ impl Topic {
         let mut topic_path = String::new();
         match self {
             Self::Get => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/get",
+                "{}/{}/{}{}{}/get",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
             Self::Update => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/update",
+                "{}/{}/{}{}{}/update",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
             Self::Delete => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/update",
+                "{}/{}/{}{}{}/delete",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
 
             Self::GetAccepted => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/get/accepted",
+                "{}/{}/{}{}{}/get/accepted",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
             Self::GetRejected => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/get/rejected",
+                "{}/{}/{}{}{}/get/rejected",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
             Self::UpdateDelta => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/update/delta",
+                "{}/{}/{}{}{}/update/delta",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
             Self::UpdateAccepted => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/update/accepted",
+                "{}/{}/{}{}{}/update/accepted",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
             Self::UpdateDocuments => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/update/documents",
+                "{}/{}/{}{}{}/update/documents",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
             Self::UpdateRejected => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/update/rejected",
+                "{}/{}/{}{}{}/update/rejected",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
             Self::DeleteAccepted => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/delete/accepted",
+                "{}/{}/{}{}{}/delete/accepted",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
             Self::DeleteRejected => topic_path.write_fmt(format_args!(
-                "{}/{}/shadow{}{}/delete/rejected",
+                "{}/{}/{}{}{}/delete/rejected",
                 Self::PREFIX,
                 thing_name,
+                Self::SHADOW,
                 name_prefix,
                 shadow_name
             )),
