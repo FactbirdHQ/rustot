@@ -253,7 +253,7 @@ impl<'a> StateMachineContext for TestContext<'a> {
     }
 
     fn get_next_device(&mut self, _: &Option<KnownNetworks>) -> UpdateAction {
-        self.update_cnt = self.update_cnt + 1;
+        self.update_cnt += 1;
         match self.update_cnt {
             1 => UpdateAction::Remove(0),
             3 => UpdateAction::Insert(0, asserts(0)),
@@ -263,7 +263,7 @@ impl<'a> StateMachineContext for TestContext<'a> {
     }
 
     fn get_next_cloud(&mut self, _: &Option<KnownNetworks>) -> UpdateAction {
-        self.update_cnt = self.update_cnt + 1;
+        self.update_cnt += 1;
 
         match self.update_cnt {
             2 => UpdateAction::Insert(2, asserts(2)),
