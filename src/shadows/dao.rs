@@ -101,7 +101,7 @@ where
 pub struct StdIODAO<T: std::io::Write + std::io::Read>(pub(crate) T);
 
 #[cfg(any(feature = "std", test))]
-impl<T> StdIODAO<T>
+impl<T> From<T> for StdIODAO<T>
 where
     T: std::io::Write + std::io::Read,
 {

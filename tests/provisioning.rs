@@ -37,6 +37,9 @@ fn provision_credentials<'a, const L: usize>(
     mqtt_eventloop: &mut EventLoop<'a, 'a, TcpSocket<TlsStream<TcpStream>>, SysClock, 1000, L>,
     mqtt_client: &mqttrust_core::Client<L>,
 ) -> Result<OwnedCredentials, ()> {
+    let template_name =
+        std::env::var("TEMPLATE_NAME").unwrap_or_else(|_| "duoProvisioningTemplate".to_string());
+
     let connector = TlsConnector::builder()
         .identity(identity)
         .add_root_certificate(credentials::root_ca())
@@ -50,10 +53,10 @@ fn provision_credentials<'a, const L: usize>(
 
     log::info!("Successfully connected to broker with claim credentials");
 
-    #[cfg(feature = "cbor")]
-    let mut provisioner = FleetProvisioner::new(mqtt_client, "duoProvisioningTemplate");
-    #[cfg(not(feature = "cbor"))]
-    let mut provisioner = FleetProvisioner::new_json(mqtt_client, "duoProvisioningTemplate");
+    #[cfg(not(feature = "provision_cbor"))]
+    let mut provisioner = FleetProvisioner::new(mqtt_client, &template_name);
+    #[cfg(feature = "provision_cbor")]
+    let mut provisioner = FleetProvisioner::new_cbor(mqtt_client, &template_name);
 
     provisioner
         .initialize()

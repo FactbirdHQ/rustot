@@ -13,30 +13,46 @@ use syn::Ident;
 use syn::Result;
 use syn::{parenthesized, Attribute, Error, Field, LitStr};
 
-#[proc_macro_derive(
-    ShadowState,
-    attributes(shadow, unit_shadow_field, static_shadow_field)
-)]
+#[proc_macro_derive(ShadowState, attributes(shadow, static_shadow_field))]
 pub fn shadow_state(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as ParseInput);
-    let shadow_diff = generate_shadow_diff(&input);
-    let shadow_state = generate_shadow_state(&input);
-    let implementation = quote! {
-        #shadow_diff
+    match parse_macro_input!(input as ParseInput) {
+        ParseInput::Struct(input) => {
+            let shadow_patch = generate_shadow_patch_struct(&input);
+            let shadow_state = generate_shadow_state(&input);
+            let implementation = quote! {
+                #shadow_patch
 
-        #shadow_state
-    };
-    TokenStream::from(implementation)
+                #shadow_state
+            };
+            TokenStream::from(implementation)
+        }
+        _ => {
+            todo!()
+        }
+    }
 }
 
-#[proc_macro_derive(ShadowDiff, attributes(unit_shadow_field, static_shadow_field, serde))]
-pub fn shadow_diff(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as ParseInput);
-    TokenStream::from(generate_shadow_diff(&input))
+#[proc_macro_derive(ShadowPatch, attributes(static_shadow_field, serde))]
+pub fn shadow_patch(input: TokenStream) -> TokenStream {
+    TokenStream::from(match parse_macro_input!(input as ParseInput) {
+        ParseInput::Struct(input) => generate_shadow_patch_struct(&input),
+        ParseInput::Enum(input) => generate_shadow_patch_enum(&input),
+    })
+}
+
+enum ParseInput {
+    Struct(StructParseInput),
+    Enum(EnumParseInput),
 }
 
 #[derive(Clone)]
-struct ParseInput {
+struct EnumParseInput {
+    pub ident: Ident,
+    pub generics: Generics,
+}
+
+#[derive(Clone)]
+struct StructParseInput {
     pub ident: Ident,
     pub generics: Generics,
     pub shadow_fields: Vec<Field>,
@@ -71,58 +87,33 @@ impl Parse for ParseInput {
             }
         }
 
-        let shadow_fields = match derive_input.data {
+        match derive_input.data {
             syn::Data::Struct(syn::DataStruct { fields, .. }) => {
-                fields.into_iter().collect::<Vec<_>>()
+                Ok(Self::Struct(StructParseInput {
+                    ident: derive_input.ident,
+                    generics: derive_input.generics,
+                    shadow_fields: fields.into_iter().collect::<Vec<_>>(),
+                    copy_attrs,
+                    shadow_name,
+                }))
             }
-            _ => {
-                return Err(Error::new(
-                    Span::call_site(),
-                    "ShadowState & ShadowDiff can only be implemented for non-tuple structs",
-                ))
-            }
-        };
-
-        Ok(Self {
-            ident: derive_input.ident,
-            generics: derive_input.generics,
-            shadow_fields,
-            copy_attrs,
-            shadow_name,
-        })
+            syn::Data::Enum(syn::DataEnum { .. }) => Ok(Self::Enum(EnumParseInput {
+                ident: derive_input.ident,
+                generics: derive_input.generics,
+            })),
+            _ => Err(Error::new(
+                Span::call_site(),
+                "ShadowState & ShadowPatch can only be derived for non-tuple structs & enums",
+            )),
+        }
     }
-}
-
-fn create_assertions(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
-    fields
-        .iter()
-        .filter_map(|field| {
-            if field
-                .attrs
-                .iter()
-                .find(|a| {
-                    a.path.is_ident("unit_shadow_field") || a.path.is_ident("static_shadow_field")
-                })
-                .is_some()
-            {
-                None
-            } else {
-                let type_name = &field.ty;
-                Some(quote! { rustot::assert_impl_all!(#type_name: rustot::shadows::ShadowDiff); })
-            }
-        })
-        .collect::<Vec<_>>()
 }
 
 fn create_assigners(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
     fields
         .iter()
         .filter_map(|field| {
-            let type_name = &field.ty;
             let field_name = &field.ident.clone().unwrap();
-
-            let type_name_string = quote! {#type_name}.to_string();
-            let type_name_string: String = type_name_string.chars().filter(|&c| c != ' ').collect();
 
             if field
                 .attrs
@@ -131,23 +122,12 @@ fn create_assigners(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
                 .is_some()
             {
                 None
-            } else if field
-                .attrs
-                .iter()
-                .find(|a| a.path.is_ident("unit_shadow_field"))
-                .is_some()
-            {
-                Some(if type_name_string.starts_with("Option<") {
-                    quote! { self.#field_name = opt.#field_name; }
-                } else {
-                    quote! {
-                        if let Some(attribute) = opt.#field_name {
-                            self.#field_name = attribute;
-                        }
+            } else {
+                Some(quote! {
+                    if let Some(attribute) = opt.#field_name {
+                        self.#field_name.apply_patch(attribute);
                     }
                 })
-            } else {
-                Some(quote! { self.#field_name.apply_patch(opt.#field_name); })
             }
         })
         .collect::<Vec<_>>()
@@ -162,7 +142,7 @@ fn create_optional_fields(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> 
                 .attrs
                 .iter()
                 .filter(|a| {
-                    !a.path.is_ident("static_shadow_field") && !a.path.is_ident("unit_shadow_field")
+                    !a.path.is_ident("static_shadow_field")
                 })
                 .collect::<Vec<_>>();
             let field_name = &field.ident.clone().unwrap();
@@ -179,17 +159,17 @@ fn create_optional_fields(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> 
                 None
             } else {
                 Some(if type_name_string.starts_with("Option<") {
-                    quote! { #(#attrs)* pub #field_name: #type_name }
+                    quote! { #(#attrs)* pub #field_name: Option<rustot::shadows::Patch<<#type_name as rustot::shadows::ShadowPatch>::PatchState>> }
                 } else {
-                    quote! { #(#attrs)* pub #field_name: Option<#type_name> }
+                    quote! { #(#attrs)* pub #field_name: Option<<#type_name as rustot::shadows::ShadowPatch>::PatchState> }
                 })
             }
         })
         .collect::<Vec<_>>()
 }
 
-fn generate_shadow_state(input: &ParseInput) -> proc_macro2::TokenStream {
-    let ParseInput {
+fn generate_shadow_state(input: &StructParseInput) -> proc_macro2::TokenStream {
+    let StructParseInput {
         ident,
         generics,
         shadow_name,
@@ -212,8 +192,8 @@ fn generate_shadow_state(input: &ParseInput) -> proc_macro2::TokenStream {
     };
 }
 
-fn generate_shadow_diff(input: &ParseInput) -> proc_macro2::TokenStream {
-    let ParseInput {
+fn generate_shadow_patch_struct(input: &StructParseInput) -> proc_macro2::TokenStream {
+    let StructParseInput {
         ident,
         generics,
         shadow_fields,
@@ -223,11 +203,10 @@ fn generate_shadow_diff(input: &ParseInput) -> proc_macro2::TokenStream {
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let optional_ident = format_ident!("Partial{}", ident);
+    let optional_ident = format_ident!("Patch{}", ident);
 
     let assigners = create_assigners(&shadow_fields);
     let optional_fields = create_optional_fields(&shadow_fields);
-    let field_assertions = create_assertions(&shadow_fields);
 
     return quote! {
         #[automatically_derived]
@@ -239,16 +218,33 @@ fn generate_shadow_diff(input: &ParseInput) -> proc_macro2::TokenStream {
             ),*
         }
 
-        #(#field_assertions)*
-
         #[automatically_derived]
-        impl #impl_generics rustot::shadows::ShadowDiff for #ident #ty_generics #where_clause {
-            type PartialState = #optional_ident;
+        impl #impl_generics rustot::shadows::ShadowPatch for #ident #ty_generics #where_clause {
+            type PatchState = #optional_ident;
 
-            fn apply_patch(&mut self, opt: Self::PartialState) {
+            fn apply_patch(&mut self, opt: Self::PatchState) {
                 #(
                     #assigners
                 )*
+            }
+        }
+    };
+}
+
+fn generate_shadow_patch_enum(input: &EnumParseInput) -> proc_macro2::TokenStream {
+    let EnumParseInput {
+        ident, generics, ..
+    } = input;
+
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    return quote! {
+        #[automatically_derived]
+        impl #impl_generics rustot::shadows::ShadowPatch for #ident #ty_generics #where_clause {
+            type PatchState = #ident #ty_generics;
+
+            fn apply_patch(&mut self, opt: Self::PatchState) {
+                *self = opt;
             }
         }
     };

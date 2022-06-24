@@ -1,4 +1,4 @@
-#[cfg(feature = "cbor")]
+#[cfg(feature = "ota_mqtt_data")]
 pub mod cbor;
 pub mod json;
 

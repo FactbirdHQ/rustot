@@ -4,6 +4,7 @@ By using AWS IoT fleet provisioning, AWS IoT can generate and securely deliver d
 private keys to your devices when they connect to AWS IoT for the first time. AWS IoT provides client
 certificates that are signed by the Amazon Root certificate authority (CA).
 There are two ways to use fleet provisioning:
+
 - By claim (implemented by this crate)
 - By trusted user (**not** implemented by this crate)
 
@@ -15,28 +16,33 @@ exchange them for unique device certificates that the device can use for regular
 includes the following steps:
 
 **Before you deliver the device**
+
 1. Call `CreateProvisioningTemplate` to create a provisioning template. This API
    returns a template ARN. For more information, see Device provisioning MQTT
-   API documentation. 
-   
-   You can also create a fleet provisioning template in the AWS IoT console. 
+   API documentation.
+
+   You can also create a fleet provisioning template in the AWS IoT console.
+
    - a. From the navigation pane, choose Onboard, then choose
-   Fleet provisioning templates. 
+     Fleet provisioning templates.
    - b. Choose Create and follow the prompts.
+
 2. Create certificates and associated private keys to be used as provisioning claim certificates.
 3. Register these certificates with AWS IoT and associate an IoT policy that restricts the use of the
-certificates. The following example IoT policy restricts the use of the certificate associated with this
-policy to provisioning devices.
+   certificates. The following example IoT policy restricts the use of the certificate associated with this
+   policy to provisioning devices.
 4. Give the AWS IoT service permission to create or update IoT resources such as things and certificates
-in your account when provisioning devices. Do this by attaching the AWSIoTThingsRegistration
-managed policy to an IAM role (called the provisioning role) that trusts the AWS IoT service principal.
+   in your account when provisioning devices. Do this by attaching the AWSIoTThingsRegistration
+   managed policy to an IAM role (called the provisioning role) that trusts the AWS IoT service principal.
 5. Manufacture the device with the provisioning claim certificate securely
    embedded in it.
 
 <hr>
 
-## Example
+## Example / Test
 
-You can find an example of how to use this crate for provisioning in the `examples/provisioning.rs` file. This example can be run by `RUST_LOG=trace AWS_HOSTNAME=xxxxxxxx-ats.iot.eu-west-1.amazonaws.com cargo r --example provisioning --features log`, assuming you have an `examples/secrets/claim_identity.pfx` file with the claiming credentials. 
+You can find an example of how to use this crate for provisioning in the `tests/provisioning.rs` file. This example can be run by `RUST_LOG=trace TEMPLATE_NAME="provision_template_name" THING_NAME="MyTestThing" AWS_HOSTNAME=xxxxxxxx-ats.iot.eu-west-1.amazonaws.com cargo test --test 'provisioning' --features "ota_mqtt_data,log"`, assuming you have an `tests/secrets/claim_identity.pfx` file with the claiming credentials. If your `claim_identity.pfx` is password protected, it can be supplied by setting the `IDENTITY_PASSWORD` env variable.
+
+Basic AWS infrastructure files needed for the example/test can be found in `tests/provisioning_infrastructure`. Do note that the pre-provision lambda handler will blindly allow any request to provision.
 
 pfx identity files can be created from a set of device certificate and private key using OpenSSL as: `openssl pkcs12 -export -out claim_identity.pfx -inkey private.pem.key -in certificate.pem.crt -certfile root-ca.pem`
