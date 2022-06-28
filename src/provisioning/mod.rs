@@ -2,7 +2,7 @@ pub mod data_types;
 mod error;
 pub mod topics;
 
-use heapless::FnvIndexMap;
+use heapless::LinearMap;
 use mqttrust::Mqtt;
 #[cfg(feature = "provision_cbor")]
 use serde::Serialize;
@@ -26,8 +26,7 @@ pub struct Credentials<'a> {
 #[derive(Debug)]
 pub enum Response<'a, const P: usize> {
     Credentials(Credentials<'a>),
-    DeviceConfiguration(FnvIndexMap<&'a str, &'a str, P>),
-    None,
+    DeviceConfiguration(LinearMap<&'a str, &'a str, P>),
 }
 
 pub struct FleetProvisioner<'a, M>
@@ -103,7 +102,7 @@ where
 
     pub fn register_thing<'b, const P: usize>(
         &mut self,
-        parameters: Option<FnvIndexMap<&'b str, &'b str, P>>,
+        parameters: Option<LinearMap<&'b str, &'b str, P>>,
     ) -> Result<(), Error> {
         let certificate_ownership_token = self.ownership_token.take().ok_or(Error::InvalidState)?;
 
@@ -140,7 +139,7 @@ where
         &mut self,
         topic_name: &'b str,
         payload: &'b mut [u8],
-    ) -> Result<Response<'b, P>, Error> {
+    ) -> Result<Option<Response<'b, P>>, Error> {
         match Topic::from_str(topic_name) {
             Some(Topic::CreateKeysAndCertificateAccepted(format)) => {
                 trace!(
@@ -162,11 +161,11 @@ where
                 self.ownership_token
                     .replace(heapless::String::from(response.certificate_ownership_token));
 
-                Ok(Response::Credentials(Credentials {
+                Ok(Some(Response::Credentials(Credentials {
                     certificate_id: response.certificate_id,
                     certificate_pem: response.certificate_pem,
                     private_key: Some(response.private_key),
-                }))
+                })))
             }
             Some(Topic::CreateCertificateFromCsrAccepted(format)) => {
                 trace!("Topic::CreateCertificateFromCsrAccepted {:?}", format);
@@ -184,11 +183,11 @@ where
                 self.ownership_token
                     .replace(heapless::String::from(response.certificate_ownership_token));
 
-                Ok(Response::Credentials(Credentials {
+                Ok(Some(Response::Credentials(Credentials {
                     certificate_id: response.certificate_id,
                     certificate_pem: response.certificate_pem,
                     private_key: None,
-                }))
+                })))
             }
             Some(Topic::RegisterThingAccepted(_, format)) => {
                 trace!("Topic::RegisterThingAccepted {:?}", format);
@@ -205,7 +204,9 @@ where
 
                 assert_eq!(response.thing_name, self.mqtt.client_id());
 
-                Ok(Response::DeviceConfiguration(response.device_configuration))
+                Ok(Some(Response::DeviceConfiguration(
+                    response.device_configuration,
+                )))
             }
 
             // Error happened!
@@ -229,7 +230,7 @@ where
 
             t => {
                 trace!("{:?}", t);
-                Ok(Response::None)
+                Ok(None)
             }
         }
     }

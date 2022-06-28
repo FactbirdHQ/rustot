@@ -77,11 +77,11 @@ fn provision_credentials<'a, const L: usize>(
                 } = publish.deref_mut();
 
                 match provisioner.handle_message::<4>(topic_name.as_str(), payload) {
-                    Ok(Response::Credentials(credentials)) => {
+                    Ok(Some(Response::Credentials(credentials))) => {
                         log::info!("Got credentials! {:?}", credentials);
                         provisioned_credentials = Some(credentials.into());
 
-                        let mut parameters = heapless::IndexMap::new();
+                        let mut parameters = heapless::LinearMap::new();
                         parameters.insert("uuid", mqtt_client.client_id()).unwrap();
                         parameters.insert("signature", &signature).unwrap();
 
@@ -89,14 +89,14 @@ fn provision_credentials<'a, const L: usize>(
                             .register_thing::<2>(Some(parameters))
                             .expect("To successfully publish to RegisterThing");
                     }
-                    Ok(Response::DeviceConfiguration(config)) => {
+                    Ok(Some(Response::DeviceConfiguration(config))) => {
                         // Store Device configuration parameters, if any.
 
                         log::info!("Got device config! {:?}", config);
 
                         break Ok(());
                     }
-                    Ok(Response::None) => {}
+                    Ok(None) => {}
                     Err(e) => {
                         log::error!("Got provision error! {:?}", e);
                         provisioned_credentials = None;

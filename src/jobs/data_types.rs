@@ -135,7 +135,7 @@ pub struct JobExecution<'a, J> {
     // execution.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<StatusDetails>,
+    pub status_details: Option<StatusDetails<'a>>,
     // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,7 +148,7 @@ pub struct JobExecution<'a, J> {
 
 /// Contains data about the state of a job execution.
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct JobExecutionState {
+pub struct JobExecutionState<'a> {
     /// The status of the job execution. Can be one of: "QUEUED", "IN_PROGRESS",
     /// "FAILED", "SUCCESS", "CANCELED", "REJECTED", or "REMOVED".
     #[serde(rename = "status")]
@@ -156,8 +156,9 @@ pub struct JobExecutionState {
     /// A collection of name/value pairs that describe the status of the job
     /// execution.
     #[serde(rename = "statusDetails")]
+    #[serde(borrow)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<StatusDetails>,
+    pub status_details: Option<StatusDetails<'a>>,
     // The version of the job execution. Job execution versions are incremented
     // each time they are updated by a device.
     #[serde(rename = "versionNumber")]
@@ -221,7 +222,7 @@ pub struct UpdateJobExecutionResponse<'a, J> {
     /// A JobExecutionState object.
     #[serde(rename = "executionState")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_state: Option<JobExecutionState>,
+    pub execution_state: Option<JobExecutionState<'a>>,
     /// The contents of the Job Documents.
     #[serde(rename = "jobDocument")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,7 +304,7 @@ pub struct ErrorResponse<'a> {
     /// A JobExecutionState object.
     #[serde(rename = "executionState")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_state: Option<JobExecutionState>,
+    pub execution_state: Option<JobExecutionState<'a>>,
 }
 
 #[cfg(test)]

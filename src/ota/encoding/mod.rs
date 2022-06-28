@@ -6,7 +6,7 @@ use core::ops::{Deref, DerefMut};
 use core::str::FromStr;
 use serde::{Serialize, Serializer};
 
-use crate::jobs::StatusDetails;
+use crate::jobs::StatusDetailsOwned;
 
 use self::json::{JobStatusReason, OtaJob, Signature};
 
@@ -65,7 +65,7 @@ pub struct FileContext {
     pub signature: Signature,
     pub file_type: Option<u32>,
 
-    pub status_details: StatusDetails,
+    pub status_details: StatusDetailsOwned,
     pub block_offset: u32,
     pub blocks_remaining: usize,
     pub request_block_remaining: u32,
@@ -78,7 +78,7 @@ impl FileContext {
     pub fn new_from(
         job_name: &str,
         ota_job: &OtaJob,
-        status_details: Option<StatusDetails>,
+        status_details: Option<StatusDetailsOwned>,
         file_idx: usize,
         config: &Config,
         current_version: Version,
@@ -93,7 +93,7 @@ impl FileContext {
         let status = if let Some(details) = status_details {
             details
         } else {
-            let mut status = StatusDetails::new();
+            let mut status = StatusDetailsOwned::new();
             status
                 .insert(
                     heapless::String::from("updated_by"),

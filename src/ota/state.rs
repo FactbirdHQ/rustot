@@ -54,7 +54,7 @@ impl RestartReason {
 pub struct JobEventData<'a> {
     pub job_name: &'a str,
     pub ota_document: &'a OtaJob<'a>,
-    pub status_details: Option<&'a StatusDetails>,
+    pub status_details: Option<&'a StatusDetails<'a>>,
 }
 
 statemachine! {
@@ -204,7 +204,11 @@ where
                 Ok(FileContext::new_from(
                     job_name,
                     ota_document,
-                    status_details,
+                    status_details.map(|s| {
+                        s.iter()
+                            .map(|(&k, &v)| (heapless::String::from(k), heapless::String::from(v)))
+                            .collect()
+                    }),
                     file_idx,
                     &self.config,
                     self.pal.get_active_firmware_version()?,
@@ -224,7 +228,11 @@ where
             Ok(FileContext::new_from(
                 job_name,
                 ota_document,
-                status_details,
+                status_details.map(|s| {
+                    s.iter()
+                        .map(|(&k, &v)| (heapless::String::from(k), heapless::String::from(v)))
+                        .collect()
+                }),
                 file_idx,
                 &self.config,
                 self.pal.get_active_firmware_version()?,

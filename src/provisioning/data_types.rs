@@ -1,4 +1,4 @@
-use heapless::FnvIndexMap;
+use heapless::LinearMap;
 use serde::{Deserialize, Serialize};
 
 /// To receive error responses, subscribe to
@@ -103,7 +103,7 @@ pub struct RegisterThingRequest<'a, const P: usize> {
     /// Optional. Key-value pairs from the device that are used by the
     /// pre-provisioning hooks to evaluate the registration request.
     #[serde(rename = "parameters")]
-    pub parameters: Option<FnvIndexMap<&'a str, &'a str, P>>,
+    pub parameters: Option<LinearMap<&'a str, &'a str, P>>,
 }
 
 /// Subscribe to
@@ -116,7 +116,7 @@ pub struct RegisterThingRequest<'a, const P: usize> {
 pub struct RegisterThingResponse<'a, const P: usize> {
     /// The device configuration defined in the template.
     #[serde(rename = "deviceConfiguration")]
-    pub device_configuration: FnvIndexMap<&'a str, &'a str, P>,
+    pub device_configuration: LinearMap<&'a str, &'a str, P>,
 
     /// The name of the IoT thing created during provisioning.
     #[serde(rename = "thingName")]

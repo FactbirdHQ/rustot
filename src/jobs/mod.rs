@@ -121,7 +121,8 @@ pub const MAX_STREAM_ID_LEN: usize = MAX_JOB_ID_LEN;
 pub const MAX_PENDING_JOBS: usize = 1;
 pub const MAX_RUNNING_JOBS: usize = 1;
 
-pub type StatusDetails = heapless::FnvIndexMap<heapless::String<15>, heapless::String<11>, 4>;
+pub type StatusDetails<'a> = heapless::LinearMap<&'a str, &'a str, 4>;
+pub type StatusDetailsOwned = heapless::LinearMap<heapless::String<15>, heapless::String<11>, 4>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobError {
