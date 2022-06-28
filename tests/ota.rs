@@ -35,7 +35,7 @@ impl<'a> Jobs<'a> {
 }
 
 enum OtaUpdate<'a> {
-    JobUpdate(&'a str, OtaJob<'a>, Option<StatusDetails>),
+    JobUpdate(&'a str, OtaJob<'a>, Option<StatusDetails<'a>>),
     Data(&'a mut [u8]),
 }
 

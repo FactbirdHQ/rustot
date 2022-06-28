@@ -42,16 +42,16 @@ pub struct FileDescription<'a> {
 
     #[serde(rename = "sig-sha1-rsa")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha1_rsa: Option<heapless::String<64>>,
+    pub sha1_rsa: Option<&'a str>,
     #[serde(rename = "sig-sha256-rsa")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha256_rsa: Option<heapless::String<64>>,
+    pub sha256_rsa: Option<&'a str>,
     #[serde(rename = "sig-sha1-ecdsa")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha1_ecdsa: Option<heapless::String<64>>,
+    pub sha1_ecdsa: Option<&'a str>,
     #[serde(rename = "sig-sha256-ecdsa")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha256_ecdsa: Option<heapless::String<64>>,
+    pub sha256_ecdsa: Option<&'a str>,
 
     #[serde(rename = "fileType")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,17 +60,17 @@ pub struct FileDescription<'a> {
 
 impl<'a> FileDescription<'a> {
     pub fn signature(&self) -> Signature {
-        if let Some(ref sig) = self.sha1_rsa {
-            return Signature::Sha1Rsa(sig.clone());
+        if let Some(sig) = self.sha1_rsa {
+            return Signature::Sha1Rsa(heapless::String::from(sig));
         }
-        if let Some(ref sig) = self.sha256_rsa {
-            return Signature::Sha256Rsa(sig.clone());
+        if let Some(sig) = self.sha256_rsa {
+            return Signature::Sha256Rsa(heapless::String::from(sig));
         }
-        if let Some(ref sig) = self.sha1_ecdsa {
-            return Signature::Sha1Ecdsa(sig.clone());
+        if let Some(sig) = self.sha1_ecdsa {
+            return Signature::Sha1Ecdsa(heapless::String::from(sig));
         }
-        if let Some(ref sig) = self.sha256_ecdsa {
-            return Signature::Sha256Ecdsa(sig.clone());
+        if let Some(sig) = self.sha256_ecdsa {
+            return Signature::Sha256Ecdsa(heapless::String::from(sig));
         }
         unreachable!()
     }
@@ -139,9 +139,7 @@ mod tests {
         for (reason, exp) in reasons {
             let mut status_details = StatusDetails::new();
 
-            status_details
-                .insert(String::from("self_test"), String::from(reason.as_str()))
-                .unwrap();
+            status_details.insert("self_test", reason.as_str()).unwrap();
 
             assert_eq!(
                 serde_json_core::to_string::<_, 128>(&status_details)

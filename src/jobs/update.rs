@@ -2,11 +2,10 @@ use mqttrust::{Mqtt, QoS};
 use serde::Serialize;
 
 use crate::jobs::{
-    data_types::JobStatus, JobTopic, StatusDetails, MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN,
-    MAX_THING_NAME_LEN,
+    data_types::JobStatus, JobTopic, MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN,
 };
 
-use super::JobError;
+use super::{JobError, StatusDetailsOwned};
 
 /// Updates the status of a job execution. You can optionally create a step
 /// timer by setting a value for the stepTimeoutInMinutes property. If you don't
@@ -49,7 +48,7 @@ pub struct UpdateJobExecutionRequest<'a> {
     // the job execution. If not specified, the statusDetails are unchanged.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<&'a StatusDetails>,
+    pub status_details: Option<&'a StatusDetailsOwned>,
     // Specifies the amount of time this device has to finish execution of this
     // job. If the job execution status is not set to a terminal state before
     // this timer expires, or before the timer is reset (by again calling
@@ -74,7 +73,7 @@ pub struct Update<'a> {
     job_id: &'a str,
     status: JobStatus,
     client_token: Option<&'a str>,
-    status_details: Option<&'a StatusDetails>,
+    status_details: Option<&'a StatusDetailsOwned>,
     include_job_document: bool,
     execution_number: Option<i64>,
     include_job_execution_state: bool,
@@ -108,7 +107,7 @@ impl<'a> Update<'a> {
         }
     }
 
-    pub fn status_details(self, status_details: &'a StatusDetails) -> Self {
+    pub fn status_details(self, status_details: &'a StatusDetailsOwned) -> Self {
         Self {
             status_details: Some(status_details),
             ..self
