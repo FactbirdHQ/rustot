@@ -1,3 +1,4 @@
+use embedded_hal::timer::nb::{Cancel, CountDown};
 use smlang::statemachine;
 
 use super::config::Config;
@@ -91,6 +92,37 @@ impl defmt::Format for Error {
     }
 }
 
+impl core::fmt::Debug for States {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        match self {
+            Self::Ready => write!(f, "Ready"),
+            Self::RequestingJob => write!(f, "RequestingJob"),
+            Self::WaitingForJob => write!(f, "WaitingForJob"),
+            Self::CreatingFile => write!(f, "CreatingFile"),
+            Self::RequestingFileBlock => write!(f, "RequestingFileBlock"),
+            Self::WaitingForFileBlock => write!(f, "WaitingForFileBlock"),
+            Self::Suspended => write!(f, "Suspended"),
+            Self::Restarting => write!(f, "Restarting"),
+        }
+    }
+}
+
+#[cfg(feature = "defmt-impl")]
+impl defmt::Format for States {
+    fn format(&self, f: defmt::Formatter) {
+        match self {
+            Self::Ready => defmt::write!(f, "Ready"),
+            Self::RequestingJob => defmt::write!(f, "RequestingJob"),
+            Self::WaitingForJob => defmt::write!(f, "WaitingForJob"),
+            Self::CreatingFile => defmt::write!(f, "CreatingFile"),
+            Self::RequestingFileBlock => defmt::write!(f, "RequestingFileBlock"),
+            Self::WaitingForFileBlock => defmt::write!(f, "WaitingForFileBlock"),
+            Self::Suspended => defmt::write!(f, "Suspended"),
+            Self::Restarting => defmt::write!(f, "Restarting"),
+        }
+    }
+}
+
 pub(crate) enum Interface {
     Primary(FileContext),
     #[cfg(all(feature = "ota_mqtt_data", feature = "ota_http_data"))]
@@ -127,13 +159,13 @@ macro_rules! data_interface {
 }
 
 // Context of current OTA Job, keeping state
-pub(crate) struct SmContext<'a, C, DP, DS, T, ST, PAL, const L: usize, const TIMER_HZ: u32>
+pub(crate) struct SmContext<'a, C, DP, DS, T, ST, PAL, const L: usize>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: fugit_timer::Timer<TIMER_HZ>,
-    ST: fugit_timer::Timer<TIMER_HZ>,
+    T: CountDown<Time = fugit_timer::Duration<u32, 1, 1000>> + Cancel,
+    ST: CountDown<Time = fugit_timer::Duration<u32, 1, 1000>> + Cancel,
     PAL: OtaPal,
 {
     pub(crate) events: heapless::spsc::Queue<Events<'a>, L>,
@@ -152,14 +184,13 @@ where
     pub(crate) image_state: ImageState<PAL::Error>,
 }
 
-impl<'a, C, DP, DS, T, ST, PAL, const L: usize, const TIMER_HZ: u32>
-    SmContext<'a, C, DP, DS, T, ST, PAL, L, TIMER_HZ>
+impl<'a, C, DP, DS, T, ST, PAL, const L: usize> SmContext<'a, C, DP, DS, T, ST, PAL, L>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: fugit_timer::Timer<TIMER_HZ>,
-    ST: fugit_timer::Timer<TIMER_HZ>,
+    T: CountDown<Time = fugit_timer::Duration<u32, 1, 1000>> + Cancel,
+    ST: CountDown<Time = fugit_timer::Duration<u32, 1, 1000>> + Cancel,
     PAL: OtaPal,
 {
     /// Called to update the filecontext structure from the job
@@ -532,14 +563,14 @@ where
     }
 }
 
-impl<'a, C, DP, DS, T, ST, PAL, const L: usize, const TIMER_HZ: u32> StateMachineContext
-    for SmContext<'a, C, DP, DS, T, ST, PAL, L, TIMER_HZ>
+impl<'a, C, DP, DS, T, ST, PAL, const L: usize> StateMachineContext
+    for SmContext<'a, C, DP, DS, T, ST, PAL, L>
 where
     C: ControlInterface,
     DP: DataInterface,
     DS: DataInterface,
-    T: fugit_timer::Timer<TIMER_HZ>,
-    ST: fugit_timer::Timer<TIMER_HZ>,
+    T: CountDown<Time = fugit_timer::Duration<u32, 1, 1000>> + Cancel,
+    ST: CountDown<Time = fugit_timer::Duration<u32, 1, 1000>> + Cancel,
     PAL: OtaPal,
 {
     fn restart_handler(&mut self, reason: &RestartReason) -> Result<(), OtaError> {
@@ -624,8 +655,8 @@ where
                 }
             }
             Ok(_) => {
-                // Stop request timer
-                self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
+                // Stop request timer. Ignore error if timer is not yet started.
+                self.request_timer.cancel().ok();
 
                 // Reset the request momentum
                 self.request_momentum = 0;
