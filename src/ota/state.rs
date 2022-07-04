@@ -64,6 +64,8 @@ statemachine! {
         *Ready + Start [start_handler] = RequestingJob,
         RequestingJob | WaitingForFileBlock + RequestJobDocument [request_job_handler] = WaitingForJob,
         RequestingJob + RequestTimer [request_job_handler] = WaitingForJob,
+        RequestingJob + ContinueJob = WaitingForFileBlock,
+        RequestingJob + ReplacementJob(JobEventData<'a>) [process_job_handler] = CreatingFile,
         WaitingForJob + RequestJobDocument [request_job_handler] = WaitingForJob,
         WaitingForJob + ReceivedJobDocument(JobEventData<'a>) [process_job_handler] = CreatingFile,
         CreatingFile + StartSelfTest [in_self_test_handler] = WaitingForJob,
@@ -895,15 +897,27 @@ where
 
     /// Upon receiving a new job document cancel current job if present and
     /// initiate new download
-    fn job_notification_handler(&mut self, _data: &JobEventData<'_>) -> Result<(), OtaError> {
-        // Stop the request timer
-        self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
+    fn job_notification_handler(&mut self, data: &JobEventData<'_>) -> Result<(), OtaError> {
+        if let Some(ref mut interface) = self.active_interface {
+            if interface.file_ctx().job_name.as_str() == data.job_name {
+                self.events
+                    .enqueue(Events::ContinueJob)
+                    .map_err(|_| OtaError::SignalEventFailed)?;
+                return Ok(());
+            } else {
+                // Stop the request timer
+                self.request_timer.cancel().map_err(|_| OtaError::Timer)?;
 
-        // Abort the current job
-        // TODO: This should never write to current image flags?!
-        self.pal
-            .set_platform_image_state(ImageState::Aborted(ImageStateReason::NewerJob))?;
-        self.ota_close()
+                // Abort the current job
+                // TODO: This should never write to current image flags?!
+                self.pal
+                    .set_platform_image_state(ImageState::Aborted(ImageStateReason::NewerJob))?;
+                self.ota_close()?;
+            }
+        }
+
+        // Start the new job!
+        Ok(())
     }
 
     /// Process incoming data blocks
