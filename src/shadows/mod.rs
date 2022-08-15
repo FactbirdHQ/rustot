@@ -41,10 +41,15 @@ where
 {
     /// Instantiate a new shadow that will be automatically persisted to NVM
     /// based on the passed `DAO`.
-    pub fn new(initial_state: S, mqtt: &'a M, mut dao: D) -> Result<Self, Error> {
+    pub fn new(
+        initial_state: S,
+        mqtt: &'a M,
+        mut dao: D,
+        auto_subscribe: bool,
+    ) -> Result<Self, Error> {
         let state = dao.read().unwrap_or(initial_state);
         Ok(Self {
-            shadow: Shadow::new(state, mqtt)?,
+            shadow: Shadow::new(state, mqtt, auto_subscribe)?,
             dao,
         })
     }
@@ -127,10 +132,11 @@ where
     M: Mqtt,
 {
     /// Instantiate a new non-persisted shadow
-    pub fn new(state: S, mqtt: &'a M) -> Result<Self, Error> {
+    pub fn new(state: S, mqtt: &'a M, auto_subscribe: bool) -> Result<Self, Error> {
         let handler = Shadow { mqtt, state };
-
-        handler.subscribe()?;
+        if auto_subscribe {
+            handler.subscribe()?;
+        }
         Ok(handler)
     }
 

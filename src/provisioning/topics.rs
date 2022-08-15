@@ -257,6 +257,8 @@ impl<'a, const N: usize> Subscribe<'a, N> {
 
         let topic_paths = self.topics()?;
 
+        debug!("Subscribing! {:?}", topic_paths);
+
         let topics: heapless::Vec<_, N> = topic_paths
             .iter()
             .map(|(s, qos)| SubscribeTopic {
@@ -264,8 +266,6 @@ impl<'a, const N: usize> Subscribe<'a, N> {
                 qos: *qos,
             })
             .collect();
-
-        debug!("Subscribing!");
 
         for t in topics.chunks(5) {
             mqtt.subscribe(t)?;

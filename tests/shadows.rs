@@ -481,7 +481,7 @@ fn test_shadows() {
     let mqtt_client = mqttrust_core::Client::new(p, thing_name);
 
     let mut test_state = StateMachine::new(TestContext {
-        shadow: Shadow::new(WifiConfig::default(), &mqtt_client).unwrap(),
+        shadow: Shadow::new(WifiConfig::default(), &mqtt_client, true).unwrap(),
         update_cnt: 0,
     });
 
