@@ -12,11 +12,3 @@ pfx identity files can be created from a set of device certificate and private k
 <br>
 
 ### AWS IoT OTA (`ota.rs`)
-<br>
-
-
-<br>
-<br>
-
-### AWS IoT Shadows (`shadows.rs`)
-<br>

@@ -1,7 +1,7 @@
 pub mod dao;
 pub mod data_types;
 mod error;
-mod shadow_patch;
+mod shadow_diff;
 pub mod topics;
 
 use mqttrust::{Mqtt, QoS};
@@ -10,7 +10,7 @@ pub use data_types::Patch;
 pub use error::Error;
 use serde::de::DeserializeOwned;
 pub use shadow_derive as derive;
-pub use shadow_patch::ShadowPatch;
+pub use shadow_diff::ShadowPatch;
 
 use data_types::{AcceptedResponse, DeltaResponse, ErrorResponse};
 use topics::{Direction, Subscribe, Topic, Unsubscribe};
