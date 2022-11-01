@@ -8,7 +8,7 @@ use mqttrust::MqttError;
 use super::data_types::ErrorResponse;
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
     Overflow,
     NoPersistance,
@@ -33,7 +33,7 @@ impl From<ShadowError> for Error {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ShadowError {
     InvalidJson,
     MissingState,

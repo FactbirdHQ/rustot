@@ -385,7 +385,7 @@ where
     }
 }
 
-#[cfg(feature = "defmt-impl")]
+#[cfg(feature = "defmt")]
 impl<'a, S, M> defmt::Format for Shadow<'a, S, M>
 where
     S: ShadowState + defmt::Format,
