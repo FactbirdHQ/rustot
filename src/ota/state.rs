@@ -305,7 +305,7 @@ where
     }
 
     /// Check if the current image is `PendingCommit` and thus is in selftest
-    fn platform_in_selftest(&self) -> bool {
+    fn platform_in_selftest(&mut self) -> bool {
         // Get the platform state from the OTA pal layer
         self.pal
             .get_platform_image_state()

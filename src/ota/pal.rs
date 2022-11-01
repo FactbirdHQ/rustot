@@ -191,7 +191,7 @@ pub trait OtaPal {
     /// timer is not started.
     ///
     /// **return** An [`PalImageState`].
-    fn get_platform_image_state(&self) -> Result<PalImageState, OtaPalError<Self::Error>>;
+    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError<Self::Error>>;
 
     /// Attempt to set the state of the OTA update image.
     ///
