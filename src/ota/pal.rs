@@ -191,7 +191,7 @@ pub trait OtaPal {
     /// timer is not started.
     ///
     /// **return** An [`PalImageState`].
-    fn get_platform_image_state(&self) -> Result<PalImageState, OtaPalError<Self::Error>>;
+    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError<Self::Error>>;
 
     /// Attempt to set the state of the OTA update image.
     ///
@@ -306,12 +306,4 @@ pub trait OtaPal {
 
     ///
     fn get_active_firmware_version(&self) -> Result<Version, OtaPalError<Self::Error>>;
-}
-
-#[cfg(test)]
-mod tests {
-    //! Platform abstraction layer tests.
-    //!
-    //! These tests utilize the `MockPal` to test that the `OtaPal` trait
-    //! functions are called correctly.
 }

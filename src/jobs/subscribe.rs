@@ -5,6 +5,7 @@ use crate::jobs::JobError;
 use super::{JobTopic, MAX_JOB_ID_LEN};
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum Topic<'a> {
     Notify,
     NotifyNext,

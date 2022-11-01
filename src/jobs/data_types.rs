@@ -61,7 +61,6 @@ pub enum ErrorCode {
 pub struct DescribeJobExecutionResponse<'a, J> {
     /// Contains data about a job execution.
     #[serde(rename = "execution")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub execution: Option<JobExecution<'a, J>>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
@@ -69,7 +68,7 @@ pub struct DescribeJobExecutionResponse<'a, J> {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: &'a str,
+    pub client_token: Option<&'a str>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/get/accepted \
@@ -483,7 +482,7 @@ mod test {
                     thing_name: None,
                 }),
                 timestamp: 1587381778,
-                client_token: "0:client_name",
+                client_token: Some("0:client_name"),
             }
         );
     }

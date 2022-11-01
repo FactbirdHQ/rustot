@@ -1,9 +1,9 @@
-use embedded_hal::timer::nb::{Cancel, CountDown};
-
 use crate::ota::{
     encoding::FileContext,
     pal::{ImageState, OtaPal, OtaPalError, PalImageState, Version},
 };
+
+use super::TEST_TIMER_HZ;
 
 ///
 /// Mock timer used for unit tests. Implements `fugit_timer::Timer` trait.
@@ -17,27 +17,27 @@ impl MockTimer {
     }
 }
 
-impl CountDown for MockTimer {
+impl fugit_timer::Timer<TEST_TIMER_HZ> for MockTimer {
     type Error = ();
 
-    type Time = fugit_timer::Duration<u32, 1, 1000>;
+    fn now(&mut self) -> fugit_timer::TimerInstantU32<TEST_TIMER_HZ> {
+        todo!()
+    }
 
-    fn start<T>(&mut self, _count: T) -> Result<(), Self::Error>
-    where
-        T: Into<Self::Time>,
-    {
+    fn start(
+        &mut self,
+        _duration: fugit_timer::TimerDurationU32<TEST_TIMER_HZ>,
+    ) -> Result<(), Self::Error> {
         self.is_started = true;
         Ok(())
     }
 
-    fn wait(&mut self) -> nb::Result<(), Self::Error> {
-        Ok(())
-    }
-}
-
-impl Cancel for MockTimer {
     fn cancel(&mut self) -> Result<(), Self::Error> {
         self.is_started = false;
+        Ok(())
+    }
+
+    fn wait(&mut self) -> nb::Result<(), Self::Error> {
         Ok(())
     }
 }
@@ -59,7 +59,7 @@ impl OtaPal for MockPal {
         Ok(())
     }
 
-    fn get_platform_image_state(&self) -> Result<PalImageState, OtaPalError<Self::Error>> {
+    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError<Self::Error>> {
         Ok(PalImageState::Valid)
     }
 
