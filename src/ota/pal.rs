@@ -307,11 +307,3 @@ pub trait OtaPal {
     ///
     fn get_active_firmware_version(&self) -> Result<Version, OtaPalError<Self::Error>>;
 }
-
-#[cfg(test)]
-mod tests {
-    //! Platform abstraction layer tests.
-    //!
-    //! These tests utilize the `MockPal` to test that the `OtaPal` trait
-    //! functions are called correctly.
-}

@@ -308,10 +308,7 @@ pub mod ota_tests {
                 qos: QoS::AtLeastOnce,
                 retain: false,
                 topic_name: "$aws/things/test_client/jobs/$next/get",
-                payload: &[
-                    123, 34, 99, 108, 105, 101, 110, 116, 84, 111, 107, 101, 110, 34, 58, 34, 48,
-                    58, 116, 101, 115, 116, 95, 99, 108, 105, 101, 110, 116, 34, 125
-                ],
+                payload: &[123, 125],
                 pid: Some(Pid::new()),
             }
         );
@@ -519,7 +516,7 @@ pub mod ota_tests {
                     thing_name: None,
                 }),
                 timestamp: 1624445100,
-                client_token: "0:rustot-test",
+                client_token: Some("0:rustot-test"),
             }
         );
     }

@@ -59,7 +59,7 @@ impl OtaPal for MockPal {
         Ok(())
     }
 
-    fn get_platform_image_state(&self) -> Result<PalImageState, OtaPalError<Self::Error>> {
+    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError<Self::Error>> {
         Ok(PalImageState::Valid)
     }
 

@@ -119,8 +119,6 @@ impl FromStr for JobStatusReason {
 
 #[cfg(test)]
 mod tests {
-    use heapless::String;
-
     use crate::jobs::StatusDetails;
 
     use super::*;
