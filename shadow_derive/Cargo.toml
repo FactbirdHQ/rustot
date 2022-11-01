@@ -1,6 +1,6 @@
 [package]
 name = "shadow-derive"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "Procedual macros for rustot crate shadow state"
 license = "MIT OR Apache-2.0"
