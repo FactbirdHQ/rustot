@@ -7,7 +7,7 @@ use super::encoding::FileContext;
 use super::state::ImageStateReason;
 
 #[derive(Clone, Copy)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ImageState<E: Copy> {
     Unknown,
     Aborted(ImageStateReason<E>),
@@ -17,7 +17,7 @@ pub enum ImageState<E: Copy> {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OtaPalError<E: Copy> {
     SignatureCheckFailed,
     FileWriteFailed,
@@ -32,7 +32,7 @@ pub enum OtaPalError<E: Copy> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PalImageState {
     /// the new firmware image is in the self test phase
     PendingCommit,
@@ -43,7 +43,7 @@ pub enum PalImageState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OtaEvent {
     /// OTA update is authenticated and ready to activate.
     Activate,
@@ -64,7 +64,7 @@ pub struct Version {
     patch: u8,
 }
 
-#[cfg(feature = "defmt-impl")]
+#[cfg(feature = "defmt")]
 impl defmt::Format for Version {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(fmt, "{=u8}.{=u8}.{=u8}", self.major, self.minor, self.patch)

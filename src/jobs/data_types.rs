@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::{StatusDetails, MAX_JOB_ID_LEN, MAX_PENDING_JOBS, MAX_RUNNING_JOBS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum JobStatus {
     #[serde(rename = "QUEUED")]
     Queued,

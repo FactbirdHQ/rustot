@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// **<payloadFormat>:** The message payload format as `cbor` or `json`.
 /// **<templateName>:** The provisioning template name.
 #[derive(Debug, PartialEq, Deserialize)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ErrorResponse<'a> {
     /// The status code.
     #[serde(rename = "statusCode")]
@@ -29,7 +29,7 @@ pub struct ErrorResponse<'a> {
 ///
 /// **<payloadFormat>:** The message payload format as `cbor` or `json`.
 #[derive(Debug, PartialEq, Serialize)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CreateCertificateFromCsrRequest<'a> {
     /// The CSR, in PEM format.
     #[serde(rename = "certificateSigningRequest")]
@@ -40,7 +40,7 @@ pub struct CreateCertificateFromCsrRequest<'a> {
 ///
 /// **<payloadFormat>:** The message payload format as `cbor` or `json`.
 #[derive(Debug, PartialEq, Deserialize)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CreateCertificateFromCsrResponse<'a> {
     /// The token to prove ownership of the certificate during provisioning.
     #[serde(rename = "certificateOwnershipToken")]
@@ -61,14 +61,14 @@ pub struct CreateCertificateFromCsrResponse<'a> {
 ///
 /// **<payloadFormat>:** The message payload format as `cbor` or `json`.
 #[derive(Debug, PartialEq, Serialize)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CreateKeysAndCertificateRequest;
 
 /// Subscribe to `$aws/certificates/create/<payloadFormat>/accepted`.
 ///
 /// **<payloadFormat>:** The message payload format as `cbor` or `json`.
 #[derive(Debug, PartialEq, Deserialize)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CreateKeysAndCertificateResponse<'a> {
     /// The certificate ID.
     #[serde(rename = "certificateId")]
@@ -93,7 +93,7 @@ pub struct CreateKeysAndCertificateResponse<'a> {
 /// **<payloadFormat>:** The message payload format as `cbor` or `json`.
 /// **<templateName>:** The provisioning template name.
 #[derive(Debug, PartialEq, Serialize)]
-// #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+// #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct RegisterThingRequest<'a, const P: usize> {
     /// The token to prove ownership of the certificate. The token is generated
     /// by AWS IoT when you create a certificate over MQTT.
@@ -112,7 +112,7 @@ pub struct RegisterThingRequest<'a, const P: usize> {
 /// **<payloadFormat>:** The message payload format as `cbor` or `json`.
 /// **<templateName>:** The provisioning template name.
 #[derive(Debug, PartialEq, Deserialize)]
-// #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+// #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct RegisterThingResponse<'a, const P: usize> {
     /// The device configuration defined in the template.
     #[serde(rename = "deviceConfiguration")]

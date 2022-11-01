@@ -10,14 +10,14 @@ use crate::jobs::MAX_THING_NAME_LEN;
 use super::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Direction {
     Incoming,
     Outgoing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Topic {
     // Outgoing Topics
     Get,

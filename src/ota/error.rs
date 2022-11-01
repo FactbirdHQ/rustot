@@ -3,7 +3,7 @@ use crate::jobs::JobError;
 use super::pal::OtaPalError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OtaError {
     NoActiveJob,
     SignalEventFailed,

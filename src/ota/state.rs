@@ -21,7 +21,7 @@ use super::{
 };
 
 #[derive(Clone, Copy)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ImageStateReason<E: Copy> {
     NewerJob,
     FailedIngest,
@@ -83,7 +83,7 @@ statemachine! {
     }
 }
 
-#[cfg(feature = "defmt-impl")]
+#[cfg(feature = "defmt")]
 impl defmt::Format for Error {
     fn format(&self, fmt: defmt::Formatter) {
         match self {
