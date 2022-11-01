@@ -3,7 +3,7 @@ members = ["shadow_derive"]
 
 [package]
 name = "rustot"
-version = "0.3.2"
+version = "0.4.0"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "AWS IoT"
 readme = "README.md"
@@ -31,7 +31,7 @@ serde_cbor = { version = "^0.11", default-features = false, optional = true }
 serde-json-core = { version = "0.4.0" }
 smlang = "0.5.0"
 fugit-timer = "0.1.2"
-shadow-derive = { path = "shadow_derive", version = "0.1.0" }
+shadow-derive = { path = "shadow_derive", version = "0.2.0" }
 embedded-storage = "0.3.0"
 
 log = { version = "^0.4", default-features = false, optional = true }
