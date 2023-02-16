@@ -20,9 +20,8 @@ use super::{
     pal::{ImageState, PalImageState},
 };
 
-#[derive(Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ImageStateReason<E: Copy> {
+pub enum ImageStateReason<E> {
     NewerJob,
     FailedIngest,
     MomentumAbort,
@@ -278,7 +277,9 @@ where
             )?;
 
             self.ota_close()?;
-            return Err(e.into());
+            // FIXME:
+            return Err(OtaError::Pal);
+            // return Err(e.into());
         }
 
         Ok(file_ctx)
@@ -375,25 +376,27 @@ where
     ) -> Result<ImageState<PAL::Error>, OtaError> {
         // debug!("set_image_state_with_reason {:?}", image_state);
         // Call the platform specific code to set the image state
-        let image_state = match pal.set_platform_image_state(image_state) {
-            Err(e) if !matches!(image_state, ImageState::Aborted(_)) => {
-                // If the platform image state couldn't be set correctly, force
-                // fail the update by setting the image state to "Rejected"
-                // unless it's already in "Aborted".
 
-                // Capture the failure reason if not already set (and we're not
-                // already Aborted as checked above). Otherwise Keep the
-                // original reject reason code since it is possible for the PAL
-                // to fail to update the image state in some cases (e.g. a reset
-                // already caused the bundle rollback and we failed to rollback
-                // again).
-                //
-                // Intentionally override reason since we failed within this
-                // function
-                ImageState::Rejected(ImageStateReason::Pal(e))
-            }
-            _ => image_state,
-        };
+        // FIXME:
+        // let image_state = match pal.set_platform_image_state(image_state) {
+        // Err(e) if !matches!(image_state, ImageState::Aborted(_)) => {
+        // If the platform image state couldn't be set correctly, force
+        // fail the update by setting the image state to "Rejected"
+        // unless it's already in "Aborted".
+
+        // Capture the failure reason if not already set (and we're not
+        // already Aborted as checked above). Otherwise Keep the
+        // original reject reason code since it is possible for the PAL
+        // to fail to update the image state in some cases (e.g. a reset
+        // already caused the bundle rollback and we failed to rollback
+        // again).
+        //
+        // Intentionally override reason since we failed within this
+        // function
+        // ImageState::Rejected(ImageStateReason::Pal(e))
+        // }
+        // _ => image_state,
+        // };
 
         // Now update the image state and job status on server side
         match image_state {
