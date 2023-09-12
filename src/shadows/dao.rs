@@ -1,6 +1,6 @@
 use serde::de::DeserializeOwned;
 
-use super::{Error, ShadowState, MAX_PAYLOAD_SIZE};
+use super::{Error, ShadowState};
 
 pub trait ShadowDAO<S: ShadowState + DeserializeOwned> {
     fn read(&mut self) -> Result<S, Error>;
@@ -43,9 +43,10 @@ impl<S, T, const OFFSET: u32> ShadowDAO<S> for EmbeddedStorageDAO<T, OFFSET>
 where
     S: ShadowState + DeserializeOwned,
     T: embedded_storage::Storage,
+    [(); S::MAX_PAYLOAD_SIZE + U32_SIZE]:,
 {
     fn read(&mut self) -> Result<S, Error> {
-        let buf = &mut [0u8; MAX_PAYLOAD_SIZE];
+        let buf = &mut [0u8; S::MAX_PAYLOAD_SIZE + U32_SIZE];
 
         self.0.read(OFFSET, buf).map_err(|_| Error::DaoRead)?;
 
@@ -70,9 +71,9 @@ where
     }
 
     fn write(&mut self, state: &S) -> Result<(), Error> {
-        assert!(MAX_PAYLOAD_SIZE <= self.0.capacity() - OFFSET as usize);
+        assert!(S::MAX_PAYLOAD_SIZE <= self.0.capacity() - OFFSET as usize);
 
-        let buf = &mut [0u8; MAX_PAYLOAD_SIZE];
+        let buf = &mut [0u8; S::MAX_PAYLOAD_SIZE + U32_SIZE];
 
         let mut serializer = serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(
             &mut buf[U32_SIZE..],
@@ -83,7 +84,7 @@ where
             .map_err(|_| Error::InvalidPayload)?;
         let len = serializer.into_inner().bytes_written();
 
-        if len > MAX_PAYLOAD_SIZE {
+        if len > S::MAX_PAYLOAD_SIZE {
             return Err(Error::Overflow);
         }
 

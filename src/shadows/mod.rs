@@ -4,6 +4,8 @@ mod error;
 mod shadow_diff;
 pub mod topics;
 
+use core::marker::PhantomData;
+
 use mqttrust::{Mqtt, QoS};
 
 pub use data_types::Patch;
@@ -18,128 +20,27 @@ use topics::{Direction, Subscribe, Topic, Unsubscribe};
 use self::dao::ShadowDAO;
 
 const MAX_TOPIC_LEN: usize = 128;
-const MAX_PAYLOAD_SIZE: usize = 512;
 const PARTIAL_REQUEST_OVERHEAD: usize = 64;
+const CLASSIC_SHADOW: &str = "Classic";
 
 pub trait ShadowState: ShadowPatch {
     const NAME: Option<&'static str>;
 
-    // TODO: Move MAX_PAYLOAD_SIZE here once const_generics supports it
-    const MAX_PAYLOAD_SIZE: usize = MAX_PAYLOAD_SIZE;
+    const MAX_PAYLOAD_SIZE: usize = 512;
 }
 
-pub struct PersistedShadow<'a, S: ShadowState + DeserializeOwned, M: Mqtt, D: ShadowDAO<S>> {
-    shadow: Shadow<'a, S, M>,
-    pub(crate) dao: D,
-}
-
-impl<'a, S, M, D> PersistedShadow<'a, S, M, D>
+struct ShadowHandler<'a, M: Mqtt, S: ShadowState>
 where
-    S: ShadowState + DeserializeOwned,
-    M: Mqtt,
-    D: ShadowDAO<S>,
+    [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    /// Instantiate a new shadow that will be automatically persisted to NVM
-    /// based on the passed `DAO`.
-    pub fn new(
-        initial_state: S,
-        mqtt: &'a M,
-        mut dao: D,
-        auto_subscribe: bool,
-    ) -> Result<Self, Error> {
-        let state = dao.read().unwrap_or(initial_state);
-        Ok(Self {
-            shadow: Shadow::new(state, mqtt, auto_subscribe)?,
-            dao,
-        })
-    }
-
-    /// Subscribes to all the topics required for keeping a shadow in sync
-    pub fn subscribe(&self) -> Result<(), Error> {
-        self.shadow.subscribe()
-    }
-
-    /// Unsubscribes from all the topics required for keeping a shadow in sync
-    pub fn unsubscribe(&self) -> Result<(), Error> {
-        self.shadow.unsubscribe()
-    }
-
-    /// Helper function to check whether a topic name is relevant for this
-    /// particular shadow.
-    pub fn should_handle_topic(&mut self, topic: &str) -> bool {
-        self.shadow.should_handle_topic(topic)
-    }
-
-    /// Handle incomming publish messages from the cloud on any topics relevant
-    /// for this particular shadow.
-    ///
-    /// This function needs to be fed all relevant incoming MQTT payloads in
-    /// order for the shadow manager to work.
-    #[must_use]
-    pub fn handle_message(
-        &mut self,
-        topic: &str,
-        payload: &[u8],
-    ) -> Result<(&S, Option<S::PatchState>), Error> {
-        let result = self.shadow.handle_message(topic, payload);
-        if let Ok((state, Some(_))) = result {
-            // Something has changed as part of handling a message. Persist it
-            // to NVM storage.
-            self.dao.write(state)?;
-        }
-        result
-    }
-
-    /// Get an immutable reference to the internal local state.
-    pub fn get(&self) -> &S {
-        self.shadow.get()
-    }
-
-    /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub fn get_shadow(&self) -> Result<(), Error> {
-        self.shadow.get_shadow()
-    }
-
-    /// Initiate an `UpdateShadow` request, reporting the local state to the cloud.
-    pub fn report_shadow(&mut self) -> Result<(), Error> {
-        self.shadow.report_shadow()
-    }
-
-    /// Update the state of the shadow.
-    ///
-    /// This function will update the desired state of the shadow in the cloud,
-    /// and depending on whether the state update is rejected or accepted, it
-    /// will automatically update the local version after response
-    pub fn update<F: FnOnce(&S, &mut S::PatchState)>(&mut self, f: F) -> Result<(), Error> {
-        self.shadow.update(f)?;
-        self.dao.write(self.shadow.get())?;
-        Ok(())
-    }
-
-    pub fn delete_shadow(&mut self) -> Result<(), Error> {
-        self.shadow.delete_shadow()
-    }
-}
-
-pub struct Shadow<'a, S: ShadowState, M: Mqtt> {
-    state: S,
     mqtt: &'a M,
+    _shadow: PhantomData<S>,
 }
 
-impl<'a, S, M> Shadow<'a, S, M>
+impl<'a, M: Mqtt, S: ShadowState> ShadowHandler<'a, M, S>
 where
-    S: ShadowState,
-    M: Mqtt,
+    [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    /// Instantiate a new non-persisted shadow
-    pub fn new(state: S, mqtt: &'a M, auto_subscribe: bool) -> Result<Self, Error> {
-        let handler = Shadow { mqtt, state };
-        if auto_subscribe {
-            handler.subscribe()?;
-        }
-        Ok(handler)
-    }
-
     /// Subscribes to all the topics required for keeping a shadow in sync
     pub fn subscribe(&self) -> Result<(), Error> {
         Subscribe::<7>::new()
@@ -170,33 +71,39 @@ where
         Ok(())
     }
 
+    /// Helper function to check whether a topic name is relevant for this
+    /// particular shadow.
+    pub fn should_handle_topic(&mut self, topic: &str) -> bool {
+        if let Some((_, thing_name, shadow_name)) = Topic::from_str(topic) {
+            return thing_name == self.mqtt.client_id() && shadow_name == S::NAME;
+        }
+        false
+    }
+
     /// Internal helper function for applying a delta state to the actual shadow
     /// state, and update the cloud shadow.
     fn change_shadow_value(
         &mut self,
+        state: &mut S,
         delta: Option<S::PatchState>,
         update_desired: Option<bool>,
     ) -> Result<(), Error> {
         if let Some(ref delta) = delta {
-            self.state.apply_patch(delta.clone());
+            state.apply_patch(delta.clone());
         }
 
         debug!(
             "[{:?}] Updating reported shadow value. Update_desired: {:?}",
-            S::NAME.unwrap_or_else(|| "Classic"),
+            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
             update_desired
         );
 
         if let Some(update_desired) = update_desired {
-            let desired = if update_desired {
-                Some(&self.state)
-            } else {
-                None
-            };
+            let desired = if update_desired { Some(&state) } else { None };
 
             let request = data_types::Request {
                 state: data_types::State {
-                    reported: Some(&self.state),
+                    reported: Some(&state),
                     desired,
                 },
                 client_token: None,
@@ -205,7 +112,7 @@ where
 
             let payload = serde_json_core::to_vec::<
                 _,
-                { MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD },
+                { S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD },
             >(&request)
             .map_err(|_| Error::Overflow)?;
 
@@ -218,13 +125,73 @@ where
         Ok(())
     }
 
+    /// Initiate a `GetShadow` request, updating the local state from the cloud.
+    pub fn get_shadow(&self) -> Result<(), Error> {
+        let get_topic = Topic::Get.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
+        self.mqtt
+            .publish(get_topic.as_str(), b"", QoS::AtLeastOnce)?;
+        Ok(())
+    }
+
+    pub fn delete_shadow(&mut self) -> Result<(), Error> {
+        let delete_topic = Topic::Delete.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
+        self.mqtt
+            .publish(delete_topic.as_str(), b"", QoS::AtLeastOnce)?;
+        Ok(())
+    }
+}
+
+pub struct PersistedShadow<'a, S: ShadowState + DeserializeOwned, M: Mqtt, D: ShadowDAO<S>>
+where
+    [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
+{
+    handler: ShadowHandler<'a, M, S>,
+    pub(crate) dao: D,
+}
+
+impl<'a, S, M, D> PersistedShadow<'a, S, M, D>
+where
+    S: ShadowState + DeserializeOwned,
+    M: Mqtt,
+    D: ShadowDAO<S>,
+    [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
+{
+    /// Instantiate a new shadow that will be automatically persisted to NVM
+    /// based on the passed `DAO`.
+    pub fn new(
+        initial_state: S,
+        mqtt: &'a M,
+        mut dao: D,
+        auto_subscribe: bool,
+    ) -> Result<Self, Error> {
+        if dao.read().is_err() {
+            dao.write(&initial_state)?;
+        }
+
+        let handler = ShadowHandler {
+            mqtt,
+            _shadow: PhantomData,
+        };
+        if auto_subscribe {
+            handler.subscribe()?;
+        }
+        Ok(Self { handler, dao })
+    }
+
+    /// Subscribes to all the topics required for keeping a shadow in sync
+    pub fn subscribe(&self) -> Result<(), Error> {
+        self.handler.subscribe()
+    }
+
+    /// Unsubscribes from all the topics required for keeping a shadow in sync
+    pub fn unsubscribe(&self) -> Result<(), Error> {
+        self.handler.unsubscribe()
+    }
+
     /// Helper function to check whether a topic name is relevant for this
     /// particular shadow.
     pub fn should_handle_topic(&mut self, topic: &str) -> bool {
-        if let Some((_, thing_name, shadow_name)) = Topic::from_str(topic) {
-            return thing_name == self.mqtt.client_id() && shadow_name == S::NAME;
-        }
-        false
+        self.handler.should_handle_topic(topic)
     }
 
     /// Handle incomming publish messages from the cloud on any topics relevant
@@ -237,16 +204,18 @@ where
         &mut self,
         topic: &str,
         payload: &[u8],
-    ) -> Result<(&S, Option<S::PatchState>), Error> {
+    ) -> Result<(S, Option<S::PatchState>), Error> {
         let (topic, thing_name, shadow_name) =
             Topic::from_str(topic).ok_or(Error::WrongShadowName)?;
 
-        assert_eq!(thing_name, self.mqtt.client_id());
+        assert_eq!(thing_name, self.handler.mqtt.client_id());
         assert_eq!(topic.direction(), Direction::Incoming);
 
         if shadow_name != S::NAME {
             return Err(Error::WrongShadowName);
         }
+
+        let mut state = self.dao.read()?;
 
         let delta = match topic {
             Topic::GetAccepted => {
@@ -258,11 +227,19 @@ where
                         if let Some(_) = response.state.delta {
                             debug!(
                                 "[{:?}] Received delta state",
-                                S::NAME.unwrap_or_else(|| "Classic")
+                                S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
                             );
-                            self.change_shadow_value(response.state.delta.clone(), Some(false))?;
+                            self.handler.change_shadow_value(
+                                &mut state,
+                                response.state.delta.clone(),
+                                Some(false),
+                            )?;
                         } else if let Some(_) = response.state.reported {
-                            self.change_shadow_value(response.state.reported, None)?;
+                            self.handler.change_shadow_value(
+                                &mut state,
+                                response.state.reported,
+                                None,
+                            )?;
                         }
                         Ok(response.state.delta)
                     })?
@@ -273,7 +250,7 @@ where
                     if error.code == 404 && matches!(topic, Topic::GetRejected) {
                         debug!(
                             "[{:?}] Thing has no shadow document. Creating with defaults...",
-                            S::NAME.unwrap_or_else(|| "Classic")
+                            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
                         );
                         self.report_shadow()?;
                     } else {
@@ -296,7 +273,7 @@ where
                 // message body.
                 debug!(
                     "[{:?}] Received shadow delta event.",
-                    S::NAME.unwrap_or_else(|| "Classic"),
+                    S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
                 );
 
                 serde_json_core::from_slice::<DeltaResponse<S::PatchState>>(payload)
@@ -305,10 +282,14 @@ where
                         if let Some(_) = delta.state {
                             debug!(
                                 "[{:?}] Delta reports new desired value. Changing local value...",
-                                S::NAME.unwrap_or_else(|| "Classic"),
+                                S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
                             );
                         }
-                        self.change_shadow_value(delta.state.clone(), Some(false))?;
+                        self.handler.change_shadow_value(
+                            &mut state,
+                            delta.state.clone(),
+                            Some(false),
+                        )?;
                         Ok(delta.state)
                     })?
             }
@@ -318,7 +299,203 @@ where
 
                 debug!(
                     "[{:?}] Finished updating reported shadow value.",
-                    S::NAME.unwrap_or_else(|| "Classic")
+                    S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
+                );
+
+                None
+            }
+            _ => None,
+        };
+
+        // Something has changed as part of handling a message. Persist it
+        // to NVM storage.
+        if delta.is_some() {
+            self.dao.write(&state)?;
+        }
+
+        Ok((state, delta))
+    }
+
+    /// Get an immutable reference to the internal local state.
+    pub fn try_get(&mut self) -> Result<S, Error> {
+        self.dao.read()
+    }
+
+    /// Initiate a `GetShadow` request, updating the local state from the cloud.
+    pub fn get_shadow(&self) -> Result<(), Error> {
+        self.handler.get_shadow()
+    }
+
+    /// Initiate an `UpdateShadow` request, reporting the local state to the cloud.
+    pub fn report_shadow(&mut self) -> Result<(), Error> {
+        let mut state = self.dao.read()?;
+        self.handler
+            .change_shadow_value(&mut state, None, Some(false))?;
+        Ok(())
+    }
+
+    /// Update the state of the shadow.
+    ///
+    /// This function will update the desired state of the shadow in the cloud,
+    /// and depending on whether the state update is rejected or accepted, it
+    /// will automatically update the local version after response
+    pub fn update<F: FnOnce(&S, &mut S::PatchState)>(&mut self, f: F) -> Result<(), Error> {
+        let mut desired = S::PatchState::default();
+        let mut state = self.dao.read()?;
+        f(&state, &mut desired);
+
+        self.handler
+            .change_shadow_value(&mut state, Some(desired), Some(false))?;
+        self.dao.write(&state)?;
+
+        Ok(())
+    }
+
+    pub fn delete_shadow(&mut self) -> Result<(), Error> {
+        self.handler.delete_shadow()
+    }
+}
+
+pub struct Shadow<'a, S: ShadowState, M: Mqtt>
+where
+    [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
+{
+    state: S,
+    handler: ShadowHandler<'a, M, S>,
+}
+
+impl<'a, S, M> Shadow<'a, S, M>
+where
+    S: ShadowState,
+    M: Mqtt,
+    [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
+{
+    /// Instantiate a new non-persisted shadow
+    pub fn new(state: S, mqtt: &'a M, auto_subscribe: bool) -> Result<Self, Error> {
+        let handler = ShadowHandler {
+            mqtt,
+            _shadow: PhantomData,
+        };
+        if auto_subscribe {
+            handler.subscribe()?;
+        }
+        Ok(Self { handler, state })
+    }
+
+    /// Subscribes to all the topics required for keeping a shadow in sync
+    pub fn subscribe(&self) -> Result<(), Error> {
+        self.handler.subscribe()
+    }
+
+    /// Unsubscribes from all the topics required for keeping a shadow in sync
+    pub fn unsubscribe(&self) -> Result<(), Error> {
+        self.handler.unsubscribe()
+    }
+
+    /// Handle incomming publish messages from the cloud on any topics relevant
+    /// for this particular shadow.
+    ///
+    /// This function needs to be fed all relevant incoming MQTT payloads in
+    /// order for the shadow manager to work.
+    #[must_use]
+    pub fn handle_message(
+        &mut self,
+        topic: &str,
+        payload: &[u8],
+    ) -> Result<(&S, Option<S::PatchState>), Error> {
+        let (topic, thing_name, shadow_name) =
+            Topic::from_str(topic).ok_or(Error::WrongShadowName)?;
+
+        assert_eq!(thing_name, self.handler.mqtt.client_id());
+        assert_eq!(topic.direction(), Direction::Incoming);
+
+        if shadow_name != S::NAME {
+            return Err(Error::WrongShadowName);
+        }
+
+        let delta = match topic {
+            Topic::GetAccepted => {
+                // The actions necessary to process the state document in the
+                // message body.
+                serde_json_core::from_slice::<AcceptedResponse<S::PatchState>>(payload)
+                    .map_err(|_| Error::InvalidPayload)
+                    .and_then(|(response, _)| {
+                        if let Some(_) = response.state.delta {
+                            debug!(
+                                "[{:?}] Received delta state",
+                                S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
+                            );
+                            self.handler.change_shadow_value(
+                                &mut self.state,
+                                response.state.delta.clone(),
+                                Some(false),
+                            )?;
+                        } else if let Some(_) = response.state.reported {
+                            self.handler.change_shadow_value(
+                                &mut self.state,
+                                response.state.reported,
+                                None,
+                            )?;
+                        }
+                        Ok(response.state.delta)
+                    })?
+            }
+            Topic::GetRejected | Topic::UpdateRejected => {
+                // Respond to the error message in the message body.
+                if let Ok((error, _)) = serde_json_core::from_slice::<ErrorResponse>(payload) {
+                    if error.code == 404 && matches!(topic, Topic::GetRejected) {
+                        debug!(
+                            "[{:?}] Thing has no shadow document. Creating with defaults...",
+                            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
+                        );
+                        self.report_shadow()?;
+                    } else {
+                        error!(
+                            "{:?} request was rejected. code: {:?} message:'{:?}'",
+                            if matches!(topic, Topic::GetRejected) {
+                                "Get"
+                            } else {
+                                "Update"
+                            },
+                            error.code,
+                            error.message
+                        );
+                    }
+                }
+                None
+            }
+            Topic::UpdateDelta => {
+                // Update the device's state to match the desired state in the
+                // message body.
+                debug!(
+                    "[{:?}] Received shadow delta event.",
+                    S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
+                );
+
+                serde_json_core::from_slice::<DeltaResponse<S::PatchState>>(payload)
+                    .map_err(|_| Error::InvalidPayload)
+                    .and_then(|(delta, _)| {
+                        if let Some(_) = delta.state {
+                            debug!(
+                                "[{:?}] Delta reports new desired value. Changing local value...",
+                                S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
+                            );
+                        }
+                        self.handler.change_shadow_value(
+                            &mut self.state,
+                            delta.state.clone(),
+                            Some(false),
+                        )?;
+                        Ok(delta.state)
+                    })?
+            }
+            Topic::UpdateAccepted => {
+                // Confirm the updated data in the message body matches the
+                // device state.
+
+                debug!(
+                    "[{:?}] Finished updating reported shadow value.",
+                    S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
                 );
 
                 None
@@ -334,17 +511,10 @@ where
         &self.state
     }
 
-    /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub fn get_shadow(&self) -> Result<(), Error> {
-        let get_topic = Topic::Get.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
-        self.mqtt
-            .publish(get_topic.as_str(), b"", QoS::AtLeastOnce)?;
-        Ok(())
-    }
-
     /// Initiate an `UpdateShadow` request, reporting the local state to the cloud.
     pub fn report_shadow(&mut self) -> Result<(), Error> {
-        self.change_shadow_value(None, Some(false))?;
+        self.handler
+            .change_shadow_value(&mut self.state, None, Some(false))?;
         Ok(())
     }
 
@@ -357,16 +527,19 @@ where
         let mut desired = S::PatchState::default();
         f(&self.state, &mut desired);
 
-        self.change_shadow_value(Some(desired), Some(false))?;
+        self.handler
+            .change_shadow_value(&mut self.state, Some(desired), Some(false))?;
 
         Ok(())
     }
 
+    /// Initiate a `GetShadow` request, updating the local state from the cloud.
+    pub fn get_shadow(&self) -> Result<(), Error> {
+        self.handler.get_shadow()
+    }
+
     pub fn delete_shadow(&mut self) -> Result<(), Error> {
-        let delete_topic = Topic::Delete.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
-        self.mqtt
-            .publish(delete_topic.as_str(), b"", QoS::AtLeastOnce)?;
-        Ok(())
+        self.handler.delete_shadow()
     }
 }
 
@@ -374,12 +547,13 @@ impl<'a, S, M> core::fmt::Debug for Shadow<'a, S, M>
 where
     S: ShadowState + core::fmt::Debug,
     M: Mqtt,
+    [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "[{:?}] = {:?}",
-            S::NAME.unwrap_or_else(|| "Classic"),
+            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
             self.get()
         )
     }
@@ -390,12 +564,13 @@ impl<'a, S, M> defmt::Format for Shadow<'a, S, M>
 where
     S: ShadowState + defmt::Format,
     M: Mqtt,
+    [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(
             fmt,
             "[{:?}] = {:?}",
-            S::NAME.unwrap_or_else(|| "Classic"),
+            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
             self.get()
         )
     }
@@ -405,6 +580,7 @@ impl<'a, S, M> Drop for Shadow<'a, S, M>
 where
     S: ShadowState,
     M: Mqtt,
+    [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     fn drop(&mut self) {
         self.unsubscribe().ok();
