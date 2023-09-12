@@ -185,7 +185,7 @@ where
         // If there's an active job, verify that it's the same as what's being
         // reported now
         let cur_file_ctx = self.active_interface.as_mut().map(|i| i.mut_file_ctx());
-        let file_ctx = if let Some(mut file_ctx) = cur_file_ctx {
+        let file_ctx = if let Some(file_ctx) = cur_file_ctx {
             if file_ctx.stream_name != ota_document.streamname {
                 info!("New job document received, aborting current job");
 
@@ -369,7 +369,7 @@ where
 
     fn set_image_state_with_reason(
         control: &C,
-        pal: &mut PAL,
+        _pal: &mut PAL,
         config: &Config,
         file_ctx: &mut FileContext,
         image_state: ImageState<PAL::Error>,

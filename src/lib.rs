@@ -1,4 +1,5 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
+#![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
 // This mod MUST go first, so that the others see its macros.
