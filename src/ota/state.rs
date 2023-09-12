@@ -20,9 +20,8 @@ use super::{
     pal::{ImageState, PalImageState},
 };
 
-#[derive(Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ImageStateReason<E: Copy> {
+pub enum ImageStateReason<E> {
     NewerJob,
     FailedIngest,
     MomentumAbort,
@@ -186,7 +185,7 @@ where
         // If there's an active job, verify that it's the same as what's being
         // reported now
         let cur_file_ctx = self.active_interface.as_mut().map(|i| i.mut_file_ctx());
-        let file_ctx = if let Some(mut file_ctx) = cur_file_ctx {
+        let file_ctx = if let Some(file_ctx) = cur_file_ctx {
             if file_ctx.stream_name != ota_document.streamname {
                 info!("New job document received, aborting current job");
 
@@ -278,7 +277,9 @@ where
             )?;
 
             self.ota_close()?;
-            return Err(e.into());
+            // FIXME:
+            return Err(OtaError::Pal);
+            // return Err(e.into());
         }
 
         Ok(file_ctx)
@@ -368,32 +369,34 @@ where
 
     fn set_image_state_with_reason(
         control: &C,
-        pal: &mut PAL,
+        _pal: &mut PAL,
         config: &Config,
         file_ctx: &mut FileContext,
         image_state: ImageState<PAL::Error>,
     ) -> Result<ImageState<PAL::Error>, OtaError> {
         // debug!("set_image_state_with_reason {:?}", image_state);
         // Call the platform specific code to set the image state
-        let image_state = match pal.set_platform_image_state(image_state) {
-            Err(e) if !matches!(image_state, ImageState::Aborted(_)) => {
-                // If the platform image state couldn't be set correctly, force
-                // fail the update by setting the image state to "Rejected"
-                // unless it's already in "Aborted".
 
-                // Capture the failure reason if not already set (and we're not
-                // already Aborted as checked above). Otherwise Keep the
-                // original reject reason code since it is possible for the PAL
-                // to fail to update the image state in some cases (e.g. a reset
-                // already caused the bundle rollback and we failed to rollback
-                // again).
-                //
-                // Intentionally override reason since we failed within this
-                // function
-                ImageState::Rejected(ImageStateReason::Pal(e))
-            }
-            _ => image_state,
-        };
+        // FIXME:
+        // let image_state = match pal.set_platform_image_state(image_state) {
+        // Err(e) if !matches!(image_state, ImageState::Aborted(_)) => {
+        // If the platform image state couldn't be set correctly, force
+        // fail the update by setting the image state to "Rejected"
+        // unless it's already in "Aborted".
+
+        // Capture the failure reason if not already set (and we're not
+        // already Aborted as checked above). Otherwise Keep the
+        // original reject reason code since it is possible for the PAL
+        // to fail to update the image state in some cases (e.g. a reset
+        // already caused the bundle rollback and we failed to rollback
+        // again).
+        //
+        // Intentionally override reason since we failed within this
+        // function
+        // ImageState::Rejected(ImageStateReason::Pal(e))
+        // }
+        // _ => image_state,
+        // };
 
         // Now update the image state and job status on server side
         match image_state {

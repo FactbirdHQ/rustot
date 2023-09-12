@@ -6,9 +6,8 @@ use core::str::FromStr;
 use super::encoding::FileContext;
 use super::state::ImageStateReason;
 
-#[derive(Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ImageState<E: Copy> {
+pub enum ImageState<E> {
     Unknown,
     Aborted(ImageStateReason<E>),
     Rejected(ImageStateReason<E>),
@@ -16,9 +15,9 @@ pub enum ImageState<E: Copy> {
     Testing(ImageStateReason<E>),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum OtaPalError<E: Copy> {
+pub enum OtaPalError<E> {
     SignatureCheckFailed,
     FileWriteFailed,
     FileTooLarge,
@@ -29,6 +28,12 @@ pub enum OtaPalError<E: Copy> {
     CommitFailed,
     VersionCheck,
     Custom(E),
+}
+
+impl<E> From<E> for OtaPalError<E> {
+    fn from(value: E) -> Self {
+        Self::Custom(value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +147,7 @@ impl core::cmp::Ord for Version {
 }
 /// Platform abstraction layer for OTA jobs
 pub trait OtaPal {
-    type Error: Copy;
+    type Error;
 
     /// OTA abort.
     ///

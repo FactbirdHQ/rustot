@@ -33,7 +33,7 @@ impl From<mqttrust::MqttError> for OtaError {
     }
 }
 
-impl<E: Copy> From<OtaPalError<E>> for OtaError {
+impl<E> From<OtaPalError<E>> for OtaError {
     fn from(_e: OtaPalError<E>) -> Self {
         Self::Pal
     }
