@@ -339,14 +339,23 @@ where
     /// This function will update the desired state of the shadow in the cloud,
     /// and depending on whether the state update is rejected or accepted, it
     /// will automatically update the local version after response
-    pub fn update<F: FnOnce(&S, &mut S::PatchState)>(&mut self, f: F) -> Result<(), Error> {
+    ///
+    /// The returned `bool` from the update closure will determine wether the
+    /// update is persisted using the `DAO`, or just updated in the cloud. This
+    /// can be handy for activity or status field updates that are not relevant
+    /// to store persistant on the device, but are required to be part of the
+    /// same cloud shadow.
+    pub fn update<F: FnOnce(&S, &mut S::PatchState) -> bool>(&mut self, f: F) -> Result<(), Error> {
         let mut desired = S::PatchState::default();
         let mut state = self.dao.read()?;
-        f(&state, &mut desired);
+        let should_persist = f(&state, &mut desired);
 
         self.handler
             .change_shadow_value(&mut state, Some(desired), Some(false))?;
-        self.dao.write(&state)?;
+
+        if should_persist {
+            self.dao.write(&state)?;
+        }
 
         Ok(())
     }
