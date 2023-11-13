@@ -1,13 +1,13 @@
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 
 use super::{Error, ShadowState};
 
-pub trait ShadowDAO<S: ShadowState + DeserializeOwned> {
+pub trait ShadowDAO<S: Serialize + DeserializeOwned> {
     fn read(&mut self) -> Result<S, Error>;
     fn write(&mut self, state: &S) -> Result<(), Error>;
 }
 
-impl<S: ShadowState + DeserializeOwned> ShadowDAO<S> for () {
+impl<S: Serialize + DeserializeOwned> ShadowDAO<S> for () {
     fn read(&mut self) -> Result<S, Error> {
         Err(Error::NoPersistance)
     }
@@ -57,14 +57,12 @@ where
                     return Err(Error::InvalidPayload);
                 }
 
-                // FIXME: Choose this size as narrow as possible?
-                let scratch = &mut [0u8; 256];
-
-                Ok(serde_cbor::de::from_slice_with_scratch::<S>(
-                    &buf[U32_SIZE..len as usize + U32_SIZE],
-                    scratch,
+                Ok(
+                    serde_cbor::de::from_mut_slice::<S>(
+                        &mut buf[U32_SIZE..len as usize + U32_SIZE],
+                    )
+                    .map_err(|_| Error::InvalidPayload)?,
                 )
-                .map_err(|_| Error::InvalidPayload)?)
             }
             _ => Err(Error::InvalidPayload),
         }
@@ -93,6 +91,8 @@ where
         self.0
             .write(OFFSET, &buf[..len + U32_SIZE])
             .map_err(|_| Error::DaoWrite)?;
+
+        debug!("Wrote {} bytes to DAO @ {}", len + U32_SIZE, OFFSET);
 
         Ok(())
     }

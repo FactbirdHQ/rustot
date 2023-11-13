@@ -11,5 +11,7 @@ pub mod ota;
 pub mod provisioning;
 pub mod shadows;
 
+pub use serde_cbor;
+
 #[cfg(test)]
 pub mod test;
