@@ -2,8 +2,12 @@ pub mod data_types;
 mod error;
 pub mod topics;
 
-use heapless::LinearMap;
-use mqttrust::Mqtt;
+use core::future::Future;
+
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embedded_mqtt::{Publish, QoS, RetainHandling, Subscribe, SubscribeTopic};
+use futures::StreamExt;
+use serde::de::DeserializeOwned;
 #[cfg(feature = "provision_cbor")]
 use serde::Serialize;
 
@@ -13,7 +17,7 @@ use self::{
         RegisterThingRequest, RegisterThingResponse,
     },
     error::Error,
-    topics::{PayloadFormat, Subscribe, Topic, Unsubscribe},
+    topics::{PayloadFormat, Topic},
 };
 
 #[derive(Debug)]
@@ -23,97 +27,343 @@ pub struct Credentials<'a> {
     pub private_key: Option<&'a str>,
 }
 
-#[derive(Debug)]
-pub enum Response<'a, const P: usize> {
-    Credentials(Credentials<'a>),
-    DeviceConfiguration(LinearMap<&'a str, &'a str, P>),
-}
+pub struct FleetProvisioner;
 
-pub struct FleetProvisioner<'a, M>
-where
-    M: Mqtt,
-{
-    mqtt: &'a M,
-    template_name: &'a str,
-    ownership_token: Option<heapless::String<512>>,
-    payload_format: PayloadFormat,
-}
-
-impl<'a, M> FleetProvisioner<'a, M>
-where
-    M: Mqtt,
-{
+impl FleetProvisioner {
     /// Instantiate a new `FleetProvisioner`, using `template_name` for the provisioning
-    pub fn new(mqtt: &'a M, template_name: &'a str) -> Self {
-        Self {
-            mqtt,
-            template_name,
-            ownership_token: None,
-            payload_format: PayloadFormat::Json,
-        }
+    pub async fn provision<'a, F, Fut, P, C>(
+        mqtt: &'a embedded_mqtt::MqttClient<'a, NoopRawMutex, 2>,
+        template_name: &'a str,
+        parameters: Option<P>,
+        f: F,
+    ) -> Result<Option<C>, Error>
+    where
+        F: FnOnce(Credentials<'_>) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
+        P: Serialize,
+        C: DeserializeOwned,
+    {
+        Self::provision_inner(mqtt, template_name, parameters, f, PayloadFormat::Json).await
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub fn new_cbor(mqtt: &'a M, template_name: &'a str) -> Self {
-        Self {
+    pub async fn provision_cbor<'a, F, Fut, P, C>(
+        mqtt: &'a embedded_mqtt::MqttClient<'a, NoopRawMutex, 2>,
+        template_name: &'a str,
+        parameters: Option<P>,
+        f: F,
+    ) -> Result<Option<C>, Error>
+    where
+        F: FnOnce(Credentials<'_>) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
+        P: Serialize,
+        C: DeserializeOwned,
+    {
+        Self::provision_inner(mqtt, template_name, parameters, f, PayloadFormat::Cbor).await
+    }
+
+    async fn provision_inner<'a, F, Fut, P, C>(
+        mqtt: &'a embedded_mqtt::MqttClient<'a, NoopRawMutex, 2>,
+        template_name: &'a str,
+        parameters: Option<P>,
+        f: F,
+        payload_format: PayloadFormat,
+    ) -> Result<Option<C>, Error>
+    where
+        F: FnOnce(Credentials<'_>) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
+        P: Serialize,
+        C: DeserializeOwned,
+    {
+        let certificate_ownership_token =
+            Self::create_keys_and_certificates(mqtt, payload_format, f).await?;
+
+        Self::register_thing(
             mqtt,
             template_name,
-            ownership_token: None,
-            payload_format: PayloadFormat::Cbor,
+            payload_format,
+            certificate_ownership_token.as_str(),
+            parameters,
+        )
+        .await
+    }
+
+    pub async fn create_keys_and_certificates<F, Fut>(
+        mqtt: &embedded_mqtt::MqttClient<'_, NoopRawMutex, 2>,
+        payload_format: PayloadFormat,
+        f: F,
+    ) -> Result<heapless::String<512>, Error>
+    where
+        F: FnOnce(Credentials<'_>) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
+    {
+        let topic_paths = topics::Subscribe::<2>::new()
+            .topic(
+                Topic::CreateKeysAndCertificateAccepted(payload_format),
+                QoS::AtLeastOnce,
+            )
+            .topic(
+                Topic::CreateKeysAndCertificateRejected(payload_format),
+                QoS::AtLeastOnce,
+            )
+            .topics::<38>()?;
+
+        let subscribe_topics = topic_paths
+            .iter()
+            .map(|(s, qos)| SubscribeTopic {
+                topic_path: s.as_str(),
+                maximum_qos: *qos,
+                no_local: false,
+                retain_as_published: false,
+                retain_handling: RetainHandling::SendAtSubscribeTime,
+            })
+            .collect::<heapless::Vec<_, 2>>();
+
+        let mut subscription = mqtt
+            .subscribe::<2>(Subscribe {
+                pid: None,
+                properties: embedded_mqtt::Properties::Slice(&[]),
+                topics: subscribe_topics.as_slice(),
+            })
+            .await
+            .map_err(|_| Error::Mqtt)?;
+
+        mqtt.publish(Publish {
+            dup: false,
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            pid: None,
+            topic_name: Topic::CreateKeysAndCertificate(payload_format)
+                .format::<29>()?
+                .as_str(),
+            payload: b"",
+            properties: embedded_mqtt::Properties::Slice(&[]),
+        })
+        .await
+        .map_err(|_| Error::Mqtt)?;
+
+        let mut message = subscription.next().await.ok_or(Error::InvalidState)?;
+
+        match Topic::from_str(message.topic_name()) {
+            Some(Topic::CreateKeysAndCertificateAccepted(format)) => {
+                trace!(
+                    "Topic::CreateKeysAndCertificateAccepted {:?}. Payload len: {:?}",
+                    format,
+                    message.payload().len()
+                );
+
+                let response = match format {
+                    #[cfg(feature = "provision_cbor")]
+                    PayloadFormat::Cbor => serde_cbor::de::from_mut_slice::<
+                        CreateKeysAndCertificateResponse,
+                    >(message.payload_mut())?,
+                    PayloadFormat::Json => {
+                        serde_json_core::from_slice::<CreateKeysAndCertificateResponse>(
+                            message.payload(),
+                        )?
+                        .0
+                    }
+                };
+
+                f(Credentials {
+                    certificate_id: response.certificate_id,
+                    certificate_pem: response.certificate_pem,
+                    private_key: Some(response.private_key),
+                })
+                .await?;
+
+                Ok(heapless::String::try_from(response.certificate_ownership_token).unwrap())
+            }
+
+            // Error happened!
+            Some(Topic::CreateKeysAndCertificateRejected(format)) => {
+                error!(">> {:?}", message.topic_name());
+
+                let response = match format {
+                    #[cfg(feature = "provision_cbor")]
+                    PayloadFormat::Cbor => {
+                        serde_cbor::de::from_mut_slice::<ErrorResponse>(message.payload_mut())?
+                    }
+                    PayloadFormat::Json => {
+                        serde_json_core::from_slice::<ErrorResponse>(message.payload())?.0
+                    }
+                };
+
+                error!("{:?}", response);
+
+                Err(Error::Response(response.status_code))
+            }
+
+            t => {
+                trace!("{:?}", t);
+
+                Err(Error::InvalidState)
+            }
         }
     }
 
-    pub fn initialize(&self) -> Result<(), Error> {
-        Subscribe::<4>::new()
+    pub async fn create_certificate_from_csr<F, Fut>(
+        mqtt: &embedded_mqtt::MqttClient<'_, NoopRawMutex, 2>,
+        payload_format: PayloadFormat,
+        f: F,
+    ) -> Result<heapless::String<512>, Error>
+    where
+        F: FnOnce(Credentials<'_>) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
+    {
+        let topic_paths = topics::Subscribe::<2>::new()
             .topic(
-                Topic::CreateKeysAndCertificateAccepted(self.payload_format),
-                mqttrust::QoS::AtLeastOnce,
+                Topic::CreateCertificateFromCsrAccepted(payload_format),
+                QoS::AtLeastOnce,
             )
             .topic(
-                Topic::CreateKeysAndCertificateRejected(self.payload_format),
-                mqttrust::QoS::AtLeastOnce,
+                Topic::CreateCertificateFromCsrRejected(payload_format),
+                QoS::AtLeastOnce,
             )
-            .topic(
-                Topic::RegisterThingAccepted(self.template_name, self.payload_format),
-                mqttrust::QoS::AtLeastOnce,
-            )
-            .topic(
-                Topic::RegisterThingRejected(self.template_name, self.payload_format),
-                mqttrust::QoS::AtLeastOnce,
-            )
-            .send(self.mqtt)?;
+            .topics::<47>()?;
 
-        Ok(())
-    }
+        let subscribe_topics = topic_paths
+            .iter()
+            .map(|(s, qos)| SubscribeTopic {
+                topic_path: s.as_str(),
+                maximum_qos: *qos,
+                no_local: false,
+                retain_as_published: false,
+                retain_handling: RetainHandling::SendAtSubscribeTime,
+            })
+            .collect::<heapless::Vec<_, 2>>();
 
-    // TODO: Can we handle this better? If sent from `initialize` it causes a
-    // race condition with the subscription ack.
-    pub fn begin(&mut self) -> Result<(), Error> {
-        self.mqtt.publish(
-            Topic::CreateKeysAndCertificate(self.payload_format)
-                .format::<29>()?
+        let mut subscription = mqtt
+            .subscribe::<2>(Subscribe {
+                pid: None,
+                properties: embedded_mqtt::Properties::Slice(&[]),
+                topics: subscribe_topics.as_slice(),
+            })
+            .await
+            .map_err(|_| Error::Mqtt)?;
+
+        mqtt.publish(Publish {
+            dup: false,
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            pid: None,
+            topic_name: Topic::CreateCertificateFromCsr(payload_format)
+                .format::<38>()?
                 .as_str(),
-            b"",
-            mqttrust::QoS::AtLeastOnce,
-        )?;
+            payload: b"",
+            properties: embedded_mqtt::Properties::Slice(&[]),
+        })
+        .await
+        .map_err(|_| Error::Mqtt)?;
 
-        Ok(())
+        let mut message = subscription.next().await.ok_or(Error::InvalidState)?;
+
+        match Topic::from_str(message.topic_name()) {
+            Some(Topic::CreateCertificateFromCsrAccepted(format)) => {
+                trace!(
+                    "Topic::CreateCertificateFromCsrAccepted {:?}. Payload len: {:?}",
+                    format,
+                    message.payload().len()
+                );
+
+                let response = match format {
+                    #[cfg(feature = "provision_cbor")]
+                    PayloadFormat::Cbor => serde_cbor::de::from_mut_slice::<
+                        CreateCertificateFromCsrResponse,
+                    >(message.payload_mut())?,
+                    PayloadFormat::Json => {
+                        serde_json_core::from_slice::<CreateCertificateFromCsrResponse>(
+                            message.payload(),
+                        )?
+                        .0
+                    }
+                };
+
+                f(Credentials {
+                    certificate_id: response.certificate_id,
+                    certificate_pem: response.certificate_pem,
+                    private_key: None,
+                })
+                .await?;
+
+                // FIXME: It should be possible to re-arrange stuff to get rid of the need for this 512 byte stack alloc
+                Ok(heapless::String::try_from(response.certificate_ownership_token).unwrap())
+            }
+
+            // Error happened!
+            Some(Topic::CreateCertificateFromCsrRejected(format)) => {
+                error!(">> {:?}", message.topic_name());
+
+                let response = match format {
+                    #[cfg(feature = "provision_cbor")]
+                    PayloadFormat::Cbor => {
+                        serde_cbor::de::from_mut_slice::<ErrorResponse>(message.payload_mut())?
+                    }
+                    PayloadFormat::Json => {
+                        serde_json_core::from_slice::<ErrorResponse>(message.payload())?.0
+                    }
+                };
+
+                error!("{:?}", response);
+
+                Err(Error::Response(response.status_code))
+            }
+
+            t => {
+                trace!("{:?}", t);
+
+                Err(Error::InvalidState)
+            }
+        }
     }
 
-    pub fn register_thing<'b, const P: usize>(
-        &mut self,
-        parameters: Option<LinearMap<&'b str, &'b str, P>>,
-    ) -> Result<(), Error> {
-        let certificate_ownership_token = self.ownership_token.take().ok_or(Error::InvalidState)?;
+    pub async fn register_thing<P: Serialize, C: DeserializeOwned>(
+        mqtt: &embedded_mqtt::MqttClient<'_, NoopRawMutex, 2>,
+        template_name: &str,
+        payload_format: PayloadFormat,
+        certificate_ownership_token: &str,
+        parameters: Option<P>,
+    ) -> Result<Option<C>, Error> {
+        let topic_paths = topics::Subscribe::<2>::new()
+            .topic(
+                Topic::RegisterThingAccepted(template_name, payload_format),
+                QoS::AtLeastOnce,
+            )
+            .topic(
+                Topic::RegisterThingRejected(template_name, payload_format),
+                QoS::AtLeastOnce,
+            )
+            .topics::<128>()?;
+
+        let subscribe_topics = topic_paths
+            .iter()
+            .map(|(s, qos)| SubscribeTopic {
+                topic_path: s.as_str(),
+                maximum_qos: *qos,
+                no_local: false,
+                retain_as_published: false,
+                retain_handling: RetainHandling::SendAtSubscribeTime,
+            })
+            .collect::<heapless::Vec<_, 2>>();
+
+        let mut subscription = mqtt
+            .subscribe::<2>(Subscribe {
+                pid: None,
+                properties: embedded_mqtt::Properties::Slice(&[]),
+                topics: subscribe_topics.as_slice(),
+            })
+            .await
+            .map_err(|_| Error::Mqtt)?;
 
         let register_request = RegisterThingRequest {
             certificate_ownership_token: &certificate_ownership_token,
             parameters,
         };
 
+        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
         let payload = &mut [0u8; 1024];
 
-        let payload_len = match self.payload_format {
+        let payload_len = match payload_format {
             #[cfg(feature = "provision_cbor")]
             PayloadFormat::Cbor => {
                 let mut serializer =
@@ -124,135 +374,63 @@ where
             PayloadFormat::Json => serde_json_core::to_slice(&register_request, payload)?,
         };
 
-        self.mqtt.publish(
-            Topic::RegisterThing(self.template_name, self.payload_format)
+        mqtt.publish(Publish {
+            dup: false,
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            pid: None,
+            topic_name: Topic::RegisterThing(template_name, payload_format)
                 .format::<69>()?
                 .as_str(),
-            &payload[..payload_len],
-            mqttrust::QoS::AtLeastOnce,
-        )?;
+            payload: &payload[..payload_len],
+            properties: embedded_mqtt::Properties::Slice(&[]),
+        })
+        .await
+        .map_err(|_| Error::Mqtt)?;
 
-        Ok(())
-    }
+        let mut message = subscription.next().await.ok_or(Error::InvalidState)?;
 
-    pub fn handle_message<'b, const P: usize>(
-        &mut self,
-        topic_name: &'b str,
-        payload: &'b mut [u8],
-    ) -> Result<Option<Response<'b, P>>, Error> {
-        match Topic::from_str(topic_name) {
-            Some(Topic::CreateKeysAndCertificateAccepted(format)) => {
-                trace!(
-                    "Topic::CreateKeysAndCertificateAccepted {:?}. Payload len: {:?}",
-                    format,
-                    payload.len()
-                );
-
-                let response = match format {
-                    #[cfg(feature = "provision_cbor")]
-                    PayloadFormat::Cbor => {
-                        serde_cbor::de::from_mut_slice::<CreateKeysAndCertificateResponse>(payload)?
-                    }
-                    PayloadFormat::Json => {
-                        serde_json_core::from_slice::<CreateKeysAndCertificateResponse>(payload)?.0
-                    }
-                };
-
-                self.ownership_token
-                    .replace(heapless::String::from(response.certificate_ownership_token));
-
-                Ok(Some(Response::Credentials(Credentials {
-                    certificate_id: response.certificate_id,
-                    certificate_pem: response.certificate_pem,
-                    private_key: Some(response.private_key),
-                })))
-            }
-            Some(Topic::CreateCertificateFromCsrAccepted(format)) => {
-                trace!("Topic::CreateCertificateFromCsrAccepted {:?}", format);
-
-                let response = match format {
-                    #[cfg(feature = "provision_cbor")]
-                    PayloadFormat::Cbor => {
-                        serde_cbor::de::from_mut_slice::<CreateCertificateFromCsrResponse>(payload)?
-                    }
-                    PayloadFormat::Json => {
-                        serde_json_core::from_slice::<CreateCertificateFromCsrResponse>(payload)?.0
-                    }
-                };
-
-                self.ownership_token
-                    .replace(heapless::String::from(response.certificate_ownership_token));
-
-                Ok(Some(Response::Credentials(Credentials {
-                    certificate_id: response.certificate_id,
-                    certificate_pem: response.certificate_pem,
-                    private_key: None,
-                })))
-            }
+        match Topic::from_str(message.topic_name()) {
             Some(Topic::RegisterThingAccepted(_, format)) => {
                 trace!("Topic::RegisterThingAccepted {:?}", format);
 
                 let response = match format {
                     #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
-                        serde_cbor::de::from_mut_slice::<RegisterThingResponse<'_, P>>(payload)?
+                        serde_cbor::de::from_mut_slice::<RegisterThingResponse<'_, C>>(payload)?
                     }
                     PayloadFormat::Json => {
-                        serde_json_core::from_slice::<RegisterThingResponse<'_, P>>(payload)?.0
+                        serde_json_core::from_slice::<RegisterThingResponse<'_, C>>(payload)?.0
                     }
                 };
 
-                assert_eq!(response.thing_name, self.mqtt.client_id());
-
-                Ok(Some(Response::DeviceConfiguration(
-                    response.device_configuration,
-                )))
+                Ok(response.device_configuration)
             }
 
             // Error happened!
-            Some(
-                Topic::CreateKeysAndCertificateRejected(format)
-                | Topic::CreateCertificateFromCsrRejected(format)
-                | Topic::RegisterThingRejected(_, format),
-            ) => {
+            Some(Topic::RegisterThingRejected(_, format)) => {
+                error!(">> {:?}", message.topic_name());
+
                 let response = match format {
                     #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
-                        serde_cbor::de::from_mut_slice::<ErrorResponse>(payload)?
+                        serde_cbor::de::from_mut_slice::<ErrorResponse>(message.payload_mut())?
                     }
-                    PayloadFormat::Json => serde_json_core::from_slice::<ErrorResponse>(payload)?.0,
+                    PayloadFormat::Json => {
+                        serde_json_core::from_slice::<ErrorResponse>(message.payload())?.0
+                    }
                 };
 
-                error!("{:?}: {:?}", topic_name, response);
+                error!("{:?}", response);
 
                 Err(Error::Response(response.status_code))
             }
 
             t => {
                 trace!("{:?}", t);
-                Ok(None)
+
+                Err(Error::InvalidState)
             }
         }
-    }
-}
-
-impl<'a, M> Drop for FleetProvisioner<'a, M>
-where
-    M: Mqtt,
-{
-    fn drop(&mut self) {
-        Unsubscribe::<4>::new()
-            .topic(Topic::CreateKeysAndCertificateAccepted(self.payload_format))
-            .topic(Topic::CreateKeysAndCertificateRejected(self.payload_format))
-            .topic(Topic::RegisterThingAccepted(
-                self.template_name,
-                self.payload_format,
-            ))
-            .topic(Topic::RegisterThingRejected(
-                self.template_name,
-                self.payload_format,
-            ))
-            .send(self.mqtt)
-            .ok();
     }
 }

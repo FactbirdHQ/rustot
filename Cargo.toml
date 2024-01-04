@@ -23,16 +23,16 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 bitmaps = { version = "^3.1", default-features = false }
-heapless = { version = "0.7.0", features = ["serde"] }
-mqttrust = { version = "0.6" }
-nb = "1"
+heapless = { version = "0.8", features = ["serde"] }
 serde = { version = "1.0.126", default-features = false, features = ["derive"] }
 serde_cbor = { version = "^0.11", default-features = false, optional = true }
-serde-json-core = { version = "0.4.0" }
-smlang = "0.5.0"
-fugit-timer = "0.1.2"
+serde-json-core = { version = "0.5" }
 shadow-derive = { path = "shadow_derive", version = "0.2.1" }
-embedded-storage = "0.3.0"
+embedded-storage-async = "0.4"
+embedded-mqtt = { path = "../embedded-mqtt" }
+futures = { version = "0.3.28", default-features = false }
+
+embassy-sync = "0.5"
 
 log = { version = "^0.4", default-features = false, optional = true }
 defmt = { version = "^0.3", optional = true }
@@ -42,7 +42,6 @@ native-tls = { version = "^0.2" }
 embedded-nal = "0.6.0"
 no-std-net = { version = "^0.5", features = ["serde"] }
 dns-lookup = "1.0.3"
-mqttrust_core = { version = "0.6", features = ["log"] }
 env_logger = "0.9.0"
 sha2 = "0.10.1"
 ecdsa = { version = "0.13.4", features = ["pkcs8"] }
@@ -61,6 +60,4 @@ ota_http_data = []
 
 std = ["serde/std", "serde_cbor?/std"]
 
-defmt = ["dep:defmt", "mqttrust/defmt-impl", "heapless/defmt-impl"]
-
-graphviz = ["smlang/graphviz"]
+defmt = ["dep:defmt", "heapless/defmt-03"]

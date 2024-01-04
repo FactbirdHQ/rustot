@@ -2,8 +2,8 @@ use core::fmt::Display;
 use core::fmt::Write;
 use core::str::FromStr;
 
+use embedded_mqtt::QoS;
 use heapless::String;
-use mqttrust::{Mqtt, QoS, SubscribeTopic};
 
 use super::Error;
 
@@ -243,81 +243,63 @@ impl<'a, const N: usize> Subscribe<'a, N> {
         Self { topics }
     }
 
-    pub fn topics(self) -> Result<heapless::Vec<(heapless::String<128>, QoS), N>, Error> {
-        self.topics
-            .iter()
-            .map(|(topic, qos)| Ok((topic.clone().format()?, *qos)))
+    pub fn topics<const MAX_LEN: usize>(
+        self,
+    ) -> Result<heapless::Vec<(heapless::String<MAX_LEN>, QoS), N>, Error> {
+        self.iter()
+            .map(|(topic, qos)| Ok((topic.format()?, *qos)))
             .collect()
     }
 
-    pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), Error> {
-        if self.topics.is_empty() {
-            return Ok(());
-        }
-
-        let topic_paths = self.topics()?;
-
-        debug!("Subscribing! {:?}", topic_paths);
-
-        let topics: heapless::Vec<_, N> = topic_paths
-            .iter()
-            .map(|(s, qos)| SubscribeTopic {
-                topic_path: s.as_str(),
-                qos: *qos,
-            })
-            .collect();
-
-        for t in topics.chunks(5) {
-            mqtt.subscribe(t)?;
-        }
-        Ok(())
+    pub fn iter(&self) -> impl Iterator<Item = &(Topic<'a>, QoS)> {
+        self.topics.iter()
     }
 }
 
-#[derive(Default)]
-pub struct Unsubscribe<'a, const N: usize> {
-    topics: heapless::Vec<Topic<'a>, N>,
-}
+// #[derive(Default)]
+// pub struct Unsubscribe<'a, const N: usize> {
+//     topics: heapless::Vec<Topic<'a>, N>,
+// }
 
-impl<'a, const N: usize> Unsubscribe<'a, N> {
-    pub fn new() -> Self {
-        Self::default()
-    }
+// impl<'a, const N: usize> Unsubscribe<'a, N> {
+//     pub fn new() -> Self {
+//         Self::default()
+//     }
 
-    pub fn topic(self, topic: Topic<'a>) -> Self {
-        // Ignore attempts to subscribe to outgoing topics
-        if topic.direction() != Direction::Incoming {
-            return self;
-        }
+//     pub fn topic(self, topic: Topic<'a>) -> Self {
+//         // Ignore attempts to subscribe to outgoing topics
+//         if topic.direction() != Direction::Incoming {
+//             return self;
+//         }
 
-        if self.topics.iter().any(|t| t == &topic) {
-            return self;
-        }
+//         if self.topics.iter().any(|t| t == &topic) {
+//             return self;
+//         }
 
-        let mut topics = self.topics;
-        topics.push(topic).ok();
-        Self { topics }
-    }
+//         let mut topics = self.topics;
+//         topics.push(topic).ok();
+//         Self { topics }
+//     }
 
-    pub fn topics(self) -> Result<heapless::Vec<heapless::String<256>, N>, Error> {
-        self.topics
-            .iter()
-            .map(|topic| topic.clone().format())
-            .collect()
-    }
+//     pub fn topics(self) -> Result<heapless::Vec<heapless::String<256>, N>, Error> {
+//         self.topics
+//             .iter()
+//             .map(|topic| topic.clone().format())
+//             .collect()
+//     }
 
-    pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), Error> {
-        if self.topics.is_empty() {
-            return Ok(());
-        }
+//     // pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), Error> {
+//     //     if self.topics.is_empty() {
+//     //         return Ok(());
+//     //     }
 
-        let topic_paths = self.topics()?;
-        let topics: heapless::Vec<_, N> = topic_paths.iter().map(|s| s.as_str()).collect();
+//     //     let topic_paths = self.topics()?;
+//     //     let topics: heapless::Vec<_, N> = topic_paths.iter().map(|s| s.as_str()).collect();
 
-        for t in topics.chunks(5) {
-            mqtt.unsubscribe(t)?;
-        }
+//     //     for t in topics.chunks(5) {
+//     //         // mqtt.unsubscribe(t)?;
+//     //     }
 
-        Ok(())
-    }
-}
+//     //     Ok(())
+//     // }
+// }

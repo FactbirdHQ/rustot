@@ -3,17 +3,17 @@ pub enum Error {
     Overflow,
     InvalidPayload,
     InvalidState,
-    Mqtt(mqttrust::MqttError),
+    Mqtt,
     DeserializeJson(serde_json_core::de::Error),
     DeserializeCbor,
     Response(u16),
 }
 
-impl From<mqttrust::MqttError> for Error {
-    fn from(e: mqttrust::MqttError) -> Self {
-        Self::Mqtt(e)
-    }
-}
+// impl From<MqttError> for Error {
+//     fn from(e: MqttError) -> Self {
+//         Self::Mqtt(e)
+//     }
+// }
 
 impl From<serde_json_core::ser::Error> for Error {
     fn from(_: serde_json_core::ser::Error) -> Self {
