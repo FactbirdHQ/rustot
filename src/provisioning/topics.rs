@@ -2,7 +2,6 @@ use core::fmt::Display;
 use core::fmt::Write;
 use core::str::FromStr;
 
-use embedded_mqtt::QoS;
 use heapless::String;
 
 use super::Error;
@@ -59,17 +58,26 @@ pub enum Topic<'a> {
     CreateCertificateFromCsr(PayloadFormat),
 
     // ---- Incoming Topics
+    /// `$aws/provisioning-templates/<templateName>/provision/<payloadFormat>/+`
+    RegisterThingAny(&'a str, PayloadFormat),
+
     /// `$aws/provisioning-templates/<templateName>/provision/<payloadFormat>/accepted`
     RegisterThingAccepted(&'a str, PayloadFormat),
 
     /// `$aws/provisioning-templates/<templateName>/provision/<payloadFormat>/rejected`
     RegisterThingRejected(&'a str, PayloadFormat),
 
+    /// `$aws/certificates/create/<payloadFormat>/+`
+    CreateKeysAndCertificateAny(PayloadFormat),
+
     /// `$aws/certificates/create/<payloadFormat>/accepted`
     CreateKeysAndCertificateAccepted(PayloadFormat),
 
     /// `$aws/certificates/create/<payloadFormat>/rejected`
     CreateKeysAndCertificateRejected(PayloadFormat),
+
+    /// `$aws/certificates/create-from-csr/<payloadFormat>/+`
+    CreateCertificateFromCsrAny(PayloadFormat),
 
     /// `$aws/certificates/create-from-csr/<payloadFormat>/accepted`
     CreateCertificateFromCsrAccepted(PayloadFormat),
@@ -169,6 +177,14 @@ impl<'a> Topic<'a> {
                     payload_format,
                 ))
             }
+            Topic::RegisterThingAny(template_name, payload_format) => {
+                topic_path.write_fmt(format_args!(
+                    "{}/{}/provision/{}/+",
+                    Self::PROVISIONING_PREFIX,
+                    template_name,
+                    payload_format,
+                ))
+            }
             Topic::RegisterThingAccepted(template_name, payload_format) => {
                 topic_path.write_fmt(format_args!(
                     "{}/{}/provision/{}/accepted",
@@ -192,6 +208,9 @@ impl<'a> Topic<'a> {
                 payload_format,
             )),
 
+            Topic::CreateKeysAndCertificateAny(payload_format) => topic_path.write_fmt(
+                format_args!("{}/create/{}/+", Self::CERT_PREFIX, payload_format),
+            ),
             Topic::CreateKeysAndCertificateAccepted(payload_format) => topic_path.write_fmt(
                 format_args!("{}/create/{}/accepted", Self::CERT_PREFIX, payload_format),
             ),
@@ -204,102 +223,26 @@ impl<'a> Topic<'a> {
                 Self::CERT_PREFIX,
                 payload_format,
             )),
-            Topic::CreateCertificateFromCsrAccepted(payload_format) => topic_path.write_fmt(
-                format_args!("{}/create-from-csr/{}", Self::CERT_PREFIX, payload_format),
+            Topic::CreateCertificateFromCsrAny(payload_format) => topic_path.write_fmt(
+                format_args!("{}/create-from-csr/{}/+", Self::CERT_PREFIX, payload_format),
             ),
-            Topic::CreateCertificateFromCsrRejected(payload_format) => topic_path.write_fmt(
-                format_args!("{}/create-from-csr/{}", Self::CERT_PREFIX, payload_format),
-            ),
+            Topic::CreateCertificateFromCsrAccepted(payload_format) => {
+                topic_path.write_fmt(format_args!(
+                    "{}/create-from-csr/{}/accepted",
+                    Self::CERT_PREFIX,
+                    payload_format
+                ))
+            }
+            Topic::CreateCertificateFromCsrRejected(payload_format) => {
+                topic_path.write_fmt(format_args!(
+                    "{}/create-from-csr/{}/rejected",
+                    Self::CERT_PREFIX,
+                    payload_format
+                ))
+            }
         }
         .map_err(|_| Error::Overflow)?;
 
         Ok(topic_path)
     }
 }
-
-#[derive(Default)]
-pub struct Subscribe<'a, const N: usize> {
-    topics: heapless::Vec<(Topic<'a>, QoS), N>,
-}
-
-impl<'a, const N: usize> Subscribe<'a, N> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn topic(self, topic: Topic<'a>, qos: QoS) -> Self {
-        // Ignore attempts to subscribe to outgoing topics
-        if topic.direction() != Direction::Incoming {
-            return self;
-        }
-
-        if self.topics.iter().any(|(t, _)| t == &topic) {
-            return self;
-        }
-
-        let mut topics = self.topics;
-        topics.push((topic, qos)).ok();
-
-        Self { topics }
-    }
-
-    pub fn topics<const MAX_LEN: usize>(
-        self,
-    ) -> Result<heapless::Vec<(heapless::String<MAX_LEN>, QoS), N>, Error> {
-        self.iter()
-            .map(|(topic, qos)| Ok((topic.format()?, *qos)))
-            .collect()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &(Topic<'a>, QoS)> {
-        self.topics.iter()
-    }
-}
-
-// #[derive(Default)]
-// pub struct Unsubscribe<'a, const N: usize> {
-//     topics: heapless::Vec<Topic<'a>, N>,
-// }
-
-// impl<'a, const N: usize> Unsubscribe<'a, N> {
-//     pub fn new() -> Self {
-//         Self::default()
-//     }
-
-//     pub fn topic(self, topic: Topic<'a>) -> Self {
-//         // Ignore attempts to subscribe to outgoing topics
-//         if topic.direction() != Direction::Incoming {
-//             return self;
-//         }
-
-//         if self.topics.iter().any(|t| t == &topic) {
-//             return self;
-//         }
-
-//         let mut topics = self.topics;
-//         topics.push(topic).ok();
-//         Self { topics }
-//     }
-
-//     pub fn topics(self) -> Result<heapless::Vec<heapless::String<256>, N>, Error> {
-//         self.topics
-//             .iter()
-//             .map(|topic| topic.clone().format())
-//             .collect()
-//     }
-
-//     // pub fn send<M: Mqtt>(self, mqtt: &M) -> Result<(), Error> {
-//     //     if self.topics.is_empty() {
-//     //         return Ok(());
-//     //     }
-
-//     //     let topic_paths = self.topics()?;
-//     //     let topics: heapless::Vec<_, N> = topic_paths.iter().map(|s| s.as_str()).collect();
-
-//     //     for t in topics.chunks(5) {
-//     //         // mqtt.unsubscribe(t)?;
-//     //     }
-
-//     //     Ok(())
-//     // }
-// }

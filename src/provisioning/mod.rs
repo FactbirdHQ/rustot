@@ -109,37 +109,16 @@ impl FleetProvisioner {
     where
         CH: CredentialHandler,
     {
-        // FIXME: Changing these to a single topic filter of
-        // `$aws/certificates/create/<payloadFormat>/+` could be beneficial to
-        // stack usage
-        let topic_paths = topics::Subscribe::<2>::new()
-            .topic(
-                Topic::CreateKeysAndCertificateAccepted(payload_format),
-                QoS::AtLeastOnce,
-            )
-            .topic(
-                Topic::CreateKeysAndCertificateRejected(payload_format),
-                QoS::AtLeastOnce,
-            )
-            .topics::<38>()?;
-
-        let subscribe_topics = topic_paths
-            .iter()
-            .map(|(s, qos)| SubscribeTopic {
-                topic_path: s.as_str(),
-                maximum_qos: *qos,
+        let mut subscription = mqtt
+            .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
+                topic_path: Topic::CreateKeysAndCertificateAny(payload_format)
+                    .format::<31>()?
+                    .as_str(),
+                maximum_qos: QoS::AtLeastOnce,
                 no_local: false,
                 retain_as_published: false,
                 retain_handling: RetainHandling::SendAtSubscribeTime,
-            })
-            .collect::<heapless::Vec<_, 2>>();
-
-        let mut subscription = mqtt
-            .subscribe::<2>(Subscribe {
-                pid: None,
-                properties: embedded_mqtt::Properties::Slice(&[]),
-                topics: subscribe_topics.as_slice(),
-            })
+            }]))
             .await
             .map_err(|_| Error::Mqtt)?;
 
@@ -226,37 +205,16 @@ impl FleetProvisioner {
     where
         CH: CredentialHandler,
     {
-        // FIXME: Changing these to a single topic filter of
-        // `$aws/certificates/create-from-csr/<payloadFormat>/+` could be beneficial to
-        // stack usage
-        let topic_paths = topics::Subscribe::<2>::new()
-            .topic(
-                Topic::CreateCertificateFromCsrAccepted(payload_format),
-                QoS::AtLeastOnce,
-            )
-            .topic(
-                Topic::CreateCertificateFromCsrRejected(payload_format),
-                QoS::AtLeastOnce,
-            )
-            .topics::<47>()?;
-
-        let subscribe_topics = topic_paths
-            .iter()
-            .map(|(s, qos)| SubscribeTopic {
-                topic_path: s.as_str(),
-                maximum_qos: *qos,
+        let mut subscription = mqtt
+            .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
+                topic_path: Topic::CreateCertificateFromCsrAny(payload_format)
+                    .format::<40>()?
+                    .as_str(),
+                maximum_qos: QoS::AtLeastOnce,
                 no_local: false,
                 retain_as_published: false,
                 retain_handling: RetainHandling::SendAtSubscribeTime,
-            })
-            .collect::<heapless::Vec<_, 2>>();
-
-        let mut subscription = mqtt
-            .subscribe::<2>(Subscribe {
-                pid: None,
-                properties: embedded_mqtt::Properties::Slice(&[]),
-                topics: subscribe_topics.as_slice(),
-            })
+            }]))
             .await
             .map_err(|_| Error::Mqtt)?;
 
@@ -343,37 +301,16 @@ impl FleetProvisioner {
         certificate_ownership_token: &str,
         parameters: Option<P>,
     ) -> Result<Option<C>, Error> {
-        // FIXME: Changing these to a single topic filter of
-        // `$aws/provisioning-templates/<templateName>/provision/<payloadFormat>/+`
-        // could be beneficial to stack usage
-        let topic_paths = topics::Subscribe::<2>::new()
-            .topic(
-                Topic::RegisterThingAccepted(template_name, payload_format),
-                QoS::AtLeastOnce,
-            )
-            .topic(
-                Topic::RegisterThingRejected(template_name, payload_format),
-                QoS::AtLeastOnce,
-            )
-            .topics::<128>()?;
-
-        let subscribe_topics = topic_paths
-            .iter()
-            .map(|(s, qos)| SubscribeTopic {
-                topic_path: s.as_str(),
-                maximum_qos: *qos,
+        let mut subscription = mqtt
+            .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
+                topic_path: Topic::RegisterThingAny(template_name, payload_format)
+                    .format::<128>()?
+                    .as_str(),
+                maximum_qos: QoS::AtLeastOnce,
                 no_local: false,
                 retain_as_published: false,
                 retain_handling: RetainHandling::SendAtSubscribeTime,
-            })
-            .collect::<heapless::Vec<_, 2>>();
-
-        let mut subscription = mqtt
-            .subscribe::<2>(Subscribe {
-                pid: None,
-                properties: embedded_mqtt::Properties::Slice(&[]),
-                topics: subscribe_topics.as_slice(),
-            })
+            }]))
             .await
             .map_err(|_| Error::Mqtt)?;
 
