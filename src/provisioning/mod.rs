@@ -8,17 +8,24 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{Publish, QoS, RetainHandling, Subscribe, SubscribeTopic};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
-#[cfg(feature = "provision_cbor")]
 use serde::Serialize;
+
+pub use error::Error;
 
 use self::{
     data_types::{
         CreateCertificateFromCsrResponse, CreateKeysAndCertificateResponse, ErrorResponse,
         RegisterThingRequest, RegisterThingResponse,
     },
-    error::Error,
     topics::{PayloadFormat, Topic},
 };
+
+pub trait CredentialHandler {
+    fn store_credentials(
+        &mut self,
+        credentials: Credentials<'_>,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+}
 
 #[derive(Debug)]
 pub struct Credentials<'a> {
@@ -30,53 +37,59 @@ pub struct Credentials<'a> {
 pub struct FleetProvisioner;
 
 impl FleetProvisioner {
-    /// Instantiate a new `FleetProvisioner`, using `template_name` for the provisioning
-    pub async fn provision<'a, F, Fut, P, C>(
+    pub async fn provision<'a, C>(
         mqtt: &'a embedded_mqtt::MqttClient<'a, NoopRawMutex, 2>,
-        template_name: &'a str,
-        parameters: Option<P>,
-        f: F,
+        template_name: &str,
+        parameters: Option<impl Serialize>,
+        credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
-        F: FnOnce(Credentials<'_>) -> Fut,
-        Fut: Future<Output = Result<(), Error>>,
-        P: Serialize,
         C: DeserializeOwned,
     {
-        Self::provision_inner(mqtt, template_name, parameters, f, PayloadFormat::Json).await
+        Self::provision_inner(
+            mqtt,
+            template_name,
+            parameters,
+            credential_handler,
+            PayloadFormat::Json,
+        )
+        .await
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub async fn provision_cbor<'a, F, Fut, P, C>(
+    pub async fn provision_cbor<'a, C>(
         mqtt: &'a embedded_mqtt::MqttClient<'a, NoopRawMutex, 2>,
-        template_name: &'a str,
-        parameters: Option<P>,
-        f: F,
+        template_name: &str,
+        parameters: Option<impl Serialize>,
+        credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
-        F: FnOnce(Credentials<'_>) -> Fut,
-        Fut: Future<Output = Result<(), Error>>,
-        P: Serialize,
         C: DeserializeOwned,
     {
-        Self::provision_inner(mqtt, template_name, parameters, f, PayloadFormat::Cbor).await
+        Self::provision_inner(
+            mqtt,
+            template_name,
+            parameters,
+            credential_handler,
+            PayloadFormat::Cbor,
+        )
+        .await
     }
 
-    async fn provision_inner<'a, F, Fut, P, C>(
+    async fn provision_inner<'a, C, P, CH>(
         mqtt: &'a embedded_mqtt::MqttClient<'a, NoopRawMutex, 2>,
-        template_name: &'a str,
+        template_name: &str,
         parameters: Option<P>,
-        f: F,
+        credential_handler: &mut CH,
         payload_format: PayloadFormat,
     ) -> Result<Option<C>, Error>
     where
-        F: FnOnce(Credentials<'_>) -> Fut,
-        Fut: Future<Output = Result<(), Error>>,
-        P: Serialize,
         C: DeserializeOwned,
+        P: Serialize,
+        CH: CredentialHandler,
     {
         let certificate_ownership_token =
-            Self::create_keys_and_certificates(mqtt, payload_format, f).await?;
+            Self::create_keys_and_certificates(mqtt, payload_format, credential_handler).await?;
 
         Self::register_thing(
             mqtt,
@@ -88,15 +101,17 @@ impl FleetProvisioner {
         .await
     }
 
-    pub async fn create_keys_and_certificates<F, Fut>(
+    pub async fn create_keys_and_certificates<CH>(
         mqtt: &embedded_mqtt::MqttClient<'_, NoopRawMutex, 2>,
         payload_format: PayloadFormat,
-        f: F,
+        credential_handler: &mut CH,
     ) -> Result<heapless::String<512>, Error>
     where
-        F: FnOnce(Credentials<'_>) -> Fut,
-        Fut: Future<Output = Result<(), Error>>,
+        CH: CredentialHandler,
     {
+        // FIXME: Changing these to a single topic filter of
+        // `$aws/certificates/create/<payloadFormat>/+` could be beneficial to
+        // stack usage
         let topic_paths = topics::Subscribe::<2>::new()
             .topic(
                 Topic::CreateKeysAndCertificateAccepted(payload_format),
@@ -165,12 +180,13 @@ impl FleetProvisioner {
                     }
                 };
 
-                f(Credentials {
-                    certificate_id: response.certificate_id,
-                    certificate_pem: response.certificate_pem,
-                    private_key: Some(response.private_key),
-                })
-                .await?;
+                credential_handler
+                    .store_credentials(Credentials {
+                        certificate_id: response.certificate_id,
+                        certificate_pem: response.certificate_pem,
+                        private_key: Some(response.private_key),
+                    })
+                    .await?;
 
                 Ok(heapless::String::try_from(response.certificate_ownership_token).unwrap())
             }
@@ -202,15 +218,17 @@ impl FleetProvisioner {
         }
     }
 
-    pub async fn create_certificate_from_csr<F, Fut>(
+    pub async fn create_certificate_from_csr<CH>(
         mqtt: &embedded_mqtt::MqttClient<'_, NoopRawMutex, 2>,
         payload_format: PayloadFormat,
-        f: F,
+        credential_handler: &mut CH,
     ) -> Result<heapless::String<512>, Error>
     where
-        F: FnOnce(Credentials<'_>) -> Fut,
-        Fut: Future<Output = Result<(), Error>>,
+        CH: CredentialHandler,
     {
+        // FIXME: Changing these to a single topic filter of
+        // `$aws/certificates/create-from-csr/<payloadFormat>/+` could be beneficial to
+        // stack usage
         let topic_paths = topics::Subscribe::<2>::new()
             .topic(
                 Topic::CreateCertificateFromCsrAccepted(payload_format),
@@ -279,12 +297,13 @@ impl FleetProvisioner {
                     }
                 };
 
-                f(Credentials {
-                    certificate_id: response.certificate_id,
-                    certificate_pem: response.certificate_pem,
-                    private_key: None,
-                })
-                .await?;
+                credential_handler
+                    .store_credentials(Credentials {
+                        certificate_id: response.certificate_id,
+                        certificate_pem: response.certificate_pem,
+                        private_key: None,
+                    })
+                    .await?;
 
                 // FIXME: It should be possible to re-arrange stuff to get rid of the need for this 512 byte stack alloc
                 Ok(heapless::String::try_from(response.certificate_ownership_token).unwrap())
@@ -324,6 +343,9 @@ impl FleetProvisioner {
         certificate_ownership_token: &str,
         parameters: Option<P>,
     ) -> Result<Option<C>, Error> {
+        // FIXME: Changing these to a single topic filter of
+        // `$aws/provisioning-templates/<templateName>/provision/<payloadFormat>/+`
+        // could be beneficial to stack usage
         let topic_paths = topics::Subscribe::<2>::new()
             .topic(
                 Topic::RegisterThingAccepted(template_name, payload_format),
@@ -374,6 +396,8 @@ impl FleetProvisioner {
             PayloadFormat::Json => serde_json_core::to_slice(&register_request, payload)?,
         };
 
+        info!("Starting RegisterThing {:?}", payload_len);
+
         mqtt.publish(Publish {
             dup: false,
             qos: QoS::AtLeastOnce,
@@ -396,11 +420,14 @@ impl FleetProvisioner {
 
                 let response = match format {
                     #[cfg(feature = "provision_cbor")]
-                    PayloadFormat::Cbor => {
-                        serde_cbor::de::from_mut_slice::<RegisterThingResponse<'_, C>>(payload)?
-                    }
+                    PayloadFormat::Cbor => serde_cbor::de::from_mut_slice::<
+                        RegisterThingResponse<'_, C>,
+                    >(message.payload_mut())?,
                     PayloadFormat::Json => {
-                        serde_json_core::from_slice::<RegisterThingResponse<'_, C>>(payload)?.0
+                        serde_json_core::from_slice::<RegisterThingResponse<'_, C>>(
+                            message.payload(),
+                        )?
+                        .0
                     }
                 };
 
