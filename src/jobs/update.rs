@@ -1,4 +1,3 @@
-use mqttrust::{Mqtt, QoS};
 use serde::Serialize;
 
 use crate::jobs::{
@@ -152,34 +151,33 @@ impl<'a> Update<'a> {
     pub fn topic_payload(
         self,
         client_id: &str,
+        buf: &mut [u8],
     ) -> Result<
         (
             heapless::String<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>,
-            heapless::Vec<u8, 512>,
+            usize,
         ),
         JobError,
     > {
-        let payload = serde_json_core::to_vec(&UpdateJobExecutionRequest {
-            execution_number: self.execution_number,
-            include_job_document: self.include_job_document.then(|| true),
-            expected_version: self.expected_version,
-            include_job_execution_state: self.include_job_execution_state.then(|| true),
-            status: self.status,
-            status_details: self.status_details,
-            step_timeout_in_minutes: self.step_timeout_in_minutes,
-            client_token: self.client_token,
-        })
+        let payload_len = serde_json_core::to_slice(
+            &UpdateJobExecutionRequest {
+                execution_number: self.execution_number,
+                include_job_document: self.include_job_document.then(|| true),
+                expected_version: self.expected_version,
+                include_job_execution_state: self.include_job_execution_state.then(|| true),
+                status: self.status,
+                status_details: self.status_details,
+                step_timeout_in_minutes: self.step_timeout_in_minutes,
+                client_token: self.client_token,
+            },
+            buf,
+        )
         .map_err(|_| JobError::Encoding)?;
 
-        Ok((JobTopic::Update(self.job_id).format(client_id)?, payload))
-    }
-
-    pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), JobError> {
-        let (topic, payload) = self.topic_payload(mqtt.client_id())?;
-
-        mqtt.publish(topic.as_str(), &payload, qos)?;
-
-        Ok(())
+        Ok((
+            JobTopic::Update(self.job_id).format(client_id)?,
+            payload_len,
+        ))
     }
 }
 
@@ -208,17 +206,18 @@ mod test {
 
     #[test]
     fn topic_payload() {
-        let (topic, payload) = Update::new("test_job_id", JobStatus::Failed)
+        let mut buf = [0u8; 512];
+        let (topic, payload_len) = Update::new("test_job_id", JobStatus::Failed)
             .client_token("test_client:token_update")
             .step_timeout_in_minutes(50)
             .execution_number(5)
             .expected_version(2)
             .include_job_document()
             .include_job_execution_state()
-            .topic_payload("test_client")
+            .topic_payload("test_client", &mut buf)
             .unwrap();
 
-        assert_eq!(payload, br#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#);
+        assert_eq!(&ubf[..payload_len], br#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#);
 
         assert_eq!(
             topic.as_str(),

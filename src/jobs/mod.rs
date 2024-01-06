@@ -102,14 +102,13 @@ pub mod describe;
 pub mod get_pending;
 pub mod start_next;
 pub mod subscribe;
-pub mod unsubscribe;
 pub mod update;
 
 use core::fmt::Write;
 
 use self::{
     data_types::JobStatus, describe::Describe, get_pending::GetPending, start_next::StartNext,
-    subscribe::Subscribe, unsubscribe::Unsubscribe, update::Update,
+    update::Update,
 };
 pub use subscribe::Topic;
 
@@ -128,13 +127,7 @@ pub type StatusDetailsOwned = heapless::LinearMap<heapless::String<15>, heapless
 pub enum JobError {
     Overflow,
     Encoding,
-    Mqtt(mqttrust::MqttError),
-}
-
-impl From<mqttrust::MqttError> for JobError {
-    fn from(e: mqttrust::MqttError) -> Self {
-        Self::Mqtt(e)
-    }
+    Mqtt,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -271,13 +264,5 @@ impl Jobs {
 
     pub fn update(job_id: &str, status: JobStatus) -> Update {
         Update::new(job_id, status)
-    }
-
-    pub fn subscribe<'a, const N: usize>() -> Subscribe<'a, N> {
-        Subscribe::new()
-    }
-
-    pub fn unsubscribe<'a, const N: usize>() -> Unsubscribe<'a, N> {
-        Unsubscribe::new()
     }
 }
