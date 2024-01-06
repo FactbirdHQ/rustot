@@ -98,14 +98,14 @@ async fn test_provisioning() {
     let mut credential_handler = CredentialDAO { creds: None };
 
     #[cfg(not(feature = "provision_cbor"))]
-    let provision_fut = FleetProvisioner::provision::<DeviceConfig>(
+    let provision_fut = FleetProvisioner::provision::<DeviceConfig, NoopRawMutex, 2>(
         client,
         &template_name,
         Some(parameters),
         &mut credential_handler,
     );
     #[cfg(feature = "provision_cbor")]
-    let provision_fut = FleetProvisioner::provision_cbor::<DeviceConfig>(
+    let provision_fut = FleetProvisioner::provision_cbor::<DeviceConfig, NoopRawMutex, 2>(
         client,
         &template_name,
         Some(parameters),
