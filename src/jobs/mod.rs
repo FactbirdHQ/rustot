@@ -123,11 +123,11 @@ pub const MAX_RUNNING_JOBS: usize = 1;
 pub type StatusDetails<'a> = heapless::LinearMap<&'a str, &'a str, 4>;
 pub type StatusDetailsOwned = heapless::LinearMap<heapless::String<15>, heapless::String<11>, 4>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobError {
     Overflow,
     Encoding,
-    Mqtt,
+    Mqtt(embedded_mqtt::Error),
 }
 
 #[derive(Debug, Clone, PartialEq)]

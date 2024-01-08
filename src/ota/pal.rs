@@ -1,23 +1,33 @@
 //! Platform abstraction trait for OTA updates
-
-use core::fmt::Write;
-use core::str::FromStr;
-
 use super::encoding::FileContext;
-use super::state::ImageStateReason;
 
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ImageState<E> {
-    Unknown,
-    Aborted(ImageStateReason<E>),
-    Rejected(ImageStateReason<E>),
-    Accepted,
-    Testing(ImageStateReason<E>),
+pub enum ImageStateReason {
+    NewerJob,
+    FailedIngest,
+    MomentumAbort,
+    ImageStateMismatch,
+    SignatureCheckPassed,
+    InvalidDataProtocol,
+    UserAbort,
+    VersionCheck,
+    Pal(OtaPalError),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum OtaPalError<E> {
+pub enum ImageState {
+    Unknown,
+    Aborted(ImageStateReason),
+    Rejected(ImageStateReason),
+    Accepted,
+    Testing(ImageStateReason),
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum OtaPalError {
     SignatureCheckFailed,
     FileWriteFailed,
     FileTooLarge,
@@ -27,13 +37,7 @@ pub enum OtaPalError<E> {
     BadImageState,
     CommitFailed,
     VersionCheck,
-    Custom(E),
-}
-
-impl<E> From<E> for OtaPalError<E> {
-    fn from(value: E) -> Self {
-        Self::Custom(value)
-    }
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,93 +66,8 @@ pub enum OtaEvent {
     UpdateComplete,
 }
 
-#[derive(Debug, Clone, Eq)]
-pub struct Version {
-    major: u8,
-    minor: u8,
-    patch: u8,
-}
-
-#[cfg(feature = "defmt")]
-impl defmt::Format for Version {
-    fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(fmt, "{=u8}.{=u8}.{=u8}", self.major, self.minor, self.patch)
-    }
-}
-
-impl Default for Version {
-    fn default() -> Self {
-        Self::new(0, 0, 0)
-    }
-}
-
-impl FromStr for Version {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut iter = s.split('.');
-        Ok(Self {
-            major: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
-            minor: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
-            patch: iter.next().and_then(|v| v.parse().ok()).ok_or(())?,
-        })
-    }
-}
-
-impl Version {
-    pub fn new(major: u8, minor: u8, patch: u8) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-        }
-    }
-
-    pub fn to_string<const L: usize>(&self) -> heapless::String<L> {
-        let mut s = heapless::String::new();
-        s.write_fmt(format_args!("{}.{}.{}", self.major, self.minor, self.patch))
-            .unwrap();
-        s
-    }
-}
-
-impl core::cmp::PartialEq for Version {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.major == other.major && self.minor == other.minor && self.patch == other.patch
-    }
-}
-
-impl core::cmp::PartialOrd for Version {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl core::cmp::Ord for Version {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        match self.major.cmp(&other.major) {
-            core::cmp::Ordering::Equal => {}
-            r => return r,
-        }
-
-        match self.minor.cmp(&other.minor) {
-            core::cmp::Ordering::Equal => {}
-            r => return r,
-        }
-
-        match self.patch.cmp(&other.patch) {
-            core::cmp::Ordering::Equal => {}
-            r => return r,
-        }
-
-        core::cmp::Ordering::Equal
-    }
-}
 /// Platform abstraction layer for OTA jobs
 pub trait OtaPal {
-    type Error;
-
     /// OTA abort.
     ///
     /// The user may register a callback function when initializing the OTA
@@ -156,7 +75,7 @@ pub trait OtaPal {
     /// aborted.
     ///
     /// - `file`: [`FileContext`] File description of the job being aborted
-    fn abort(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>>;
+    async fn abort(&mut self, file: &FileContext) -> Result<(), OtaPalError>;
 
     /// Activate the newest MCU image received via OTA.
     ///
@@ -168,8 +87,8 @@ pub trait OtaPal {
     ///
     /// **return**: The OTA PAL layer error code combined with the MCU specific
     /// error code.
-    fn activate_new_image(&mut self) -> Result<(), OtaPalError<Self::Error>> {
-        self.reset_device()
+    async fn activate_new_image(&mut self) -> Result<(), OtaPalError> {
+        self.reset_device().await
     }
 
     /// OTA create file to store received data.
@@ -179,7 +98,7 @@ pub trait OtaPal {
     /// is created.
     ///
     /// - `file`: [`FileContext`] File description of the job being aborted
-    fn create_file_for_rx(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>>;
+    async fn create_file_for_rx(&mut self, file: &FileContext) -> Result<(), OtaPalError>;
 
     /// Get the state of the OTA update image.
     ///
@@ -196,7 +115,7 @@ pub trait OtaPal {
     /// timer is not started.
     ///
     /// **return** An [`PalImageState`].
-    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError<Self::Error>>;
+    async fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError>;
 
     /// Attempt to set the state of the OTA update image.
     ///
@@ -208,10 +127,10 @@ pub trait OtaPal {
     ///
     /// **return** The [`OtaPalError`] error code combined with the MCU specific
     /// error code.
-    fn set_platform_image_state(
+    async fn set_platform_image_state(
         &mut self,
-        image_state: ImageState<Self::Error>,
-    ) -> Result<(), OtaPalError<Self::Error>>;
+        image_state: ImageState,
+    ) -> Result<(), OtaPalError>;
 
     /// Reset the device.
     ///
@@ -222,7 +141,7 @@ pub trait OtaPal {
     ///
     /// **return** The OTA PAL layer error code combined with the MCU specific
     /// error code.
-    fn reset_device(&mut self) -> Result<(), OtaPalError<Self::Error>>;
+    async fn reset_device(&mut self) -> Result<(), OtaPalError>;
 
     /// Authenticate and close the underlying receive file in the specified OTA
     /// context.
@@ -234,7 +153,7 @@ pub trait OtaPal {
     ///
     /// **return** The OTA PAL layer error code combined with the MCU specific
     /// error code.
-    fn close_file(&mut self, file: &FileContext) -> Result<(), OtaPalError<Self::Error>>;
+    async fn close_file(&mut self, file: &FileContext) -> Result<(), OtaPalError>;
 
     /// Write a block of data to the specified file at the given offset.
     ///
@@ -245,12 +164,12 @@ pub trait OtaPal {
     ///
     /// **return** The number of bytes written on a success, or a negative error
     /// code from the platform abstraction layer.
-    fn write_block(
+    async fn write_block(
         &mut self,
         file: &FileContext,
         block_offset: usize,
         block_payload: &[u8],
-    ) -> Result<usize, OtaPalError<Self::Error>>;
+    ) -> Result<usize, OtaPalError>;
 
     /// OTA update complete.
     ///
@@ -284,9 +203,9 @@ pub trait OtaPal {
     /// the OTA update job has failed in some way and should be rejected.
     ///
     /// - `event` [`OtaEvent`] An OTA update event from the `OtaEvent` enum.
-    fn complete_callback(&mut self, event: OtaEvent) -> Result<(), OtaPalError<Self::Error>> {
+    async fn complete_callback(&mut self, event: OtaEvent) -> Result<(), OtaPalError> {
         match event {
-            OtaEvent::Activate => self.activate_new_image(),
+            OtaEvent::Activate => self.activate_new_image().await,
             OtaEvent::Fail | OtaEvent::UpdateComplete => {
                 // Nothing special to do. The OTA agent handles it
                 Ok(())
@@ -294,7 +213,7 @@ pub trait OtaPal {
             OtaEvent::StartTest => {
                 // Accept the image since it was a good transfer
                 // and networking and services are all working.
-                self.set_platform_image_state(ImageState::Accepted)?;
+                self.set_platform_image_state(ImageState::Accepted).await?;
                 Ok(())
             }
             OtaEvent::SelfTestFailed => {
@@ -308,7 +227,4 @@ pub trait OtaPal {
             }
         }
     }
-
-    ///
-    fn get_active_firmware_version(&self) -> Result<Version, OtaPalError<Self::Error>>;
 }

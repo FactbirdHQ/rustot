@@ -61,16 +61,16 @@ pub struct FileDescription<'a> {
 impl<'a> FileDescription<'a> {
     pub fn signature(&self) -> Signature {
         if let Some(sig) = self.sha1_rsa {
-            return Signature::Sha1Rsa(heapless::String::from(sig));
+            return Signature::Sha1Rsa(heapless::String::try_from(sig).unwrap());
         }
         if let Some(sig) = self.sha256_rsa {
-            return Signature::Sha256Rsa(heapless::String::from(sig));
+            return Signature::Sha256Rsa(heapless::String::try_from(sig).unwrap());
         }
         if let Some(sig) = self.sha1_ecdsa {
-            return Signature::Sha1Ecdsa(heapless::String::from(sig));
+            return Signature::Sha1Ecdsa(heapless::String::try_from(sig).unwrap());
         }
         if let Some(sig) = self.sha256_ecdsa {
-            return Signature::Sha256Ecdsa(heapless::String::from(sig));
+            return Signature::Sha256Ecdsa(heapless::String::try_from(sig).unwrap());
         }
         unreachable!()
     }

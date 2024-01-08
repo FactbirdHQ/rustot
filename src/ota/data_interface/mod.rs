@@ -1,5 +1,5 @@
-#[cfg(feature = "ota_http_data")]
-pub mod http;
+// #[cfg(feature = "ota_http_data")]
+// pub mod http;
 #[cfg(feature = "ota_mqtt_data")]
 pub mod mqtt;
 
@@ -44,46 +44,15 @@ impl<'a> FileBlock<'a> {
 pub trait DataInterface {
     const PROTOCOL: Protocol;
 
-    fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError>;
-    fn request_file_block(
+    async fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError>;
+    async fn request_file_block(
         &self,
         file_ctx: &mut FileContext,
         config: &Config,
     ) -> Result<(), OtaError>;
-    fn decode_file_block<'a>(
+    async fn decode_file_block<'a>(
         &self,
         file_ctx: &mut FileContext,
         payload: &'a mut [u8],
     ) -> Result<FileBlock<'a>, OtaError>;
-    fn cleanup(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), OtaError>;
-}
-
-pub struct NoInterface;
-
-impl DataInterface for NoInterface {
-    const PROTOCOL: Protocol = Protocol::Mqtt;
-
-    fn init_file_transfer(&self, _file_ctx: &mut FileContext) -> Result<(), OtaError> {
-        unreachable!()
-    }
-
-    fn request_file_block(
-        &self,
-        _file_ctx: &mut FileContext,
-        _config: &Config,
-    ) -> Result<(), OtaError> {
-        unreachable!()
-    }
-
-    fn decode_file_block<'a>(
-        &self,
-        _file_ctx: &mut FileContext,
-        _payload: &'a mut [u8],
-    ) -> Result<FileBlock<'a>, OtaError> {
-        unreachable!()
-    }
-
-    fn cleanup(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), OtaError> {
-        unreachable!()
-    }
 }

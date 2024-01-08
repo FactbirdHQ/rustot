@@ -1,7 +1,8 @@
 use core::fmt::{Display, Write};
 use core::str::FromStr;
 
-use mqttrust::{Mqtt, QoS, SubscribeTopic};
+use embassy_sync::blocking_mutex::raw::RawMutex;
+use embedded_mqtt::{MqttClient, Properties, Publish, RetainHandling, Subscribe, SubscribeTopic};
 
 use crate::ota::error::OtaError;
 use crate::{
@@ -116,30 +117,32 @@ impl<'a> OtaTopic<'a> {
     }
 }
 
-impl<'a, M> DataInterface for &'a M
-where
-    M: Mqtt,
-{
+impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUBS> {
     const PROTOCOL: Protocol = Protocol::Mqtt;
 
     /// Init file transfer by subscribing to the OTA data stream topic
-    fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError> {
+    async fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError> {
         let topic_path = OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
             .format::<256>(self.client_id())?;
+
         let topic = SubscribeTopic {
             topic_path: topic_path.as_str(),
-            qos: mqttrust::QoS::AtLeastOnce,
+            maximum_qos: embedded_mqtt::QoS::AtLeastOnce,
+            no_local: false,
+            retain_as_published: false,
+            retain_handling: RetainHandling::SendAtSubscribeTime,
         };
 
         debug!("Subscribing to: [{:?}]", &topic_path);
 
-        self.subscribe(&[topic])?;
+        // FIXME:
+        self.subscribe::<1>(Subscribe::new(&[topic])).await?;
 
         Ok(())
     }
 
     /// Request file block by publishing to the get stream topic
-    fn request_file_block(
+    async fn request_file_block(
         &self,
         file_ctx: &mut FileContext,
         config: &Config,
@@ -147,6 +150,7 @@ where
         // Reset number of blocks requested
         file_ctx.request_block_remaining = file_ctx.bitmap.len() as u32;
 
+        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
         let buf = &mut [0u8; 32];
         let len = cbor::to_slice(
             &cbor::GetStreamRequest {
@@ -163,19 +167,24 @@ where
         )
         .map_err(|_| OtaError::Encoding)?;
 
-        self.publish(
-            OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())
+        self.publish(Publish {
+            dup: false,
+            qos: embedded_mqtt::QoS::AtMostOnce,
+            retain: false,
+            pid: None,
+            topic_name: OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())
                 .format::<{ MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30 }>(self.client_id())?
                 .as_str(),
-            &buf[..len],
-            QoS::AtMostOnce,
-        )?;
+            payload: &buf[..len],
+            properties: Properties::Slice(&[]),
+        })
+        .await?;
 
         Ok(())
     }
 
     /// Decode a cbor encoded fileblock received from streaming service
-    fn decode_file_block<'c>(
+    async fn decode_file_block<'c>(
         &self,
         _file_ctx: &mut FileContext,
         payload: &'c mut [u8],
@@ -185,19 +194,6 @@ where
                 .map_err(|_| OtaError::Encoding)?
                 .into(),
         )
-    }
-
-    /// Perform any cleanup operations required for data plane
-    fn cleanup(&self, file_ctx: &mut FileContext, config: &Config) -> Result<(), OtaError> {
-        if config.unsubscribe_on_shutdown {
-            // Unsubscribe from data stream topics
-            self.unsubscribe(&[
-                OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
-                    .format::<256>(self.client_id())?
-                    .as_str(),
-            ])?;
-        }
-        Ok(())
     }
 }
 
@@ -234,7 +230,10 @@ mod tests {
             topics,
             vec![SubscribeTopic {
                 topic_path: "$aws/things/test_client/streams/test_stream/data/cbor",
-                qos: QoS::AtLeastOnce
+                maximum_qos: QoS::AtLeastOnce,
+                no_local: false,
+                retain_as_published: false,
+                retain_handling: RetainHandling::SendAtSubscribeTime
             }]
         );
     }

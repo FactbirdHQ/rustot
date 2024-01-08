@@ -3,15 +3,14 @@ pub mod cbor;
 pub mod json;
 
 use core::ops::{Deref, DerefMut};
-use core::str::FromStr;
 use serde::{Serialize, Serializer};
 
 use crate::jobs::StatusDetailsOwned;
 
 use self::json::{JobStatusReason, OtaJob, Signature};
 
+use super::config::Config;
 use super::error::OtaError;
-use super::{config::Config, pal::Version};
 
 #[derive(Clone, PartialEq)]
 pub struct Bitmap(bitmaps::Bitmap<32>);
@@ -81,7 +80,6 @@ impl FileContext {
         status_details: Option<StatusDetailsOwned>,
         file_idx: usize,
         config: &Config,
-        current_version: Version,
     ) -> Result<Self, OtaError> {
         let file_desc = ota_job
             .files
@@ -94,12 +92,12 @@ impl FileContext {
             details
         } else {
             let mut status = StatusDetailsOwned::new();
-            status
-                .insert(
-                    heapless::String::from("updated_by"),
-                    current_version.to_string(),
-                )
-                .map_err(|_| OtaError::Overflow)?;
+            // status
+            //     .insert(
+            //         heapless::String::try_from("updated_by").unwrap(),
+            //         current_version.to_string(),
+            //     )
+            //     .map_err(|_| OtaError::Overflow)?;
             status
         };
 
@@ -109,41 +107,39 @@ impl FileContext {
         let bitmap = Bitmap::new(file_desc.filesize, config.block_size, block_offset);
 
         Ok(FileContext {
-            filepath: heapless::String::from(file_desc.filepath),
+            filepath: heapless::String::try_from(file_desc.filepath).unwrap(),
             filesize: file_desc.filesize,
             fileid: file_desc.fileid,
-            certfile: heapless::String::from(file_desc.certfile),
-            update_data_url: file_desc.update_data_url.map(heapless::String::from),
-            auth_scheme: file_desc.auth_scheme.map(heapless::String::from),
+            certfile: heapless::String::try_from(file_desc.certfile).unwrap(),
+            update_data_url: file_desc
+                .update_data_url
+                .map(|s| heapless::String::try_from(s).unwrap()),
+            auth_scheme: file_desc
+                .auth_scheme
+                .map(|s| heapless::String::try_from(s).unwrap()),
             signature,
             file_type: file_desc.file_type,
 
             status_details: status,
 
-            job_name: heapless::String::from(job_name),
+            job_name: heapless::String::try_from(job_name).unwrap(),
             block_offset,
             request_block_remaining: bitmap.len() as u32,
             blocks_remaining: (file_desc.filesize + config.block_size - 1) / config.block_size,
-            stream_name: heapless::String::from(ota_job.streamname),
+            stream_name: heapless::String::try_from(ota_job.streamname).unwrap(),
             bitmap,
         })
     }
 
     pub fn self_test(&self) -> bool {
         self.status_details
-            .get(&heapless::String::from("self_test"))
+            .get(&heapless::String::try_from("self_test").unwrap())
             .and_then(|f| f.parse().ok())
             .map(|reason: JobStatusReason| {
                 reason == JobStatusReason::SigCheckPassed
                     || reason == JobStatusReason::SelfTestActive
             })
             .unwrap_or(false)
-    }
-
-    pub fn updated_by(&self) -> Option<Version> {
-        self.status_details
-            .get(&heapless::String::from("updated_by"))
-            .and_then(|s| Version::from_str(s.as_str()).ok())
     }
 }
 
