@@ -3,6 +3,8 @@
 #[cfg(feature = "ota_mqtt_data")]
 pub mod mqtt;
 
+use core::ops::DerefMut;
+
 use serde::Deserialize;
 
 use crate::ota::config::Config;
@@ -41,18 +43,26 @@ impl<'a> FileBlock<'a> {
     }
 }
 
+pub trait BlockTransfer {
+    async fn next_block(&mut self) -> Result<impl DerefMut<Target = [u8]>, OtaError>;
+}
+
 pub trait DataInterface {
     const PROTOCOL: Protocol;
 
-    async fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError>;
+    type ActiveTransfer<'t>: BlockTransfer where Self: 't;
+
+    async fn init_file_transfer(&self, file_ctx: &FileContext) -> Result<Self::ActiveTransfer<'_>, OtaError>;
+
     async fn request_file_block(
         &self,
         file_ctx: &mut FileContext,
         config: &Config,
     ) -> Result<(), OtaError>;
-    async fn decode_file_block<'a>(
+
+    fn decode_file_block<'a>(
         &self,
-        file_ctx: &mut FileContext,
+        file_ctx: &FileContext,
         payload: &'a mut [u8],
     ) -> Result<FileBlock<'a>, OtaError>;
 }

@@ -37,10 +37,19 @@ pub mod encoding;
 pub mod error;
 pub mod pal;
 
+use core::{
+    ops::DerefMut,
+    sync::atomic::{AtomicU8, Ordering},
+};
+
 #[cfg(feature = "ota_mqtt_data")]
 pub use data_interface::mqtt::{Encoding, Topic};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
-use crate::{jobs::data_types::JobStatus, ota::encoding::json::JobStatusReason};
+use crate::{
+    jobs::data_types::JobStatus,
+    ota::{data_interface::BlockTransfer, encoding::json::JobStatusReason},
+};
 
 use self::{
     control_interface::ControlInterface,
@@ -52,59 +61,27 @@ use self::{
 #[derive(PartialEq)]
 pub struct JobEventData<'a> {
     pub job_name: &'a str,
-    pub ota_document: &'a encoding::json::OtaJob<'a>,
-    pub status_details: Option<&'a crate::jobs::StatusDetails<'a>>,
+    pub ota_document: encoding::json::OtaJob<'a>,
+    pub status_details: Option<crate::jobs::StatusDetails<'a>>,
 }
 
 pub struct Updater;
 
 impl Updater {
-    pub async fn perform_ota<'a, C: ControlInterface, D: DataInterface>(
+    pub async fn check_for_job<'a, C: ControlInterface>(
+        control: &C,
+    ) -> Result<(), error::OtaError> {
+        control.request_job().await?;
+        Ok(())
+    }
+
+    pub async fn perform_ota<'a, 'b, C: ControlInterface, D: DataInterface>(
         control: &C,
         data: &D,
-        job_data: JobEventData<'a>,
+        mut file_ctx: FileContext,
         pal: &mut impl pal::OtaPal,
         config: config::Config,
     ) -> Result<(), error::OtaError> {
-        let mut request_momentum = 0;
-
-        // TODO: Handle request_momentum?
-        control.request_job().await?;
-
-        let JobEventData {
-            job_name,
-            ota_document,
-            status_details,
-        } = job_data;
-
-        let file_idx = 0;
-
-        if ota_document
-            .files
-            .get(file_idx)
-            .map(|f| f.filesize)
-            .unwrap_or_default()
-            == 0
-        {
-            return Err(error::OtaError::ZeroFileSize);
-        }
-
-        let mut file_ctx = FileContext::new_from(
-            job_name,
-            ota_document,
-            status_details.map(|s| {
-                s.iter()
-                    .map(|(&k, &v)| {
-                        (
-                            heapless::String::try_from(k).unwrap(),
-                            heapless::String::try_from(v).unwrap(),
-                        )
-                    })
-                    .collect()
-            }),
-            file_idx,
-            &config,
-        )?;
 
         // If the job is in self test mode, don't start an OTA update but
         // instead do the following:
@@ -180,8 +157,8 @@ impl Updater {
             }
         }
 
-        if !ota_document.protocols.contains(&D::PROTOCOL) {
-            error!("Unable to handle current OTA job with given data interface ({:?}). Supported protocols: {:?}. Aborting current update.", D::PROTOCOL, ota_document.protocols);
+        if !file_ctx.protocols.contains(&D::PROTOCOL) {
+            error!("Unable to handle current OTA job with given data interface ({:?}). Supported protocols: {:?}. Aborting current update.", D::PROTOCOL, file_ctx.protocols);
             Self::set_image_state_with_reason(
                 control,
                 pal,
@@ -211,76 +188,226 @@ impl Updater {
         }
 
         // Prepare the storage layer on receiving a new file
-        match data.init_file_transfer(&mut file_ctx).await {
-            Err(e) => {
-                return if request_momentum < config.max_request_momentum {
-                    // Start request timer
-                    // self.request_timer
-                    //     .start(config.request_wait.millis())
-                    //     .map_err(|_| error::OtaError::Timer)?;
+        let mut subscription = data.init_file_transfer(&mut file_ctx).await?;
 
-                    request_momentum += 1;
-                    Err(e)
-                } else {
-                    // Stop request timer
-                    // self.request_timer
-                    //     .cancel()
-                    //     .map_err(|_| error::OtaError::Timer)?;
+        info!("Initialized file handler! Requesting file blocks");
 
-                    // Too many requests have been sent without a response or
-                    // too many failures when trying to publish the request
-                    // message. Abort.
+        let request_momentum = AtomicU8::new(0);
 
-                    Err(error::OtaError::MomentumAbort)
-                };
+        // let momentum_fut = async {
+        //     while file_ctx.lock().await.blocks_remaining > 0 {
+        //         if request_momentum.load(Ordering::Relaxed) <= config.max_request_momentum {
+        //             // Each request increases the momentum until a response is
+        //             // received. Too much momentum is interpreted as a failure to
+        //             // communicate and will cause us to abort the OTA.
+        //             request_momentum.fetch_add(1, Ordering::Relaxed);
+
+        //             // Reset number of blocks requested
+        //             let mut ctx = file_ctx.lock().await;
+        //             ctx.request_block_remaining = ctx.bitmap.len() as u32;
+
+        //             // Request data blocks
+        //             data.request_file_block(&ctx, &config).await?;
+        //         } else {
+        //             // Too many requests have been sent without a response or too
+        //             // many failures when trying to publish the request message.
+        //             // Abort.
+        //             return Err(error::OtaError::MomentumAbort);
+        //         }
+
+        //         embassy_time::Timer::after(config.request_wait).await;
+        //     }
+
+        //     Ok(())
+        // };
+
+        let data_fut = async {
+            data.request_file_block(&mut file_ctx, &config).await?;
+
+            while let Ok(mut payload) = subscription.next_block().await {
+                debug!("process_data_handler");
+                // Decode the file block received
+                match Self::ingest_data_block(data, pal, &config, &mut file_ctx, payload.deref_mut())
+                    .await
+                {
+                    Ok(true) => {
+                        // File is completed! Update progress accordingly.
+                        match pal.close_file(&file_ctx).await {
+                            Err(e) => {
+                                control
+                                    .update_job_status(
+                                        &mut file_ctx,
+                                        &config,
+                                        JobStatus::Failed,
+                                        JobStatusReason::Pal(0),
+                                    )
+                                    .await?;
+
+                                return Err(e.into());
+                            }
+                            Ok(_) => {
+                                let (status, reason, event) = if let Some(0) = file_ctx.file_type {
+                                    (
+                                        JobStatus::InProgress,
+                                        JobStatusReason::SigCheckPassed,
+                                        pal::OtaEvent::Activate,
+                                    )
+                                } else {
+                                    (
+                                        JobStatus::Succeeded,
+                                        JobStatusReason::Accepted,
+                                        pal::OtaEvent::UpdateComplete,
+                                    )
+                                };
+
+                                control
+                                    .update_job_status(&mut file_ctx, &config, status, reason)
+                                    .await?;
+
+                                return Ok(event);
+                            }
+                        }
+                    }
+                    Ok(false) => {
+                        debug!("Ingested one block!");
+                        // Reset the momentum counter since we received a good block
+                        request_momentum.store(0, Ordering::Relaxed);
+
+                        // We're actively receiving a file so update the job status as
+                        // needed
+                        control
+                            .update_job_status(
+                                &mut file_ctx,
+                                &config,
+                                JobStatus::InProgress,
+                                JobStatusReason::Receiving,
+                            )
+                            .await?;
+
+                        if file_ctx.request_block_remaining > 1 {
+                            file_ctx.request_block_remaining -= 1;
+                        } else {
+                            data.request_file_block(&mut file_ctx, &config).await?;
+                        }
+                    }
+                    Err(e) if e.is_retryable() => {
+                        warn!("Failed to ingest data block, Error is retryable! ingest_data_block returned error {:?}", e);
+                    }
+                    Err(e) => {
+                        error!("Failed to ingest data block, rejecting image: ingest_data_block returned error {:?}", e);
+
+                        // Call the platform specific code to reject the image
+                        // TODO: This should never write to current image flags?!
+                        // pal.set_platform_image_state(ImageState::Rejected(
+                        //     ImageStateReason::FailedIngest,
+                        // ))
+                        // .await?;
+
+                        // TODO: Pal reason
+                        control
+                            .update_job_status(
+                                &mut file_ctx,
+                                &config,
+                                JobStatus::Failed,
+                                JobStatusReason::Pal(0),
+                            )
+                            .await?;
+
+                        pal.complete_callback(pal::OtaEvent::Fail).await?;
+                        info!("Application callback! OtaEvent::Fail");
+                        return Err(e);
+                    }
+                }
             }
-            Ok(_) => {
-                // Reset the request momentum
-                request_momentum = 0;
 
-                // TODO: Reset the OTA statistics
+            Err(error::OtaError::Mqtt(embedded_mqtt::Error::EOF))
+        };
 
-                info!("Initialized file handler! Requesting file blocks");
-            }
-        }
+        // let (momentum_res, data_res) = embassy_futures::join::join(momentum_fut, data_fut).await;
 
-        // Request data
-        if file_ctx.blocks_remaining > 0 {
-            if request_momentum <= config.max_request_momentum {
-                // Each request increases the momentum until a response is
-                // received. Too much momentum is interpreted as a failure to
-                // communicate and will cause us to abort the OTA.
-                request_momentum += 1;
+        let data_res = data_fut.await;
 
-                // Request data blocks
-                data.request_file_block(&mut file_ctx, &config).await?;
-            } else {
-                // Stop the request timer
-                // self.request_timer.cancel().map_err(|_| error::OtaError::Timer)?;
+        // if let Err(e) = momentum_res {
+        //     // Failed to send data request abort and close file.
+        //     Self::set_image_state_with_reason(
+        //         control,
+        //         pal,
+        //         &config,
+        //         &mut file_ctx,
+        //         ImageState::Aborted(ImageStateReason::MomentumAbort),
+        //     )
+        //     .await?;
 
-                // Failed to send data request abort and close file.
-                Self::set_image_state_with_reason(
-                    control,
-                    pal,
-                    &config,
-                    &mut file_ctx,
-                    ImageState::Aborted(ImageStateReason::MomentumAbort),
-                )
-                .await?;
+        //     return Err(e);
+        // };
 
-                // Reset the request momentum
-                request_momentum = 0;
-
-                // Too many requests have been sent without a response or too
-                // many failures when trying to publish the request message.
-                // Abort.
-                return Err(error::OtaError::MomentumAbort);
-            }
-        } else {
-            return Err(error::OtaError::BlockOutOfRange);
-        }
+        pal.complete_callback(data_res?).await?;
 
         Ok(())
+    }
+
+    async fn ingest_data_block<'a, D: DataInterface, PAL: pal::OtaPal>(
+        data: &D,
+        pal: &mut PAL,
+        config: &config::Config,
+        file_ctx: &mut FileContext,
+        payload: &mut [u8],
+    ) -> Result<bool, error::OtaError> {
+        let block = data.decode_file_block(&file_ctx, payload)?;
+        if block.validate(config.block_size, file_ctx.filesize) {
+            if block.block_id < file_ctx.block_offset as usize
+                || !file_ctx.bitmap.get(block.block_id - file_ctx.block_offset as usize)
+            {
+                info!(
+                    "Block {:?} is a DUPLICATE. {:?} blocks remaining.",
+                    block.block_id, file_ctx.blocks_remaining
+                );
+
+                // Just return same progress as before
+                return Ok(false);
+            }
+
+            info!(
+                "Received block {}. {:?} blocks remaining.",
+                block.block_id, file_ctx.blocks_remaining
+            );
+
+            pal.write_block(
+                file_ctx,
+                block.block_id * config.block_size,
+                block.block_payload,
+            )
+            .await?;
+
+
+            let block_offset = file_ctx.block_offset;
+            file_ctx.bitmap
+                .set(block.block_id - block_offset as usize, false);
+
+            file_ctx.blocks_remaining -= 1;
+
+            if file_ctx.blocks_remaining == 0 {
+                info!("Received final expected block of file.");
+
+                // Return true to indicate end of file.
+                Ok(true)
+            } else {
+                if file_ctx.bitmap.is_empty() {
+                    file_ctx.block_offset += 31;
+                    file_ctx.bitmap =
+                        encoding::Bitmap::new(file_ctx.filesize, config.block_size, file_ctx.block_offset);
+                }
+
+                Ok(false)
+            }
+        } else {
+            error!(
+                "Error! Block {:?} out of expected range! Size {:?}",
+                block.block_id, block.block_size
+            );
+
+            Err(error::OtaError::BlockOutOfRange)
+        }
     }
 
     async fn set_image_state_with_reason<'a, C: ControlInterface, PAL: pal::OtaPal>(
@@ -290,10 +417,8 @@ impl Updater {
         file_ctx: &mut FileContext,
         image_state: ImageState,
     ) -> Result<(), error::OtaError> {
-        // debug!("set_image_state_with_reason {:?}", image_state);
         // Call the platform specific code to set the image state
 
-        // FIXME:
         let image_state = match pal.set_platform_image_state(image_state).await {
             Err(e) if !matches!(image_state, ImageState::Aborted(_)) => {
                 // If the platform image state couldn't be set correctly, force

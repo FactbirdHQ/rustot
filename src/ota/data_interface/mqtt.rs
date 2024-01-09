@@ -1,8 +1,12 @@
 use core::fmt::{Display, Write};
+use core::ops::DerefMut;
 use core::str::FromStr;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{MqttClient, Properties, Publish, RetainHandling, Subscribe, SubscribeTopic};
+use embedded_mqtt::{
+    MqttClient, Properties, Publish, RetainHandling, Subscribe, SubscribeTopic, Subscription,
+};
+use futures::StreamExt;
 
 use crate::ota::error::OtaError;
 use crate::{
@@ -13,6 +17,8 @@ use crate::{
         encoding::{cbor, FileContext},
     },
 };
+
+use super::BlockTransfer;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Encoding {
@@ -117,11 +123,22 @@ impl<'a> OtaTopic<'a> {
     }
 }
 
+impl<'a, 'b, M: RawMutex, const SUBS: usize> BlockTransfer for Subscription<'a, 'b, M, SUBS, 1> {
+    async fn next_block(&mut self) -> Result<impl DerefMut<Target = [u8]>, OtaError> {
+        Ok(self.next().await.ok_or(OtaError::Encoding)?)
+    }
+}
+
 impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUBS> {
     const PROTOCOL: Protocol = Protocol::Mqtt;
 
+    type ActiveTransfer<'t> = Subscription<'a, 't, M, SUBS, 1> where Self: 't;
+
     /// Init file transfer by subscribing to the OTA data stream topic
-    async fn init_file_transfer(&self, file_ctx: &mut FileContext) -> Result<(), OtaError> {
+    async fn init_file_transfer(
+        &self,
+        file_ctx: &FileContext,
+    ) -> Result<Self::ActiveTransfer<'_>, OtaError> {
         let topic_path = OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
             .format::<256>(self.client_id())?;
 
@@ -135,10 +152,7 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
 
         debug!("Subscribing to: [{:?}]", &topic_path);
 
-        // FIXME:
-        self.subscribe::<1>(Subscribe::new(&[topic])).await?;
-
-        Ok(())
+        Ok(self.subscribe::<1>(Subscribe::new(&[topic])).await?)
     }
 
     /// Request file block by publishing to the get stream topic
@@ -147,7 +161,6 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
         file_ctx: &mut FileContext,
         config: &Config,
     ) -> Result<(), OtaError> {
-        // Reset number of blocks requested
         file_ctx.request_block_remaining = file_ctx.bitmap.len() as u32;
 
         // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
@@ -184,9 +197,9 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
     }
 
     /// Decode a cbor encoded fileblock received from streaming service
-    async fn decode_file_block<'c>(
+    fn decode_file_block<'c>(
         &self,
-        _file_ctx: &mut FileContext,
+        _file_ctx: &FileContext,
         payload: &'c mut [u8],
     ) -> Result<FileBlock<'c>, OtaError> {
         Ok(
@@ -194,216 +207,5 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
                 .map_err(|_| OtaError::Encoding)?
                 .into(),
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use mqttrust::{encoding::v4::decode_slice, Packet, SubscribeTopic};
-
-    use super::*;
-    use crate::{ota::test::test_file_ctx, test::MockMqtt};
-
-    #[test]
-    fn protocol_fits() {
-        assert_eq!(<&MockMqtt as DataInterface>::PROTOCOL, Protocol::Mqtt);
-    }
-
-    #[test]
-    fn init_file_transfer_subscribes() {
-        let mqtt = &MockMqtt::new();
-
-        let mut file_ctx = test_file_ctx(&Config::default());
-
-        mqtt.init_file_transfer(&mut file_ctx).unwrap();
-
-        assert_eq!(mqtt.tx.borrow_mut().len(), 1);
-
-        let bytes = mqtt.tx.borrow_mut().pop_front().unwrap();
-
-        let packet = decode_slice(bytes.as_slice()).unwrap();
-        let topics = match packet {
-            Some(Packet::Subscribe(ref s)) => s.topics().collect::<Vec<_>>(),
-            _ => panic!(),
-        };
-        assert_eq!(
-            topics,
-            vec![SubscribeTopic {
-                topic_path: "$aws/things/test_client/streams/test_stream/data/cbor",
-                maximum_qos: QoS::AtLeastOnce,
-                no_local: false,
-                retain_as_published: false,
-                retain_handling: RetainHandling::SendAtSubscribeTime
-            }]
-        );
-    }
-
-    #[test]
-    fn request_file_block_publish() {
-        let mqtt = &MockMqtt::new();
-
-        let config = Config::default();
-        let mut file_ctx = test_file_ctx(&config);
-
-        mqtt.request_file_block(&mut file_ctx, &config).unwrap();
-
-        assert_eq!(mqtt.tx.borrow_mut().len(), 1);
-
-        let bytes = mqtt.tx.borrow_mut().pop_front().unwrap();
-
-        let publish = match decode_slice(bytes.as_slice()).unwrap() {
-            Some(Packet::Publish(s)) => s,
-            _ => panic!(),
-        };
-
-        assert_eq!(
-            publish,
-            mqttrust::encoding::v4::publish::Publish {
-                dup: false,
-                qos: QoS::AtMostOnce,
-                retain: false,
-                topic_name: "$aws/things/test_client/streams/test_stream/get/cbor",
-                payload: &[
-                    164, 97, 102, 0, 97, 108, 25, 1, 0, 97, 111, 0, 97, 98, 68, 255, 255, 255, 127
-                ],
-                pid: None
-            }
-        );
-    }
-
-    #[test]
-    fn decode_file_block_cbor() {
-        let mqtt = &MockMqtt::new();
-
-        let mut file_ctx = test_file_ctx(&Config::default());
-
-        let payload = &mut [
-            191, 97, 102, 0, 97, 105, 0, 97, 108, 25, 4, 0, 97, 112, 89, 4, 0, 141, 62, 28, 246,
-            80, 193, 2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 255,
-        ];
-
-        let file_blk = mqtt.decode_file_block(&mut file_ctx, payload).unwrap();
-
-        assert_eq!(mqtt.tx.borrow_mut().len(), 0);
-        assert_eq!(file_blk.file_id, 0);
-        assert_eq!(file_blk.block_id, 0);
-        assert_eq!(
-            file_blk.block_payload,
-            &[
-                141, 62, 28, 246, 80, 193, 2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-            ]
-        );
-        assert_eq!(file_blk.block_size, 1024);
-        assert_eq!(file_blk.client_token, None);
-    }
-
-    #[test]
-    fn cleanup_unsubscribe() {
-        let mqtt = &MockMqtt::new();
-
-        let config = Config::default();
-
-        let mut file_ctx = test_file_ctx(&config);
-
-        mqtt.cleanup(&mut file_ctx, &config).unwrap();
-
-        assert_eq!(mqtt.tx.borrow_mut().len(), 1);
-        let bytes = mqtt.tx.borrow_mut().pop_front().unwrap();
-
-        let packet = decode_slice(bytes.as_slice()).unwrap();
-        let topics = match packet {
-            Some(Packet::Unsubscribe(ref s)) => s.topics().collect::<Vec<_>>(),
-            _ => panic!(),
-        };
-
-        assert_eq!(
-            topics,
-            vec!["$aws/things/test_client/streams/test_stream/data/cbor"]
-        );
-    }
-
-    #[test]
-    fn cleanup_no_unsubscribe() {
-        let mqtt = &MockMqtt::new();
-
-        let mut config = Config::default();
-        config.unsubscribe_on_shutdown = false;
-
-        let mut file_ctx = test_file_ctx(&config);
-
-        mqtt.cleanup(&mut file_ctx, &config).unwrap();
-
-        assert_eq!(mqtt.tx.borrow_mut().len(), 0);
     }
 }

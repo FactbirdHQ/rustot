@@ -1,4 +1,6 @@
 //! Platform abstraction trait for OTA updates
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+
 use super::encoding::FileContext;
 
 #[derive(Debug, Clone, Copy)]
@@ -166,7 +168,7 @@ pub trait OtaPal {
     /// code from the platform abstraction layer.
     async fn write_block(
         &mut self,
-        file: &FileContext,
+        file: &mut FileContext,
         block_offset: usize,
         block_payload: &[u8],
     ) -> Result<usize, OtaPalError>;

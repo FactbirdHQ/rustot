@@ -217,7 +217,7 @@ mod test {
             .topic_payload("test_client", &mut buf)
             .unwrap();
 
-        assert_eq!(&ubf[..payload_len], br#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#);
+        assert_eq!(&buf[..payload_len], br#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#);
 
         assert_eq!(
             topic.as_str(),

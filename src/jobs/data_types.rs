@@ -417,7 +417,7 @@ mod test {
         queued_jobs
             .push(JobExecutionSummary {
                 execution_number: Some(1),
-                job_id: Some(String::from("test")),
+                job_id: Some(String::try_from("test").unwrap()),
                 last_updated_at: Some(1587036256),
                 queued_at: Some(1587036256),
                 started_at: None,

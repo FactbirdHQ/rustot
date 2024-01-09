@@ -7,10 +7,12 @@ use serde::{Serialize, Serializer};
 
 use crate::jobs::StatusDetailsOwned;
 
-use self::json::{JobStatusReason, OtaJob, Signature};
+use self::json::{JobStatusReason, Signature};
 
 use super::config::Config;
+use super::data_interface::Protocol;
 use super::error::OtaError;
+use super::JobEventData;
 
 #[derive(Clone, PartialEq)]
 pub struct Bitmap(bitmaps::Bitmap<32>);
@@ -63,6 +65,7 @@ pub struct FileContext {
     pub auth_scheme: Option<heapless::String<64>>,
     pub signature: Signature,
     pub file_type: Option<u32>,
+    pub protocols: heapless::Vec<Protocol, 2>,
 
     pub status_details: StatusDetailsOwned,
     pub block_offset: u32,
@@ -75,31 +78,27 @@ pub struct FileContext {
 
 impl FileContext {
     pub fn new_from(
-        job_name: &str,
-        ota_job: &OtaJob,
-        status_details: Option<StatusDetailsOwned>,
+        job_data: JobEventData<'_>,
         file_idx: usize,
         config: &Config,
     ) -> Result<Self, OtaError> {
-        let file_desc = ota_job
+        if job_data
+            .ota_document
+            .files
+            .get(file_idx)
+            .map(|f| f.filesize)
+            .unwrap_or_default()
+            == 0
+        {
+            return Err(OtaError::ZeroFileSize);
+        }
+
+        let file_desc = job_data
+            .ota_document
             .files
             .get(file_idx)
             .ok_or(OtaError::InvalidFile)?
             .clone();
-
-        // Initialize new `status_details' if not already present
-        let status = if let Some(details) = status_details {
-            details
-        } else {
-            let mut status = StatusDetailsOwned::new();
-            // status
-            //     .insert(
-            //         heapless::String::try_from("updated_by").unwrap(),
-            //         current_version.to_string(),
-            //     )
-            //     .map_err(|_| OtaError::Overflow)?;
-            status
-        };
 
         let signature = file_desc.signature();
 
@@ -109,6 +108,7 @@ impl FileContext {
         Ok(FileContext {
             filepath: heapless::String::try_from(file_desc.filepath).unwrap(),
             filesize: file_desc.filesize,
+            protocols: job_data.ota_document.protocols,
             fileid: file_desc.fileid,
             certfile: heapless::String::try_from(file_desc.certfile).unwrap(),
             update_data_url: file_desc
@@ -120,13 +120,25 @@ impl FileContext {
             signature,
             file_type: file_desc.file_type,
 
-            status_details: status,
+            status_details: job_data
+                .status_details
+                .map(|s| {
+                    s.iter()
+                        .map(|(&k, &v)| {
+                            (
+                                heapless::String::try_from(k).unwrap(),
+                                heapless::String::try_from(v).unwrap(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_else(|| StatusDetailsOwned::new()),
 
-            job_name: heapless::String::try_from(job_name).unwrap(),
+            job_name: heapless::String::try_from(job_data.job_name).unwrap(),
             block_offset,
             request_block_remaining: bitmap.len() as u32,
             blocks_remaining: (file_desc.filesize + config.block_size - 1) / config.block_size,
-            stream_name: heapless::String::try_from(ota_job.streamname).unwrap(),
+            stream_name: heapless::String::try_from(job_data.ota_document.streamname).unwrap(),
             bitmap,
         })
     }
