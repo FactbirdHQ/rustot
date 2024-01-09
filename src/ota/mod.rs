@@ -82,7 +82,6 @@ impl Updater {
         pal: &mut impl pal::OtaPal,
         config: config::Config,
     ) -> Result<(), error::OtaError> {
-
         // If the job is in self test mode, don't start an OTA update but
         // instead do the following:
         //
@@ -227,8 +226,14 @@ impl Updater {
             while let Ok(mut payload) = subscription.next_block().await {
                 debug!("process_data_handler");
                 // Decode the file block received
-                match Self::ingest_data_block(data, pal, &config, &mut file_ctx, payload.deref_mut())
-                    .await
+                match Self::ingest_data_block(
+                    data,
+                    pal,
+                    &config,
+                    &mut file_ctx,
+                    payload.deref_mut(),
+                )
+                .await
                 {
                     Ok(true) => {
                         // File is completed! Update progress accordingly.
@@ -356,7 +361,9 @@ impl Updater {
         let block = data.decode_file_block(&file_ctx, payload)?;
         if block.validate(config.block_size, file_ctx.filesize) {
             if block.block_id < file_ctx.block_offset as usize
-                || !file_ctx.bitmap.get(block.block_id - file_ctx.block_offset as usize)
+                || !file_ctx
+                    .bitmap
+                    .get(block.block_id - file_ctx.block_offset as usize)
             {
                 info!(
                     "Block {:?} is a DUPLICATE. {:?} blocks remaining.",
@@ -379,9 +386,9 @@ impl Updater {
             )
             .await?;
 
-
             let block_offset = file_ctx.block_offset;
-            file_ctx.bitmap
+            file_ctx
+                .bitmap
                 .set(block.block_id - block_offset as usize, false);
 
             file_ctx.blocks_remaining -= 1;
@@ -394,8 +401,11 @@ impl Updater {
             } else {
                 if file_ctx.bitmap.is_empty() {
                     file_ctx.block_offset += 31;
-                    file_ctx.bitmap =
-                        encoding::Bitmap::new(file_ctx.filesize, config.block_size, file_ctx.block_offset);
+                    file_ctx.bitmap = encoding::Bitmap::new(
+                        file_ctx.filesize,
+                        config.block_size,
+                        file_ctx.block_offset,
+                    );
                 }
 
                 Ok(false)

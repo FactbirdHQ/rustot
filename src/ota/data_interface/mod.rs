@@ -50,9 +50,14 @@ pub trait BlockTransfer {
 pub trait DataInterface {
     const PROTOCOL: Protocol;
 
-    type ActiveTransfer<'t>: BlockTransfer where Self: 't;
+    type ActiveTransfer<'t>: BlockTransfer
+    where
+        Self: 't;
 
-    async fn init_file_transfer(&self, file_ctx: &FileContext) -> Result<Self::ActiveTransfer<'_>, OtaError>;
+    async fn init_file_transfer(
+        &self,
+        file_ctx: &FileContext,
+    ) -> Result<Self::ActiveTransfer<'_>, OtaError>;
 
     async fn request_file_block(
         &self,

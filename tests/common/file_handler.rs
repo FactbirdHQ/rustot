@@ -1,9 +1,15 @@
+use core::ops::Deref;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
-use rustot::ota::{pal::{OtaPal, OtaPalError, PalImageState}, self};
-use sha2::{Sha256, Digest};
-use std::{io::{Cursor, Write, Read}, fs::File};
-use core::ops::Deref;
+use rustot::ota::{
+    self,
+    pal::{OtaPal, OtaPalError, PalImageState},
+};
+use sha2::{Digest, Sha256};
+use std::{
+    fs::File,
+    io::{Cursor, Read, Write},
+};
 
 pub struct FileHandler {
     filebuf: Option<Cursor<Vec<u8>>>,
@@ -62,7 +68,6 @@ impl OtaPal for FileHandler {
                 file.filepath.as_str()
             );
 
-            
             let mut expected_data = std::fs::read(self.compare_file_path.as_str()).unwrap();
             let mut expected_hasher = <Sha256 as Digest>::new();
             expected_hasher.update(&expected_data);
