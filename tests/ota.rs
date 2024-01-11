@@ -47,39 +47,6 @@ impl<'a> Jobs<'a> {
     }
 }
 
-fn handle_job<'a, M: RawMutex, const SUBS: usize>(
-    message: &'a Message<'_, M, SUBS>,
-) -> Option<JobEventData<'a>> {
-    match jobs::Topic::from_str(message.topic_name()) {
-        Some(jobs::Topic::NotifyNext) => {
-            let (execution_changed, _) =
-                serde_json_core::from_slice::<NextJobExecutionChanged<Jobs>>(&message.payload())
-                    .ok()?;
-            let job = execution_changed.execution?;
-            let ota_job = job.job_document?.ota_job()?;
-            Some(JobEventData {
-                job_name: job.job_id,
-                ota_document: ota_job,
-                status_details: job.status_details,
-            })
-        }
-        Some(jobs::Topic::DescribeAccepted(_)) => {
-            let (execution_changed, _) = serde_json_core::from_slice::<
-                DescribeJobExecutionResponse<Jobs>,
-            >(&message.payload())
-            .ok()?;
-            let job = execution_changed.execution?;
-            let ota_job = job.job_document?.ota_job()?;
-            Some(JobEventData {
-                job_name: job.job_id,
-                ota_document: ota_job,
-                status_details: job.status_details,
-            })
-        }
-        _ => None,
-    }
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn test_mqtt_ota() {
     env_logger::init();
@@ -154,7 +121,6 @@ async fn test_mqtt_ota() {
                     let (execution_changed, _) = serde_json_core::from_slice::<
                         DescribeJobExecutionResponse<Jobs>,
                     >(&message.payload())
-                    .ok()
                     .unwrap();
                     let job = execution_changed.execution.unwrap();
                     let ota_job = job.job_document.unwrap().ota_job().unwrap();
