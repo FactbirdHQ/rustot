@@ -1,6 +1,4 @@
 //! Platform abstraction trait for OTA updates
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-
 use super::encoding::FileContext;
 
 #[derive(Debug, Clone, Copy)]

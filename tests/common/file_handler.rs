@@ -11,9 +11,16 @@ use std::{
     io::{Cursor, Read, Write},
 };
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum State {
+    Swap,
+    Boot,
+}
+
 pub struct FileHandler {
     filebuf: Option<Cursor<Vec<u8>>>,
     compare_file_path: String,
+    pub plateform_state: State,
 }
 
 impl FileHandler {
@@ -21,6 +28,7 @@ impl FileHandler {
         FileHandler {
             filebuf: None,
             compare_file_path,
+            plateform_state: State::Boot,
         }
     }
 }
@@ -42,13 +50,20 @@ impl OtaPal for FileHandler {
     }
 
     async fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError> {
-        Ok(PalImageState::Valid)
+        Ok(match self.plateform_state {
+            State::Swap => PalImageState::PendingCommit,
+            State::Boot => PalImageState::Valid,
+        })
     }
 
     async fn set_platform_image_state(
         &mut self,
-        _image_state: rustot::ota::pal::ImageState,
+        image_state: rustot::ota::pal::ImageState,
     ) -> Result<(), OtaPalError> {
+        if matches!(image_state, rustot::ota::pal::ImageState::Accepted) {
+            self.plateform_state = State::Boot;
+        }
+
         Ok(())
     }
 
@@ -99,6 +114,8 @@ impl OtaPal for FileHandler {
                     assert_eq!(sig.as_str(), "This is my custom signature\\n")
                 }
             }
+
+            self.plateform_state = State::Swap;
 
             Ok(())
         } else {

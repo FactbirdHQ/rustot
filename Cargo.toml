@@ -3,7 +3,7 @@ members = ["shadow_derive"]
 
 [package]
 name = "rustot"
-version = "0.4.1"
+version = "0.5.0"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "AWS IoT"
 readme = "README.md"
@@ -22,10 +22,10 @@ name = "rustot"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-bitmaps = { version = "^3.1", default-features = false }
+bitmaps = { version = "3.1", default-features = false }
 heapless = { version = "0.8", features = ["serde"] }
-serde = { version = "1.0.126", default-features = false, features = ["derive"] }
-serde_cbor = { version = "^0.11", default-features = false, optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_cbor = { version = "0.11", default-features = false, optional = true }
 serde-json-core = { version = "0.5" }
 shadow-derive = { path = "shadow_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
@@ -36,11 +36,11 @@ embassy-time = { version = "0.2" }
 embassy-sync = "0.5"
 embassy-futures = "0.1"
 
-log = { version = "^0.4", default-features = false, optional = true }
-defmt = { version = "^0.3", optional = true }
+log = { version = "0.4", default-features = false, optional = true }
+defmt = { version = "0.3", optional = true }
 
 [dev-dependencies]
-native-tls = { version = "^0.2" }
+native-tls = { version = "0.2" }
 embedded-nal-async = "0.7"
 env_logger = "0.10"
 sha2 = "0.10.1"
@@ -54,7 +54,6 @@ embedded-io-adapters = { version = "0.6.0", features = ["tokio-1"] }
 ecdsa = { version = "0.16", features = ["pkcs8", "pem"] }
 p256 = "0.13"
 pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
-timebomb = "0.1.2"
 hex = { version = "0.4.3", features = ["alloc"] }
 
 [features]

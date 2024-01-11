@@ -44,7 +44,6 @@ use core::{
 
 #[cfg(feature = "ota_mqtt_data")]
 pub use data_interface::mqtt::{Encoding, Topic};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
 use crate::{
     jobs::data_types::JobStatus,
@@ -80,7 +79,7 @@ impl Updater {
         data: &D,
         mut file_ctx: FileContext,
         pal: &mut impl pal::OtaPal,
-        config: config::Config,
+        config: &config::Config,
     ) -> Result<(), error::OtaError> {
         // If the job is in self test mode, don't start an OTA update but
         // instead do the following:
@@ -137,6 +136,7 @@ impl Updater {
                 // reboot the device to allow roll back to previous image.
                 error!("Rejecting new image and rebooting: The platform is in the self-test state while the job is not.");
                 pal.reset_device().await?;
+                return Err(error::OtaError::ResetFailed);
             }
             (true, false) => {
                 // The job is in self test but the platform image state is not so it
@@ -153,6 +153,7 @@ impl Updater {
                 )
                 .await?;
                 pal.reset_device().await?;
+                return Err(error::OtaError::ResetFailed);
             }
         }
 
@@ -193,6 +194,7 @@ impl Updater {
 
         let request_momentum = AtomicU8::new(0);
 
+        // FIXME:
         // let momentum_fut = async {
         //     while file_ctx.lock().await.blocks_remaining > 0 {
         //         if request_momentum.load(Ordering::Relaxed) <= config.max_request_momentum {
