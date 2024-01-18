@@ -12,6 +12,7 @@ use crate::ota::config::Config;
 use super::{encoding::FileContext, error::OtaError};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Protocol {
     #[serde(rename = "MQTT")]
     Mqtt,
