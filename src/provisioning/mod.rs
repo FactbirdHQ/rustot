@@ -14,6 +14,7 @@ use serde::{de::DeserializeOwned, Deserialize};
 
 pub use error::Error;
 
+use self::data_types::CreateCertificateFromCsrRequest;
 use self::{
     data_types::{
         CreateKeysAndCertificateResponse, ErrorResponse, RegisterThingRequest,
@@ -52,6 +53,28 @@ impl FleetProvisioner {
             mqtt,
             template_name,
             parameters,
+            None,
+            credential_handler,
+            PayloadFormat::Json,
+        )
+        .await
+    }
+
+    pub async fn provision_csr<'a, C, M: RawMutex, const SUBS: usize>(
+        mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
+        template_name: &str,
+        parameters: Option<impl Serialize>,
+        csr: &str,
+        credential_handler: &mut impl CredentialHandler,
+    ) -> Result<Option<C>, Error>
+    where
+        C: DeserializeOwned,
+    {
+        Self::provision_inner(
+            mqtt,
+            template_name,
+            parameters,
+            Some(csr),
             credential_handler,
             PayloadFormat::Json,
         )
@@ -72,6 +95,29 @@ impl FleetProvisioner {
             mqtt,
             template_name,
             parameters,
+            None,
+            credential_handler,
+            PayloadFormat::Cbor,
+        )
+        .await
+    }
+
+    #[cfg(feature = "provision_cbor")]
+    pub async fn provision_csr_cbor<'a, C, M: RawMutex, const SUBS: usize>(
+        mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
+        template_name: &str,
+        parameters: Option<impl Serialize>,
+        csr: &str,
+        credential_handler: &mut impl CredentialHandler,
+    ) -> Result<Option<C>, Error>
+    where
+        C: DeserializeOwned,
+    {
+        Self::provision_inner(
+            mqtt,
+            template_name,
+            parameters,
+            Some(csr),
             credential_handler,
             PayloadFormat::Cbor,
         )
@@ -83,13 +129,16 @@ impl FleetProvisioner {
         mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
         template_name: &str,
         parameters: Option<impl Serialize>,
+        csr: Option<&str>,
         credential_handler: &mut impl CredentialHandler,
         payload_format: PayloadFormat,
     ) -> Result<Option<C>, Error>
     where
         C: DeserializeOwned,
     {
-        let mut create_subscription = Self::begin(mqtt, payload_format).await?;
+        use crate::provisioning::data_types::CreateCertificateFromCsrResponse;
+
+        let mut create_subscription = Self::begin(mqtt, csr, payload_format).await?;
 
         let mut message = create_subscription
             .next()
@@ -114,13 +163,33 @@ impl FleetProvisioner {
                 response.certificate_ownership_token
             }
 
+            Some(Topic::CreateCertificateFromCsrAccepted(format)) => {
+                let response = Self::deserialize::<CreateCertificateFromCsrResponse, M, SUBS>(
+                    format,
+                    &mut message,
+                )?;
+
+                credential_handler
+                    .store_credentials(Credentials {
+                        certificate_id: response.certificate_id,
+                        certificate_pem: response.certificate_pem,
+                        private_key: None,
+                    })
+                    .await?;
+
+                response.certificate_ownership_token
+            }
+
             // Error happened!
-            Some(Topic::CreateKeysAndCertificateRejected(format)) => {
+            Some(
+                Topic::CreateKeysAndCertificateRejected(format)
+                | Topic::CreateCertificateFromCsrRejected(format),
+            ) => {
                 return Err(Self::handle_error(format, message).unwrap_err());
             }
 
             t => {
-                trace!("{:?}", t);
+                warn!("Got unexpected packet on topic {:?}", t);
 
                 return Err(Error::InvalidState);
             }
@@ -207,36 +276,86 @@ impl FleetProvisioner {
 
     async fn begin<'a, M: RawMutex, const SUBS: usize>(
         mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
+        csr: Option<&str>,
         payload_format: PayloadFormat,
-    ) -> Result<Subscription<'a, '_, M, SUBS, 1>, Error> {
-        let subscription = mqtt
-            .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
-                topic_path: Topic::CreateKeysAndCertificateAny(payload_format)
-                    .format::<31>()?
+    ) -> Result<Subscription<'a, 'a, M, SUBS, 1>, Error> {
+        if let Some(csr) = csr {
+            let request = CreateCertificateFromCsrRequest {
+                certificate_signing_request: csr,
+            };
+
+            // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
+            let payload = &mut [0u8; 1024];
+
+            let payload_len = match payload_format {
+                #[cfg(feature = "provision_cbor")]
+                PayloadFormat::Cbor => {
+                    let mut serializer =
+                        serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(payload));
+                    request.serialize(&mut serializer)?;
+                    serializer.into_inner().bytes_written()
+                }
+                PayloadFormat::Json => serde_json_core::to_slice(&request, payload)?,
+            };
+
+            let subscription = mqtt
+                .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
+                    topic_path: Topic::CreateCertificateFromCsrAny(payload_format)
+                        .format::<40>()?
+                        .as_str(),
+                    maximum_qos: QoS::AtLeastOnce,
+                    no_local: false,
+                    retain_as_published: false,
+                    retain_handling: RetainHandling::SendAtSubscribeTime,
+                }]))
+                .await
+                .map_err(|_| Error::Mqtt)?;
+
+            mqtt.publish(Publish {
+                dup: false,
+                qos: QoS::AtLeastOnce,
+                retain: false,
+                pid: None,
+                topic_name: Topic::CreateCertificateFromCsr(payload_format)
+                    .format::<38>()?
                     .as_str(),
-                maximum_qos: QoS::AtLeastOnce,
-                no_local: false,
-                retain_as_published: false,
-                retain_handling: RetainHandling::SendAtSubscribeTime,
-            }]))
+                payload: &payload[..payload_len],
+                properties: embedded_mqtt::Properties::Slice(&[]),
+            })
             .await
             .map_err(|_| Error::Mqtt)?;
 
-        mqtt.publish(Publish {
-            dup: false,
-            qos: QoS::AtLeastOnce,
-            retain: false,
-            pid: None,
-            topic_name: Topic::CreateKeysAndCertificate(payload_format)
-                .format::<29>()?
-                .as_str(),
-            payload: b"",
-            properties: embedded_mqtt::Properties::Slice(&[]),
-        })
-        .await
-        .map_err(|_| Error::Mqtt)?;
+            Ok(subscription)
+        } else {
+            let subscription = mqtt
+                .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
+                    topic_path: Topic::CreateKeysAndCertificateAny(payload_format)
+                        .format::<31>()?
+                        .as_str(),
+                    maximum_qos: QoS::AtLeastOnce,
+                    no_local: false,
+                    retain_as_published: false,
+                    retain_handling: RetainHandling::SendAtSubscribeTime,
+                }]))
+                .await
+                .map_err(|_| Error::Mqtt)?;
 
-        Ok(subscription)
+            mqtt.publish(Publish {
+                dup: false,
+                qos: QoS::AtLeastOnce,
+                retain: false,
+                pid: None,
+                topic_name: Topic::CreateKeysAndCertificate(payload_format)
+                    .format::<29>()?
+                    .as_str(),
+                payload: b"",
+                properties: embedded_mqtt::Properties::Slice(&[]),
+            })
+            .await
+            .map_err(|_| Error::Mqtt)?;
+
+            Ok(subscription)
+        }
     }
 
     fn deserialize<'a, R: Deserialize<'a>, M: RawMutex, const SUBS: usize>(
@@ -244,7 +363,7 @@ impl FleetProvisioner {
         message: &'a mut Message<'_, M, SUBS>,
     ) -> Result<R, Error> {
         trace!(
-            "Topic::CreateKeysAndCertificateAccepted {:?}. Payload len: {:?}",
+            "Accepted Topic {:?}. Payload len: {:?}",
             payload_format,
             message.payload().len()
         );
