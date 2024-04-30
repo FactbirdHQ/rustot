@@ -3,7 +3,6 @@ use core::fmt::Display;
 use core::str::FromStr;
 
 use heapless::String;
-use mqttrust::MqttError;
 
 use super::data_types::ErrorResponse;
 
@@ -16,14 +15,7 @@ pub enum Error {
     DaoWrite,
     InvalidPayload,
     WrongShadowName,
-    Mqtt(MqttError),
     ShadowError(ShadowError),
-}
-
-impl From<MqttError> for Error {
-    fn from(e: MqttError) -> Self {
-        Self::Mqtt(e)
-    }
 }
 
 impl From<ShadowError> for Error {

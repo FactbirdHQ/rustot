@@ -3,7 +3,6 @@
 use core::fmt::Write;
 
 use heapless::String;
-use mqttrust::{Mqtt, QoS, SubscribeTopic};
 
 use crate::jobs::MAX_THING_NAME_LEN;
 
@@ -33,6 +32,7 @@ pub enum Topic {
     UpdateRejected,
     DeleteAccepted,
     DeleteRejected,
+    Any,
 }
 
 impl Topic {
@@ -188,6 +188,14 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
+            Self::Any => topic_path.write_fmt(format_args!(
+                "{}/{}/{}{}{}/#",
+                Self::PREFIX,
+                thing_name,
+                Self::SHADOW,
+                name_prefix,
+                shadow_name
+            )),
         }
         .map_err(|_| Error::Overflow)?;
 
@@ -233,29 +241,6 @@ impl<const N: usize> Subscribe<N> {
             .map(|(topic, qos)| Ok((Topic::from(*topic).format(thing_name, shadow_name)?, *qos)))
             .collect()
     }
-
-    pub fn send<M: Mqtt>(self, mqtt: &M, shadow_name: Option<&'static str>) -> Result<(), Error> {
-        if self.topics.is_empty() {
-            return Ok(());
-        }
-
-        let topic_paths = self.topics(mqtt.client_id(), shadow_name)?;
-
-        let topics: heapless::Vec<_, N> = topic_paths
-            .iter()
-            .map(|(s, qos)| SubscribeTopic {
-                topic_path: s.as_str(),
-                qos: *qos,
-            })
-            .collect();
-
-        debug!("Subscribing!");
-
-        for t in topics.chunks(5) {
-            mqtt.subscribe(t)?;
-        }
-        Ok(())
-    }
 }
 
 #[derive(Default)]
@@ -294,20 +279,5 @@ impl<const N: usize> Unsubscribe<N> {
             .iter()
             .map(|topic| Topic::from(*topic).format(thing_name, shadow_name))
             .collect()
-    }
-
-    pub fn send<M: Mqtt>(self, mqtt: &M, shadow_name: Option<&'static str>) -> Result<(), Error> {
-        if self.topics.is_empty() {
-            return Ok(());
-        }
-
-        let topic_paths = self.topics(mqtt.client_id(), shadow_name)?;
-        let topics: heapless::Vec<_, N> = topic_paths.iter().map(|s| s.as_str()).collect();
-
-        for t in topics.chunks(5) {
-            mqtt.unsubscribe(t)?;
-        }
-
-        Ok(())
     }
 }
