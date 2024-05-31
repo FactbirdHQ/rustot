@@ -2,6 +2,7 @@
 
 use core::fmt::Write;
 
+use embedded_mqtt::QoS;
 use heapless::String;
 
 use crate::jobs::MAX_THING_NAME_LEN;

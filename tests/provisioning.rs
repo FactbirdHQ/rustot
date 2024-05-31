@@ -11,7 +11,7 @@ use ecdsa::Signature;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{
-    transport::embedded_nal::NalTransport, Config, DomainBroker, IpBroker, Publish, State,
+    transport::embedded_nal::NalTransport, Config, DomainBroker, IpBroker, State,
     Subscribe, SubscribeTopic,
 };
 use p256::{ecdsa::signature::Signer, NistP256};

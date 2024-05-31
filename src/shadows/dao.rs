@@ -7,17 +7,7 @@ pub trait ShadowDAO<S: Serialize + DeserializeOwned> {
     async fn write(&mut self, state: &S) -> Result<(), Error>;
 }
 
-// impl<S: Serialize + DeserializeOwned> ShadowDAO<S> for () {
-//     async fn read(&mut self) -> Result<S, Error> {
-//         Err(Error::NoPersistance)
-//     }
-
-//     async fn write(&mut self, _state: &S) -> Result<(), Error> {
-//         Err(Error::NoPersistance)
-//     }
-// }
-
-const U32_SIZE: usize = core::mem::size_of::<u32>();
+const U32_SIZE: usize = 4;
 
 impl<S, T> ShadowDAO<S> for T
 where

@@ -13,7 +13,7 @@ use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use embassy_time::Duration;
 use embedded_mqtt::transport::embedded_nal::NalTransport;
 use embedded_mqtt::{
-    Config, DomainBroker, IpBroker, Message, Publish, QoS, RetainHandling, State, Subscribe,
+    Config, DomainBroker, IpBroker, Message, QoS, RetainHandling, State, Subscribe,
     SubscribeTopic,
 };
 use futures::StreamExt;

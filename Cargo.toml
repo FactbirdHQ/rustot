@@ -76,5 +76,5 @@ ota_http_data = []
 
 std = ["serde/std", "serde_cbor?/std"]
 
-defmt = ["dep:defmt", "heapless/defmt-03", "embedded-mqtt/defmt"]
+defmt = ["dep:defmt", "heapless/defmt-03", "embedded-mqtt/defmt", "embassy-time/defmt"]
 log = ["dep:log", "embedded-mqtt/log"]

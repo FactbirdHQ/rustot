@@ -49,16 +49,15 @@ where
             let sub = self
                 .mqtt
                 .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
-                    topic_path: topics::Subscribe::<1>::new()
-                        .topic(Topic::UpdateDelta, QoS::AtLeastOnce)
-                        .format::<64>(thing_name, S::NAME)?
+                    topic_path: topics::Topic::UpdateDelta
+                        .format::<64>(self.mqtt.client_id(), S::NAME)?
                         .as_str(),
                     maximum_qos: QoS::AtLeastOnce,
                     no_local: false,
                     retain_as_published: false,
                     retain_handling: RetainHandling::SendAtSubscribeTime,
                 }]))
-                .await;
+                .await?;
             self.subscription.insert(sub)
         };
 
@@ -198,7 +197,7 @@ where
 {
     /// Instantiate a new shadow that will be automatically persisted to NVM
     /// based on the passed `DAO`.
-    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, 1>, mut dao: D) -> Result<Self, Error> {
+    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, 1>, dao: D) -> Result<Self, Error> {
         let handler = ShadowHandler {
             mqtt,
             subscription: None,
@@ -219,7 +218,7 @@ where
         topic: &str,
         payload: &[u8],
     ) -> Result<(S, Option<S::PatchState>), Error> {
-        let state = match self.dao.read().await {
+        let mut state = match self.dao.read().await {
             Ok(state) => state,
             Err(_) => {
                 self.dao.write(&S::default()).await?;
@@ -235,7 +234,7 @@ where
             self.dao.write(&state).await?;
         }
 
-        Ok((&state, delta))
+        Ok((state, delta))
     }
 
     /// Get an immutable reference to the internal local state.
@@ -250,7 +249,7 @@ where
 
     /// Initiate an `UpdateShadow` request, reporting the local state to the cloud.
     pub async fn report_shadow(&mut self) -> Result<(), Error> {
-        let mut state = self.dao.read()?;
+        let mut state = self.dao.read().await?;
         self.handler
             .change_shadow_value(&mut state, None, Some(false))
             .await?;

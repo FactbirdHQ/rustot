@@ -27,7 +27,7 @@ mod common;
 use core::fmt::Write;
 
 use common::{clock::SysClock, credentials, network::Network};
-use embedded_mqtt::Publish;
+use embedded_mqtt::{Properties, Publish, QoS};
 use embedded_nal::Ipv4Addr;
 use mqttrust::Mqtt;
 use mqttrust_core::{bbqueue::BBBuffer, EventLoop, MqttOptions, Notification};
@@ -389,16 +389,20 @@ impl<'a> StateMachine<TestContext<'a>> {
                 log::debug!("Update from cloud: {:?}", payload);
 
                 mqtt_client
-                    .publish(
-                        &Topic::Update
+                    .publish(Publish {
+                        dup: false,
+                        qos: QoS::AtLeastOnce,
+                        retain: false,
+                        pid: None,
+                        topic_name: &Topic::Update
                             .format::<128>(
                                 mqtt_client.client_id(),
                                 <WifiConfig as ShadowState>::NAME,
                             )
                             .unwrap(),
-                        payload.as_bytes(),
-                        mqttrust::QoS::AtLeastOnce,
-                    )
+                        payload: payload.as_bytes(),
+                        properties: Properties::Slice(&[]),
+                    })
                     .unwrap();
                 self.process_event(Events::Ack).unwrap();
             }
@@ -474,7 +478,7 @@ fn test_shadows() {
         Config::new(thing_name, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 
     let state = make_static!(State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config, network);
+    let (mut stack, client) = embedded_mqtt::new(state, config);
 
     let mqtt_client = make_static!(client);
 
@@ -502,9 +506,11 @@ fn test_shadows() {
         todo!()
     };
 
+    let mut transport = NalTransport::new(network);
+
     match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(25),
-        select::select(stack.run(), shadows_fut),
+        select::select(stack.run(transport), shadows_fut),
     )
     .await
     .unwrap()
