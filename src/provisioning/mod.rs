@@ -27,7 +27,7 @@ pub trait CredentialHandler {
     fn store_credentials(
         &mut self,
         credentials: Credentials<'_>,
-    ) -> impl Future<Output = Result<(), Error>> + Send;
+    ) -> impl Future<Output = Result<(), Error>>;
 }
 
 #[derive(Debug)]
@@ -104,7 +104,7 @@ impl FleetProvisioner {
 
     #[cfg(feature = "provision_cbor")]
     pub async fn provision_csr_cbor<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
+        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: &str,
@@ -126,7 +126,7 @@ impl FleetProvisioner {
 
     #[cfg(feature = "provision_cbor")]
     async fn provision_inner<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
+        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: Option<&str>,
@@ -147,7 +147,7 @@ impl FleetProvisioner {
 
         let ownership_token = match Topic::from_str(message.topic_name()) {
             Some(Topic::CreateKeysAndCertificateAccepted(format)) => {
-                let response = Self::deserialize::<CreateKeysAndCertificateResponse, M, SUBS>(
+                let response = Self::deserialize::<CreateKeysAndCertificateResponse, SUBS>(
                     format,
                     &mut message,
                 )?;
@@ -164,7 +164,7 @@ impl FleetProvisioner {
             }
 
             Some(Topic::CreateCertificateFromCsrAccepted(format)) => {
-                let response = Self::deserialize::<CreateCertificateFromCsrResponse, M, SUBS>(
+                let response = Self::deserialize::<CreateCertificateFromCsrResponse, SUBS>(
                     format,
                     &mut message,
                 )?;
@@ -230,7 +230,10 @@ impl FleetProvisioner {
                 retain_handling: RetainHandling::SendAtSubscribeTime,
             }]))
             .await
-            .map_err(|_| Error::Mqtt)?;
+            .map_err(|e| {
+                error!("Failed subscription to RegisterThingAny! {}", e);
+                Error::Mqtt
+            })?;
 
         mqtt.publish(Publish {
             dup: false,
@@ -244,7 +247,10 @@ impl FleetProvisioner {
             properties: embedded_mqtt::Properties::Slice(&[]),
         })
         .await
-        .map_err(|_| Error::Mqtt)?;
+        .map_err(|e| {
+            error!("Failed publish to RegisterThing! {}", e);
+            Error::Mqtt
+        })?;
 
         let mut message = register_subscription
             .next()
@@ -253,10 +259,8 @@ impl FleetProvisioner {
 
         match Topic::from_str(message.topic_name()) {
             Some(Topic::RegisterThingAccepted(_, format)) => {
-                let response = Self::deserialize::<RegisterThingResponse<'_, C>, M, SUBS>(
-                    format,
-                    &mut message,
-                )?;
+                let response =
+                    Self::deserialize::<RegisterThingResponse<'_, C>, SUBS>(format, &mut message)?;
 
                 Ok(response.device_configuration)
             }
@@ -274,11 +278,11 @@ impl FleetProvisioner {
         }
     }
 
-    async fn begin<'a, M: RawMutex, const SUBS: usize>(
-        mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
+    async fn begin<'a, 'b, M: RawMutex, const SUBS: usize>(
+        mqtt: &'b embedded_mqtt::MqttClient<'a, M, SUBS>,
         csr: Option<&str>,
         payload_format: PayloadFormat,
-    ) -> Result<Subscription<'a, 'a, M, SUBS, 1>, Error> {
+    ) -> Result<Subscription<'a, 'b, M, SUBS, 1>, Error> {
         if let Some(csr) = csr {
             let request = CreateCertificateFromCsrRequest {
                 certificate_signing_request: csr,
@@ -358,9 +362,9 @@ impl FleetProvisioner {
         }
     }
 
-    fn deserialize<'a, R: Deserialize<'a>, M: RawMutex, const SUBS: usize>(
+    fn deserialize<'a, R: Deserialize<'a>, const SUBS: usize>(
         payload_format: PayloadFormat,
-        message: &'a mut Message<'_, M, SUBS>,
+        message: &'a mut Message<'_, SUBS>,
     ) -> Result<R, Error> {
         trace!(
             "Accepted Topic {:?}. Payload len: {:?}",
@@ -375,9 +379,9 @@ impl FleetProvisioner {
         })
     }
 
-    fn handle_error<M: RawMutex, const SUBS: usize>(
+    fn handle_error<const SUBS: usize>(
         format: PayloadFormat,
-        mut message: Message<'_, M, SUBS>,
+        mut message: Message<'_, SUBS>,
     ) -> Result<(), Error> {
         error!(">> {:?}", message.topic_name());
 
