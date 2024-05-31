@@ -11,6 +11,7 @@ use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use embassy_time::Duration;
+use embedded_mqtt::transport::embedded_nal::NalTransport;
 use embedded_mqtt::{
     Config, DomainBroker, IpBroker, Message, Publish, QoS, RetainHandling, State, Subscribe,
     SubscribeTopic,
@@ -91,7 +92,9 @@ async fn test_mqtt_ota() {
     let (thing_name, identity) = credentials::identity();
 
     let hostname = credentials::HOSTNAME.unwrap();
-    let network = make_static!(TlsNetwork::new(hostname.to_owned(), identity));
+
+    static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
+    let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
     // Create the MQTT stack
     let broker =
@@ -99,10 +102,10 @@ async fn test_mqtt_ota() {
     let config =
         Config::new(thing_name, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 
-    let state = make_static!(State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config, network);
+    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }, 4>> = StaticCell::new();
+    let state = STATE.init(State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new());
+    let (mut stack, client) = embedded_mqtt::new(state, config);
 
-    let client = make_static!(client);
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
 
     let ota_fut = async {
@@ -129,14 +132,20 @@ async fn test_mqtt_ota() {
             ]))
             .await?;
 
-        Updater::check_for_job(client).await?;
+        Updater::check_for_job(&client).await?;
 
         let config = ota::config::Config::default();
         while let Some(message) = jobs_subscription.next().await {
             if let Some(mut file_ctx) = handle_ota(message, &config) {
                 // We have an OTA job, leeeets go!
-                Updater::perform_ota(client, client, file_ctx.clone(), &mut file_handler, &config)
-                    .await?;
+                Updater::perform_ota(
+                    &client,
+                    &client,
+                    file_ctx.clone(),
+                    &mut file_handler,
+                    &config,
+                )
+                .await?;
 
                 assert_eq!(file_handler.plateform_state, FileHandlerState::Swap);
 
@@ -148,7 +157,8 @@ async fn test_mqtt_ota() {
                         heapless::String::try_from("active").unwrap(),
                     )
                     .unwrap();
-                Updater::perform_ota(client, client, file_ctx, &mut file_handler, &config).await?;
+                Updater::perform_ota(&client, &client, file_ctx, &mut file_handler, &config)
+                    .await?;
 
                 return Ok(());
             }
@@ -157,9 +167,11 @@ async fn test_mqtt_ota() {
         Ok::<_, ota::error::OtaError>(())
     };
 
+    let mut transport = NalTransport::new(network);
+
     match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(25),
-        select::select(stack.run(), ota_fut),
+        select::select(stack.run(&mut transport), ota_fut),
     )
     .await
     .unwrap()

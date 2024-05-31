@@ -144,7 +144,7 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
 
         let topic = SubscribeTopic {
             topic_path: topic_path.as_str(),
-            maximum_qos: embedded_mqtt::QoS::AtLeastOnce,
+            maximum_qos: embedded_mqtt::QoS::AtMostOnce,
             no_local: false,
             retain_as_published: false,
             retain_handling: RetainHandling::SendAtSubscribeTime,
@@ -180,9 +180,14 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
         )
         .map_err(|_| OtaError::Encoding)?;
 
+        debug!(
+            "Requesting more file blocks. Remaining: {}",
+            file_ctx.request_block_remaining
+        );
+
         self.publish(Publish {
             dup: false,
-            qos: embedded_mqtt::QoS::AtMostOnce,
+            qos: embedded_mqtt::QoS::AtLeastOnce,
             retain: false,
             pid: None,
             topic_name: OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())

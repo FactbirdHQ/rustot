@@ -225,6 +225,8 @@ impl Updater {
         let data_fut = async {
             data.request_file_block(&mut file_ctx, &config).await?;
 
+            info!("Awaiting file blocks!");
+
             while let Ok(mut payload) = subscription.next_block().await {
                 debug!("process_data_handler");
                 // Decode the file block received

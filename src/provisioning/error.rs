@@ -6,14 +6,9 @@ pub enum Error {
     Mqtt,
     DeserializeJson(serde_json_core::de::Error),
     DeserializeCbor,
+    CertificateStorage,
     Response(u16),
 }
-
-// impl From<MqttError> for Error {
-//     fn from(e: MqttError) -> Self {
-//         Self::Mqtt(e)
-//     }
-// }
 
 impl From<serde_json_core::ser::Error> for Error {
     fn from(_: serde_json_core::ser::Error) -> Self {

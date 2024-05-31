@@ -10,7 +10,10 @@ use common::network::TlsNetwork;
 use ecdsa::Signature;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{Config, DomainBroker, IpBroker, Publish, State, Subscribe, SubscribeTopic};
+use embedded_mqtt::{
+    transport::embedded_nal::NalTransport, Config, DomainBroker, IpBroker, Publish, State,
+    Subscribe, SubscribeTopic,
+};
 use p256::{ecdsa::signature::Signer, NistP256};
 use rustot::provisioning::{
     topics::Topic, CredentialHandler, Credentials, Error, FleetProvisioner,
@@ -73,7 +76,8 @@ async fn test_provisioning() {
     let template_name =
         std::env::var("TEMPLATE_NAME").unwrap_or_else(|_| "duoProvisioningTemplate".to_string());
 
-    let network = make_static!(TlsNetwork::new(hostname.to_owned(), claim_identity));
+    static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
+    let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), claim_identity));
 
     // Create the MQTT stack
     let broker =
@@ -81,10 +85,9 @@ async fn test_provisioning() {
     let config =
         Config::new(thing_name, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 
-    let state = make_static!(State::<NoopRawMutex, 2048, 4096, 2>::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config, network);
-
-    let client = make_static!(client);
+    static STATE: StaticCell<State<NoopRawMutex, 2048, 4096, 2>> = StaticCell::new();
+    let state = STATE.init(State::<NoopRawMutex, 2048, 4096, 2>::new());
+    let (mut stack, client) = embedded_mqtt::new(state, config);
 
     let signing_key = credentials::signing_key();
     let signature: Signature<NistP256> = signing_key.sign(thing_name.as_bytes());
@@ -99,22 +102,24 @@ async fn test_provisioning() {
 
     #[cfg(not(feature = "provision_cbor"))]
     let provision_fut = FleetProvisioner::provision::<DeviceConfig, NoopRawMutex, 2>(
-        client,
+        &client,
         &template_name,
         Some(parameters),
         &mut credential_handler,
     );
     #[cfg(feature = "provision_cbor")]
     let provision_fut = FleetProvisioner::provision_cbor::<DeviceConfig, NoopRawMutex, 2>(
-        client,
+        &client,
         &template_name,
         Some(parameters),
         &mut credential_handler,
     );
 
+    let mut transport = NalTransport::new(network);
+
     let device_config = match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(15),
-        select::select(stack.run(), provision_fut),
+        select::select(stack.run(&mut transport), provision_fut),
     )
     .await
     .unwrap()

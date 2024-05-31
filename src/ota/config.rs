@@ -1,11 +1,11 @@
 use embassy_time::Duration;
 
 pub struct Config {
-    pub(crate) block_size: usize,
-    pub(crate) max_request_momentum: u8,
-    pub(crate) request_wait: Duration,
-    pub(crate) status_update_frequency: u32,
-    pub(crate) self_test_timeout: Option<Duration>,
+    pub block_size: usize,
+    pub max_request_momentum: u8,
+    pub request_wait: Duration,
+    pub status_update_frequency: u32,
+    pub self_test_timeout: Option<Duration>,
 }
 
 impl Default for Config {
