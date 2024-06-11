@@ -1,4 +1,6 @@
 //! Platform abstraction trait for OTA updates
+use embedded_storage_async::nor_flash::NorFlash;
+
 use super::encoding::FileContext;
 
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +70,8 @@ pub enum OtaEvent {
 
 /// Platform abstraction layer for OTA jobs
 pub trait OtaPal {
+    type BlockWriter: NorFlash;
+
     /// OTA abort.
     ///
     /// The user may register a callback function when initializing the OTA
@@ -98,7 +102,10 @@ pub trait OtaPal {
     /// is created.
     ///
     /// - `file`: [`FileContext`] File description of the job being aborted
-    async fn create_file_for_rx(&mut self, file: &FileContext) -> Result<(), OtaPalError>;
+    async fn create_file_for_rx(
+        &mut self,
+        file: &FileContext,
+    ) -> Result<&mut Self::BlockWriter, OtaPalError>;
 
     /// Get the state of the OTA update image.
     ///
@@ -154,22 +161,6 @@ pub trait OtaPal {
     /// **return** The OTA PAL layer error code combined with the MCU specific
     /// error code.
     async fn close_file(&mut self, file: &FileContext) -> Result<(), OtaPalError>;
-
-    /// Write a block of data to the specified file at the given offset.
-    ///
-    /// - `file`: [`FileContext`] File description of the job being aborted.
-    /// - `block_offset`: Byte offset to write to from the beginning of the
-    ///   file.
-    /// - `block_payload`: Byte array of data to write.
-    ///
-    /// **return** The number of bytes written on a success, or a negative error
-    /// code from the platform abstraction layer.
-    async fn write_block(
-        &mut self,
-        file: &mut FileContext,
-        block_offset: usize,
-        block_payload: &[u8],
-    ) -> Result<usize, OtaPalError>;
 
     /// OTA update complete.
     ///

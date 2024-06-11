@@ -15,6 +15,10 @@ pub enum OtaError {
     ZeroFileSize,
     Overflow,
     InvalidFile,
+    Write(
+        #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
+        embedded_storage_async::nor_flash::NorFlashErrorKind,
+    ),
     Mqtt(embedded_mqtt::Error),
     Encoding,
     Pal,

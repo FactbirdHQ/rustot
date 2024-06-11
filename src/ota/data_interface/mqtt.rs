@@ -4,7 +4,8 @@ use core::str::FromStr;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
-    MqttClient, Properties, Publish, RetainHandling, Subscribe, SubscribeTopic, Subscription,
+    DeferredPayload, EncodingError, MqttClient, Properties, Publish, RetainHandling, Subscribe,
+    SubscribeTopic, Subscription,
 };
 use futures::StreamExt;
 
@@ -163,22 +164,25 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
     ) -> Result<(), OtaError> {
         file_ctx.request_block_remaining = file_ctx.bitmap.len() as u32;
 
-        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
-        let buf = &mut [0u8; 32];
-        let len = cbor::to_slice(
-            &cbor::GetStreamRequest {
-                // Arbitrary client token sent in the stream "GET" message
-                client_token: None,
-                stream_version: None,
-                file_id: file_ctx.fileid,
-                block_size: config.block_size,
-                block_offset: Some(file_ctx.block_offset),
-                block_bitmap: Some(&file_ctx.bitmap),
-                number_of_blocks: None,
+        let payload = DeferredPayload::new(
+            |buf| {
+                cbor::to_slice(
+                    &cbor::GetStreamRequest {
+                        // Arbitrary client token sent in the stream "GET" message
+                        client_token: None,
+                        stream_version: None,
+                        file_id: file_ctx.fileid,
+                        block_size: config.block_size,
+                        block_offset: Some(file_ctx.block_offset),
+                        block_bitmap: Some(&file_ctx.bitmap),
+                        number_of_blocks: None,
+                    },
+                    buf,
+                )
+                .map_err(|e| EncodingError::BufferSize)
             },
-            buf,
-        )
-        .map_err(|_| OtaError::Encoding)?;
+            32,
+        );
 
         debug!(
             "Requesting more file blocks. Remaining: {}",
@@ -193,7 +197,7 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
             topic_name: OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())
                 .format::<{ MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30 }>(self.client_id())?
                 .as_str(),
-            payload: &buf[..len],
+            payload,
             properties: Properties::Slice(&[]),
         })
         .await?;
