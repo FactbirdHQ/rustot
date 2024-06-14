@@ -42,7 +42,7 @@ impl<'a, 'm, M: RawMutex, S: ShadowState> ShadowHandler<'a, 'm, M, S>
 where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    async fn handle_delta(&mut self, state: &mut S) -> Result<Option<S::PatchState>, Error> {
+    async fn handle_delta(&mut self, current_state: &mut S) -> Result<Option<S::PatchState>, Error> {
         let delta_subscription = if self.subscription.is_some() {
             self.subscription.as_mut().unwrap()
         } else {
@@ -82,7 +82,7 @@ where
                         S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
                     );
                 }
-                self.change_shadow_value(state, delta.state.clone(), Some(false))
+                self.change_shadow_value(current_state, delta.state.clone(), Some(false))
                     .await?;
                 Ok(delta.state)
             })?;

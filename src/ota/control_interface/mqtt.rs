@@ -84,8 +84,11 @@ impl<'a, M: RawMutex, const SUBS: usize> ControlInterface
             }
 
             // Downgrade progress updates to QOS 0 to avoid overloading MQTT
-            // buffers during active streaming
-            if status == JobStatus::InProgress {
+            // buffers during active streaming. But make sure to always send and await ack for first update and last update
+            if status == JobStatus::InProgress
+                && file_ctx.blocks_remaining != 0
+                && received_blocks != 0
+            {
                 qos = QoS::AtMostOnce;
             }
         }

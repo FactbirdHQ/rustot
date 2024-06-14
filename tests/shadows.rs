@@ -461,7 +461,7 @@ impl<'a> StateMachine<TestContext<'a>> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-fn test_shadows() {
+async fn test_shadows() {
     env_logger::init();
 
     log::info!("Starting shadows test...");
