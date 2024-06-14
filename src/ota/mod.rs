@@ -44,6 +44,7 @@ use core::{
 
 #[cfg(feature = "ota_mqtt_data")]
 pub use data_interface::mqtt::{Encoding, Topic};
+use embedded_storage_async::nor_flash::{NorFlash, NorFlashError as _};
 
 use crate::{
     jobs::data_types::JobStatus,
@@ -144,6 +145,9 @@ impl Updater {
                 // (this should also cause the image to be erased), aborting the job
                 // and reset the device.
                 error!("Rejecting new image and rebooting: the job is in the self-test state while the platform is not.");
+                // loop {
+                //     embassy_time::Timer::after_secs(1).await;
+                // }
                 Self::set_image_state_with_reason(
                     control,
                     pal,
@@ -171,26 +175,6 @@ impl Updater {
         }
 
         info!("Job document was accepted. Attempting to begin the update");
-
-        // Create/Open the OTA file on the file system
-        if let Err(e) = pal.create_file_for_rx(&file_ctx).await {
-            Self::set_image_state_with_reason(
-                control,
-                pal,
-                &config,
-                &mut file_ctx,
-                ImageState::Aborted(ImageStateReason::Pal(e)),
-            )
-            .await?;
-
-            pal.close_file(&file_ctx).await?;
-            return Err(e.into());
-        }
-
-        // Prepare the storage layer on receiving a new file
-        let mut subscription = data.init_file_transfer(&mut file_ctx).await?;
-
-        info!("Initialized file handler! Requesting file blocks");
 
         let request_momentum = AtomicU8::new(0);
 
@@ -223,6 +207,29 @@ impl Updater {
         // };
 
         let data_fut = async {
+            // Create/Open the OTA file on the file system
+            let block_writer = match pal.create_file_for_rx(&file_ctx).await {
+                Ok(block_writer) => block_writer,
+                Err(e) => {
+                    Self::set_image_state_with_reason(
+                        control,
+                        pal,
+                        &config,
+                        &mut file_ctx,
+                        ImageState::Aborted(ImageStateReason::Pal(e)),
+                    )
+                    .await?;
+
+                    pal.close_file(&file_ctx).await?;
+                    return Err(e.into());
+                }
+            };
+
+            info!("Initialized file handler! Requesting file blocks");
+
+            // Prepare the storage layer on receiving a new file
+            let mut subscription = data.init_file_transfer(&mut file_ctx).await?;
+
             data.request_file_block(&mut file_ctx, &config).await?;
 
             info!("Awaiting file blocks!");
@@ -232,51 +239,48 @@ impl Updater {
                 // Decode the file block received
                 match Self::ingest_data_block(
                     data,
-                    pal,
+                    block_writer,
                     &config,
                     &mut file_ctx,
                     payload.deref_mut(),
                 )
                 .await
                 {
-                    Ok(true) => {
-                        // File is completed! Update progress accordingly.
-                        match pal.close_file(&file_ctx).await {
-                            Err(e) => {
-                                control
-                                    .update_job_status(
-                                        &mut file_ctx,
-                                        &config,
-                                        JobStatus::Failed,
-                                        JobStatusReason::Pal(0),
-                                    )
-                                    .await?;
+                    Ok(true) => match pal.close_file(&file_ctx).await {
+                        Err(e) => {
+                            control
+                                .update_job_status(
+                                    &mut file_ctx,
+                                    &config,
+                                    JobStatus::Failed,
+                                    JobStatusReason::Pal(0),
+                                )
+                                .await?;
 
-                                return Err(e.into());
-                            }
-                            Ok(_) => {
-                                let (status, reason, event) = if let Some(0) = file_ctx.file_type {
-                                    (
-                                        JobStatus::InProgress,
-                                        JobStatusReason::SigCheckPassed,
-                                        pal::OtaEvent::Activate,
-                                    )
-                                } else {
-                                    (
-                                        JobStatus::Succeeded,
-                                        JobStatusReason::Accepted,
-                                        pal::OtaEvent::UpdateComplete,
-                                    )
-                                };
-
-                                control
-                                    .update_job_status(&mut file_ctx, &config, status, reason)
-                                    .await?;
-
-                                return Ok(event);
-                            }
+                            return Err(e.into());
                         }
-                    }
+                        Ok(_) => {
+                            let (status, reason, event) = if let Some(0) = file_ctx.file_type {
+                                (
+                                    JobStatus::InProgress,
+                                    JobStatusReason::SigCheckPassed,
+                                    pal::OtaEvent::Activate,
+                                )
+                            } else {
+                                (
+                                    JobStatus::Succeeded,
+                                    JobStatusReason::Accepted,
+                                    pal::OtaEvent::UpdateComplete,
+                                )
+                            };
+
+                            control
+                                .update_job_status(&mut file_ctx, &config, status, reason)
+                                .await?;
+
+                            return Ok(event);
+                        }
+                    },
                     Ok(false) => {
                         debug!("Ingested one block!");
                         // Reset the momentum counter since we received a good block
@@ -355,9 +359,9 @@ impl Updater {
         Ok(())
     }
 
-    async fn ingest_data_block<'a, D: DataInterface, PAL: pal::OtaPal>(
+    async fn ingest_data_block<'a, D: DataInterface>(
         data: &D,
-        pal: &mut PAL,
+        block_writer: &mut impl NorFlash,
         config: &config::Config,
         file_ctx: &mut FileContext,
         payload: &mut [u8],
@@ -383,12 +387,13 @@ impl Updater {
                 block.block_id, file_ctx.blocks_remaining
             );
 
-            pal.write_block(
-                file_ctx,
-                block.block_id * config.block_size,
-                block.block_payload,
-            )
-            .await?;
+            block_writer
+                .write(
+                    (block.block_id * config.block_size) as u32,
+                    block.block_payload,
+                )
+                .await
+                .map_err(|e| error::OtaError::Write(e.kind()))?;
 
             let block_offset = file_ctx.block_offset;
             file_ctx

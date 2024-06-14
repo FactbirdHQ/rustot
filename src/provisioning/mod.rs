@@ -6,7 +6,8 @@ use core::future::Future;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
-    Message, Publish, QoS, RetainHandling, Subscribe, SubscribeTopic, Subscription,
+    DeferredPayload, EncodingError, Message, Publish, QoS, RetainHandling, Subscribe,
+    SubscribeTopic, Subscription,
 };
 use futures::StreamExt;
 use serde::Serialize;
@@ -200,24 +201,26 @@ impl FleetProvisioner {
             parameters,
         };
 
-        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
-        let payload = &mut [0u8; 1024];
+        let payload = DeferredPayload::new(
+            |buf| {
+                Ok(match payload_format {
+                    #[cfg(feature = "provision_cbor")]
+                    PayloadFormat::Cbor => {
+                        let mut serializer =
+                            serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(buf));
+                        register_request
+                            .serialize(&mut serializer)
+                            .map_err(|_| EncodingError::BufferSize)?;
+                        serializer.into_inner().bytes_written()
+                    }
+                    PayloadFormat::Json => serde_json_core::to_slice(&register_request, buf)
+                        .map_err(|_| EncodingError::BufferSize)?,
+                })
+            },
+            1024,
+        );
 
-        let payload_len = match payload_format {
-            #[cfg(feature = "provision_cbor")]
-            PayloadFormat::Cbor => {
-                let mut serializer =
-                    serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(payload));
-                register_request.serialize(&mut serializer)?;
-                serializer.into_inner().bytes_written()
-            }
-            PayloadFormat::Json => serde_json_core::to_slice(&register_request, payload)?,
-        };
-
-        drop(message);
-        drop(create_subscription);
-
-        debug!("Starting RegisterThing {:?}", payload_len);
+        debug!("Starting RegisterThing");
 
         let mut register_subscription = mqtt
             .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
@@ -243,7 +246,7 @@ impl FleetProvisioner {
             topic_name: Topic::RegisterThing(template_name, payload_format)
                 .format::<69>()?
                 .as_str(),
-            payload: &payload[..payload_len],
+            payload,
             properties: embedded_mqtt::Properties::Slice(&[]),
         })
         .await
@@ -251,6 +254,9 @@ impl FleetProvisioner {
             error!("Failed publish to RegisterThing! {}", e);
             Error::Mqtt
         })?;
+
+        drop(message);
+        drop(create_subscription);
 
         let mut message = register_subscription
             .next()
@@ -289,18 +295,25 @@ impl FleetProvisioner {
             };
 
             // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
-            let payload = &mut [0u8; 1024];
-
-            let payload_len = match payload_format {
-                #[cfg(feature = "provision_cbor")]
-                PayloadFormat::Cbor => {
-                    let mut serializer =
-                        serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(payload));
-                    request.serialize(&mut serializer)?;
-                    serializer.into_inner().bytes_written()
-                }
-                PayloadFormat::Json => serde_json_core::to_slice(&request, payload)?,
-            };
+            let payload = DeferredPayload::new(
+                |buf| {
+                    Ok(match payload_format {
+                        #[cfg(feature = "provision_cbor")]
+                        PayloadFormat::Cbor => {
+                            let mut serializer = serde_cbor::ser::Serializer::new(
+                                serde_cbor::ser::SliceWrite::new(buf),
+                            );
+                            request
+                                .serialize(&mut serializer)
+                                .map_err(|_| EncodingError::BufferSize)?;
+                            serializer.into_inner().bytes_written()
+                        }
+                        PayloadFormat::Json => serde_json_core::to_slice(&request, buf)
+                            .map_err(|_| EncodingError::BufferSize)?,
+                    })
+                },
+                1024,
+            );
 
             let subscription = mqtt
                 .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
@@ -323,7 +336,7 @@ impl FleetProvisioner {
                 topic_name: Topic::CreateCertificateFromCsr(payload_format)
                     .format::<38>()?
                     .as_str(),
-                payload: &payload[..payload_len],
+                payload,
                 properties: embedded_mqtt::Properties::Slice(&[]),
             })
             .await
