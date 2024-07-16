@@ -138,9 +138,7 @@ impl FleetProvisioner {
         C: DeserializeOwned,
     {
         use crate::provisioning::data_types::CreateCertificateFromCsrResponse;
-
         let mut create_subscription = Self::begin(mqtt, csr, payload_format).await?;
-
         let mut message = create_subscription
             .next()
             .await
@@ -234,7 +232,7 @@ impl FleetProvisioner {
             }]))
             .await
             .map_err(|e| {
-                error!("Failed subscription to RegisterThingAny! {}", e);
+                error!("Failed subscription to RegisterThingAny! {:?}", e);
                 Error::Mqtt
             })?;
 
@@ -251,7 +249,7 @@ impl FleetProvisioner {
         })
         .await
         .map_err(|e| {
-            error!("Failed publish to RegisterThing! {}", e);
+            error!("Failed publish to RegisterThing! {:?}", e);
             Error::Mqtt
         })?;
 
@@ -293,7 +291,7 @@ impl FleetProvisioner {
             let request = CreateCertificateFromCsrRequest {
                 certificate_signing_request: csr,
             };
-
+            defmt::info!("a");
             // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
             let payload = DeferredPayload::new(
                 |buf| {
@@ -314,11 +312,12 @@ impl FleetProvisioner {
                 },
                 1024,
             );
+            defmt::info!("b");
 
             let subscription = mqtt
                 .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
-                    topic_path: Topic::CreateCertificateFromCsrAny(payload_format)
-                        .format::<40>()?
+                    topic_path: Topic::CreateCertificateFromCsrAccepted(payload_format)
+                        .format::<60>()?
                         .as_str(),
                     maximum_qos: QoS::AtLeastOnce,
                     no_local: false,
@@ -327,6 +326,7 @@ impl FleetProvisioner {
                 }]))
                 .await
                 .map_err(|_| Error::Mqtt)?;
+            defmt::info!("c");
 
             mqtt.publish(Publish {
                 dup: false,
@@ -341,6 +341,7 @@ impl FleetProvisioner {
             })
             .await
             .map_err(|_| Error::Mqtt)?;
+            defmt::info!("d");
 
             Ok(subscription)
         } else {
@@ -356,6 +357,7 @@ impl FleetProvisioner {
                 }]))
                 .await
                 .map_err(|_| Error::Mqtt)?;
+            defmt::info!("e");
 
             mqtt.publish(Publish {
                 dup: false,
@@ -370,6 +372,7 @@ impl FleetProvisioner {
             })
             .await
             .map_err(|_| Error::Mqtt)?;
+            defmt::info!("f");
 
             Ok(subscription)
         }

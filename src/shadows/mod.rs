@@ -33,8 +33,8 @@ struct ShadowHandler<'a, 'm, M: RawMutex, S: ShadowState>
 where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    mqtt: &'m embedded_mqtt::MqttClient<'a, M, 1>,
-    subscription: Option<embedded_mqtt::Subscription<'a, 'm, M, 1, 1>>,
+    mqtt: &'m embedded_mqtt::MqttClient<'a, M, 8>,
+    subscription: Option<embedded_mqtt::Subscription<'a, 'm, M, 8, 1>>,
     _shadow: PhantomData<S>,
 }
 
@@ -57,7 +57,8 @@ where
                     retain_as_published: false,
                     retain_handling: RetainHandling::SendAtSubscribeTime,
                 }]))
-                .await?;
+                .await
+                .map_err(|e| Error::MqttError(e))?;
             self.subscription.insert(sub)
         };
 
@@ -73,9 +74,8 @@ where
             S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
         );
 
-        serde_json_core::from_slice::<DeltaResponse<S::PatchState>>(delta_message.payload())
-            .map_err(|_| Error::InvalidPayload)
-            .and_then(|(delta, _)| {
+        match serde_json_core::from_slice::<DeltaResponse<S::PatchState>>(delta_message.payload()) {
+            Ok((delta, _)) => {
                 if let Some(_) = delta.state {
                     debug!(
                         "[{:?}] Delta reports new desired value. Changing local value...",
@@ -85,9 +85,9 @@ where
                 self.change_shadow_value(state, delta.state.clone(), Some(false))
                     .await?;
                 Ok(delta.state)
-            })?;
-
-        Ok(delta)
+            }
+            Err(_) => Err(Error::InvalidPayload),
+        }
     }
 
     /// Internal helper function for applying a delta state to the actual shadow
@@ -137,10 +137,11 @@ where
                     retain: false,
                     pid: None,
                     topic_name: update_topic.as_str(),
-                    payload: &payload,
+                    payload: payload.as_slice(),
                     properties: embedded_mqtt::Properties::Slice(&[]),
                 })
-                .await?;
+                .await
+                .map_err(|e| Error::MqttError(e))?;
         }
 
         Ok(())
@@ -159,7 +160,8 @@ where
                 payload: b"",
                 properties: embedded_mqtt::Properties::Slice(&[]),
             })
-            .await?;
+            .await
+            .map_err(|e| Error::MqttError(e))?;
         Ok(())
     }
 
@@ -175,7 +177,8 @@ where
                 payload: b"",
                 properties: embedded_mqtt::Properties::Slice(&[]),
             })
-            .await?;
+            .await
+            .map_err(|e| Error::MqttError(e))?;
         Ok(())
     }
 }
@@ -197,7 +200,7 @@ where
 {
     /// Instantiate a new shadow that will be automatically persisted to NVM
     /// based on the passed `DAO`.
-    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, 1>, dao: D) -> Result<Self, Error> {
+    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, 8>, dao: D) -> Result<Self, Error> {
         let handler = ShadowHandler {
             mqtt,
             subscription: None,
@@ -212,12 +215,7 @@ where
     ///
     /// This function needs to be fed all relevant incoming MQTT payloads in
     /// order for the shadow manager to work.
-    #[must_use]
-    pub async fn handle_message(
-        &mut self,
-        topic: &str,
-        payload: &[u8],
-    ) -> Result<(S, Option<S::PatchState>), Error> {
+    pub async fn handle_message(&mut self) -> Result<(S, Option<S::PatchState>), Error> {
         let mut state = match self.dao.read().await {
             Ok(state) => state,
             Err(_) => {
@@ -306,7 +304,7 @@ where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     /// Instantiate a new non-persisted shadow
-    pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M, 1>) -> Result<Self, Error> {
+    pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M, 8>) -> Result<Self, Error> {
         let handler = ShadowHandler {
             mqtt,
             subscription: None,
@@ -320,7 +318,6 @@ where
     ///
     /// This function needs to be fed all relevant incoming MQTT payloads in
     /// order for the shadow manager to work.
-    #[must_use]
     pub async fn handle_message(&mut self) -> Result<(&S, Option<S::PatchState>), Error> {
         let delta = self.handler.handle_delta(&mut self.state).await?;
         Ok((&self.state, delta))
