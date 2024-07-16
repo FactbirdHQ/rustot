@@ -62,7 +62,7 @@ impl FleetProvisioner {
     }
 
     pub async fn provision_csr<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
+        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: &str,
@@ -222,8 +222,8 @@ impl FleetProvisioner {
 
         let mut register_subscription = mqtt
             .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
-                topic_path: Topic::RegisterThingAny(template_name, payload_format)
-                    .format::<128>()?
+                topic_path: Topic::RegisterThingAccepted(template_name, payload_format)
+                    .format::<150>()?
                     .as_str(),
                 maximum_qos: QoS::AtLeastOnce,
                 no_local: false,
@@ -288,11 +288,23 @@ impl FleetProvisioner {
         payload_format: PayloadFormat,
     ) -> Result<Subscription<'a, 'b, M, SUBS, 1>, Error> {
         if let Some(csr) = csr {
+            let subscription = mqtt
+                .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
+                    topic_path: Topic::CreateCertificateFromCsrAccepted(payload_format)
+                        .format::<47>()?
+                        .as_str(),
+                    maximum_qos: QoS::AtLeastOnce,
+                    no_local: false,
+                    retain_as_published: false,
+                    retain_handling: RetainHandling::SendAtSubscribeTime,
+                }]))
+                .await
+                .map_err(|_| Error::Mqtt)?;
+
             let request = CreateCertificateFromCsrRequest {
                 certificate_signing_request: csr,
             };
-            defmt::info!("a");
-            // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
+
             let payload = DeferredPayload::new(
                 |buf| {
                     Ok(match payload_format {
@@ -313,20 +325,6 @@ impl FleetProvisioner {
                 1024,
             );
             defmt::info!("b");
-
-            let subscription = mqtt
-                .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
-                    topic_path: Topic::CreateCertificateFromCsrAccepted(payload_format)
-                        .format::<60>()?
-                        .as_str(),
-                    maximum_qos: QoS::AtLeastOnce,
-                    no_local: false,
-                    retain_as_published: false,
-                    retain_handling: RetainHandling::SendAtSubscribeTime,
-                }]))
-                .await
-                .map_err(|_| Error::Mqtt)?;
-            defmt::info!("c");
 
             mqtt.publish(Publish {
                 dup: false,
