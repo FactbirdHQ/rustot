@@ -179,7 +179,7 @@ impl<'a> Topic<'a> {
             }
             Topic::RegisterThingAny(template_name, payload_format) => {
                 topic_path.write_fmt(format_args!(
-                    "{}/{}/provision/{}/+",
+                    "{}/{}/provision/{}/#",
                     Self::PROVISIONING_PREFIX,
                     template_name,
                     payload_format,
@@ -209,7 +209,7 @@ impl<'a> Topic<'a> {
             )),
 
             Topic::CreateKeysAndCertificateAny(payload_format) => topic_path.write_fmt(
-                format_args!("{}/create/{}/+", Self::CERT_PREFIX, payload_format),
+                format_args!("{}/create/{}/#", Self::CERT_PREFIX, payload_format),
             ),
             Topic::CreateKeysAndCertificateAccepted(payload_format) => topic_path.write_fmt(
                 format_args!("{}/create/{}/accepted", Self::CERT_PREFIX, payload_format),
