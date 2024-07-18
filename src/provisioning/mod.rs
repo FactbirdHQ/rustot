@@ -324,7 +324,6 @@ impl FleetProvisioner {
                 },
                 1024,
             );
-            defmt::info!("b");
 
             mqtt.publish(Publish {
                 dup: false,
@@ -339,7 +338,6 @@ impl FleetProvisioner {
             })
             .await
             .map_err(|_| Error::Mqtt)?;
-            defmt::info!("d");
 
             Ok(subscription)
         } else {
@@ -355,7 +353,6 @@ impl FleetProvisioner {
                 }]))
                 .await
                 .map_err(|_| Error::Mqtt)?;
-            defmt::info!("e");
 
             mqtt.publish(Publish {
                 dup: false,
@@ -370,7 +367,6 @@ impl FleetProvisioner {
             })
             .await
             .map_err(|_| Error::Mqtt)?;
-            defmt::info!("f");
 
             Ok(subscription)
         }

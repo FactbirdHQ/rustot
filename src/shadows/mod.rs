@@ -14,8 +14,8 @@ use serde::de::DeserializeOwned;
 pub use shadow_derive as derive;
 pub use shadow_diff::ShadowPatch;
 
-use data_types::{AcceptedResponse, DeltaResponse, ErrorResponse};
-use topics::{Direction, Topic, Unsubscribe};
+use data_types::DeltaResponse;
+use topics::Topic;
 
 use self::dao::ShadowDAO;
 
@@ -58,7 +58,7 @@ where
                     retain_handling: RetainHandling::SendAtSubscribeTime,
                 }]))
                 .await
-                .map_err(|e| Error::MqttError(e))?;
+                .map_err(Error::MqttError)?;
             self.subscription.insert(sub)
         };
 
@@ -71,15 +71,15 @@ where
         // message body.
         debug!(
             "[{:?}] Received shadow delta event.",
-            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
+            S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
 
         match serde_json_core::from_slice::<DeltaResponse<S::PatchState>>(delta_message.payload()) {
             Ok((delta, _)) => {
-                if let Some(_) = delta.state {
+                if delta.state.is_some() {
                     debug!(
                         "[{:?}] Delta reports new desired value. Changing local value...",
-                        S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
+                        S::NAME.unwrap_or(CLASSIC_SHADOW),
                     );
                 }
                 self.change_shadow_value(state, delta.state.clone(), Some(false))
@@ -104,7 +104,7 @@ where
 
         debug!(
             "[{:?}] Updating reported shadow value. Update_desired: {:?}",
-            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
+            S::NAME.unwrap_or(CLASSIC_SHADOW),
             update_desired
         );
 
@@ -141,7 +141,7 @@ where
                     properties: embedded_mqtt::Properties::Slice(&[]),
                 })
                 .await
-                .map_err(|e| Error::MqttError(e))?;
+                .map_err(Error::MqttError)?;
         }
 
         Ok(())
@@ -161,7 +161,7 @@ where
                 properties: embedded_mqtt::Properties::Slice(&[]),
             })
             .await
-            .map_err(|e| Error::MqttError(e))?;
+            .map_err(Error::MqttError)?;
         Ok(())
     }
 
@@ -178,7 +178,7 @@ where
                 properties: embedded_mqtt::Properties::Slice(&[]),
             })
             .await
-            .map_err(|e| Error::MqttError(e))?;
+            .map_err(Error::MqttError)?;
         Ok(())
     }
 }
@@ -210,12 +210,9 @@ where
         Ok(Self { handler, dao })
     }
 
-    /// Handle incomming publish messages from the cloud on any topics relevant
-    /// for this particular shadow.
+    /// Wait delta will subscribe if not already to Updatedelta and wait for changes
     ///
-    /// This function needs to be fed all relevant incoming MQTT payloads in
-    /// order for the shadow manager to work.
-    pub async fn handle_message(&mut self) -> Result<(S, Option<S::PatchState>), Error> {
+    pub async fn wait_delta(&mut self) -> Result<(S, Option<S::PatchState>), Error> {
         let mut state = match self.dao.read().await {
             Ok(state) => state,
             Err(_) => {
@@ -265,21 +262,17 @@ where
     /// can be handy for activity or status field updates that are not relevant
     /// to store persistant on the device, but are required to be part of the
     /// same cloud shadow.
-    pub async fn update<F: FnOnce(&S, &mut S::PatchState) -> bool>(
-        &mut self,
-        f: F,
-    ) -> Result<(), Error> {
+    pub async fn update<F: FnOnce(&S, &mut S::PatchState)>(&mut self, f: F) -> Result<(), Error> {
         let mut desired = S::PatchState::default();
         let mut state = self.dao.read().await?;
-        let should_persist = f(&state, &mut desired);
+        f(&state, &mut desired);
 
         self.handler
             .change_shadow_value(&mut state, Some(desired), Some(false))
             .await?;
 
-        if should_persist {
-            self.dao.write(&state).await?;
-        }
+        //Always persist
+        self.dao.write(&state).await?;
 
         Ok(())
     }
@@ -372,7 +365,7 @@ where
         write!(
             f,
             "[{:?}] = {:?}",
-            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
+            S::NAME.unwrap_or(CLASSIC_SHADOW),
             self.get()
         )
     }
