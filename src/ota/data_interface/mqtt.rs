@@ -125,8 +125,8 @@ impl<'a> OtaTopic<'a> {
 }
 
 impl<'a, 'b, M: RawMutex, const SUBS: usize> BlockTransfer for Subscription<'a, 'b, M, SUBS, 1> {
-    async fn next_block(&mut self) -> Result<impl DerefMut<Target = [u8]>, OtaError> {
-        Ok(self.next().await.ok_or(OtaError::Encoding)?)
+    async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError> {
+        Ok(self.next().await)
     }
 }
 
@@ -179,7 +179,7 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
                     },
                     buf,
                 )
-                .map_err(|e| EncodingError::BufferSize)
+                .map_err(|_| EncodingError::BufferSize)
             },
             32,
         );

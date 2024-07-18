@@ -1,8 +1,6 @@
 use serde::Serialize;
 
-use crate::jobs::{
-    data_types::JobStatus, JobTopic, MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN,
-};
+use crate::jobs::{data_types::JobStatus, MAX_CLIENT_TOKEN_LEN};
 
 use super::{JobError, StatusDetailsOwned};
 
@@ -69,7 +67,6 @@ pub struct UpdateJobExecutionRequest<'a> {
 }
 
 pub struct Update<'a> {
-    job_id: &'a str,
     status: JobStatus,
     client_token: Option<&'a str>,
     status_details: Option<&'a StatusDetailsOwned>,
@@ -81,11 +78,8 @@ pub struct Update<'a> {
 }
 
 impl<'a> Update<'a> {
-    pub fn new(job_id: &'a str, status: JobStatus) -> Self {
-        assert!(job_id.len() < MAX_JOB_ID_LEN);
-
+    pub fn new(status: JobStatus) -> Self {
         Self {
-            job_id,
             status,
             status_details: None,
             include_job_document: false,
@@ -148,17 +142,7 @@ impl<'a> Update<'a> {
         }
     }
 
-    pub fn topic_payload(
-        self,
-        client_id: &str,
-        buf: &mut [u8],
-    ) -> Result<
-        (
-            heapless::String<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>,
-            usize,
-        ),
-        JobError,
-    > {
+    pub fn payload(self, buf: &mut [u8]) -> Result<usize, JobError> {
         let payload_len = serde_json_core::to_slice(
             &UpdateJobExecutionRequest {
                 execution_number: self.execution_number,
@@ -174,15 +158,14 @@ impl<'a> Update<'a> {
         )
         .map_err(|_| JobError::Encoding)?;
 
-        Ok((
-            JobTopic::Update(self.job_id).format(client_id)?,
-            payload_len,
-        ))
+        Ok(payload_len)
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::jobs::JobTopic;
+
     use super::*;
     use serde_json_core::to_string;
 
@@ -207,14 +190,17 @@ mod test {
     #[test]
     fn topic_payload() {
         let mut buf = [0u8; 512];
-        let (topic, payload_len) = Update::new("test_job_id", JobStatus::Failed)
+        let topic = JobTopic::Update("test_job_id")
+            .format::<64>("test_client")
+            .unwrap();
+        let payload_len = Update::new(JobStatus::Failed)
             .client_token("test_client:token_update")
             .step_timeout_in_minutes(50)
             .execution_number(5)
             .expected_version(2)
             .include_job_document()
             .include_job_execution_state()
-            .topic_payload("test_client", &mut buf)
+            .payload(&mut buf)
             .unwrap();
 
         assert_eq!(&buf[..payload_len], br#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#);
