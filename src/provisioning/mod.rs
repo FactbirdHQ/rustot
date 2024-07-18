@@ -234,7 +234,7 @@ impl FleetProvisioner {
             }]))
             .await
             .map_err(|e| {
-                error!("Failed subscription to RegisterThingAny! {}", e);
+                error!("Failed subscription to RegisterThingAny! {:?}", e);
                 Error::Mqtt
             })?;
 
@@ -251,7 +251,7 @@ impl FleetProvisioner {
         })
         .await
         .map_err(|e| {
-            error!("Failed publish to RegisterThing! {}", e);
+            error!("Failed publish to RegisterThing! {:?}", e);
             Error::Mqtt
         })?;
 

@@ -227,27 +227,97 @@ impl Updater {
 
             info!("Initialized file handler! Requesting file blocks");
 
-            // Prepare the storage layer on receiving a new file
-            let mut subscription = data.init_file_transfer(&mut file_ctx).await?;
+            loop {
+                // Prepare the storage layer on receiving a new file
+                let mut subscription = data.init_file_transfer(&mut file_ctx).await?;
 
-            data.request_file_block(&mut file_ctx, &config).await?;
+                data.request_file_block(&mut file_ctx, &config).await?;
 
-            info!("Awaiting file blocks!");
+                info!("Awaiting file blocks!");
 
-            while let Ok(mut payload) = subscription.next_block().await {
-                debug!("process_data_handler");
-                // Decode the file block received
-                match Self::ingest_data_block(
-                    data,
-                    block_writer,
-                    &config,
-                    &mut file_ctx,
-                    payload.deref_mut(),
-                )
-                .await
-                {
-                    Ok(true) => match pal.close_file(&file_ctx).await {
+                while let Some(mut payload) = subscription.next_block().await? {
+                    debug!("process_data_handler");
+                    // Decode the file block received
+                    match Self::ingest_data_block(
+                        data,
+                        block_writer,
+                        &config,
+                        &mut file_ctx,
+                        payload.deref_mut(),
+                    )
+                    .await
+                    {
+                        Ok(true) => match pal.close_file(&file_ctx).await {
+                            Err(e) => {
+                                control
+                                    .update_job_status(
+                                        &mut file_ctx,
+                                        &config,
+                                        JobStatus::Failed,
+                                        JobStatusReason::Pal(0),
+                                    )
+                                    .await?;
+
+                                return Err(e.into());
+                            }
+                            Ok(_) => {
+                                let (status, reason, event) = if let Some(0) = file_ctx.file_type {
+                                    (
+                                        JobStatus::InProgress,
+                                        JobStatusReason::SigCheckPassed,
+                                        pal::OtaEvent::Activate,
+                                    )
+                                } else {
+                                    (
+                                        JobStatus::Succeeded,
+                                        JobStatusReason::Accepted,
+                                        pal::OtaEvent::UpdateComplete,
+                                    )
+                                };
+
+                                control
+                                    .update_job_status(&mut file_ctx, &config, status, reason)
+                                    .await?;
+
+                                return Ok(event);
+                            }
+                        },
+                        Ok(false) => {
+                            debug!("Ingested one block!");
+                            // Reset the momentum counter since we received a good block
+                            request_momentum.store(0, Ordering::Relaxed);
+
+                            // We're actively receiving a file so update the job status as
+                            // needed
+                            control
+                                .update_job_status(
+                                    &mut file_ctx,
+                                    &config,
+                                    JobStatus::InProgress,
+                                    JobStatusReason::Receiving,
+                                )
+                                .await?;
+
+                            if file_ctx.request_block_remaining > 1 {
+                                file_ctx.request_block_remaining -= 1;
+                            } else {
+                                data.request_file_block(&mut file_ctx, &config).await?;
+                            }
+                        }
+                        Err(e) if e.is_retryable() => {
+                            warn!("Failed to ingest data block, Error is retryable! ingest_data_block returned error {:?}", e);
+                        }
                         Err(e) => {
+                            error!("Failed to ingest data block, rejecting image: ingest_data_block returned error {:?}", e);
+
+                            // Call the platform specific code to reject the image
+                            // TODO: This should never write to current image flags?!
+                            // pal.set_platform_image_state(ImageState::Rejected(
+                            //     ImageStateReason::FailedIngest,
+                            // ))
+                            // .await?;
+
+                            // TODO: Pal reason
                             control
                                 .update_job_status(
                                     &mut file_ctx,
@@ -257,83 +327,13 @@ impl Updater {
                                 )
                                 .await?;
 
-                            return Err(e.into());
+                            pal.complete_callback(pal::OtaEvent::Fail).await?;
+                            info!("Application callback! OtaEvent::Fail");
+                            return Err(e);
                         }
-                        Ok(_) => {
-                            let (status, reason, event) = if let Some(0) = file_ctx.file_type {
-                                (
-                                    JobStatus::InProgress,
-                                    JobStatusReason::SigCheckPassed,
-                                    pal::OtaEvent::Activate,
-                                )
-                            } else {
-                                (
-                                    JobStatus::Succeeded,
-                                    JobStatusReason::Accepted,
-                                    pal::OtaEvent::UpdateComplete,
-                                )
-                            };
-
-                            control
-                                .update_job_status(&mut file_ctx, &config, status, reason)
-                                .await?;
-
-                            return Ok(event);
-                        }
-                    },
-                    Ok(false) => {
-                        debug!("Ingested one block!");
-                        // Reset the momentum counter since we received a good block
-                        request_momentum.store(0, Ordering::Relaxed);
-
-                        // We're actively receiving a file so update the job status as
-                        // needed
-                        control
-                            .update_job_status(
-                                &mut file_ctx,
-                                &config,
-                                JobStatus::InProgress,
-                                JobStatusReason::Receiving,
-                            )
-                            .await?;
-
-                        if file_ctx.request_block_remaining > 1 {
-                            file_ctx.request_block_remaining -= 1;
-                        } else {
-                            data.request_file_block(&mut file_ctx, &config).await?;
-                        }
-                    }
-                    Err(e) if e.is_retryable() => {
-                        warn!("Failed to ingest data block, Error is retryable! ingest_data_block returned error {:?}", e);
-                    }
-                    Err(e) => {
-                        error!("Failed to ingest data block, rejecting image: ingest_data_block returned error {:?}", e);
-
-                        // Call the platform specific code to reject the image
-                        // TODO: This should never write to current image flags?!
-                        // pal.set_platform_image_state(ImageState::Rejected(
-                        //     ImageStateReason::FailedIngest,
-                        // ))
-                        // .await?;
-
-                        // TODO: Pal reason
-                        control
-                            .update_job_status(
-                                &mut file_ctx,
-                                &config,
-                                JobStatus::Failed,
-                                JobStatusReason::Pal(0),
-                            )
-                            .await?;
-
-                        pal.complete_callback(pal::OtaEvent::Fail).await?;
-                        info!("Application callback! OtaEvent::Fail");
-                        return Err(e);
                     }
                 }
             }
-
-            Err(error::OtaError::Mqtt(embedded_mqtt::Error::EOF))
         };
 
         // let (momentum_res, data_res) = embassy_futures::join::join(momentum_fut, data_fut).await;

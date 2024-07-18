@@ -1,11 +1,11 @@
 use core::fmt::Write;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{Publish, QoS};
+use embedded_mqtt::{DeferredPayload, EncodingError, Publish, QoS};
 
 use super::ControlInterface;
 use crate::jobs::data_types::JobStatus;
-use crate::jobs::Jobs;
+use crate::jobs::{JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 use crate::ota::config::Config;
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
@@ -93,11 +93,17 @@ impl<'a, M: RawMutex, const SUBS: usize> ControlInterface
             }
         }
 
-        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
-        let mut buf = [0u8; 512];
-        let (topic, payload_len) = Jobs::update(file_ctx.job_name.as_str(), status)
-            .status_details(&file_ctx.status_details)
-            .topic_payload(self.client_id(), &mut buf)?;
+        let topic = JobTopic::Update(file_ctx.job_name.as_str())
+            .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.client_id())?;
+        let payload = DeferredPayload::new(
+            |buf| {
+                Jobs::update(status)
+                    .status_details(&file_ctx.status_details)
+                    .payload(buf)
+                    .map_err(|_| EncodingError::BufferSize)
+            },
+            512,
+        );
 
         self.publish(Publish {
             dup: false,
@@ -105,7 +111,7 @@ impl<'a, M: RawMutex, const SUBS: usize> ControlInterface
             retain: false,
             pid: None,
             topic_name: &topic,
-            payload: &buf[..payload_len],
+            payload,
             properties: embedded_mqtt::Properties::Slice(&[]),
         })
         .await?;
