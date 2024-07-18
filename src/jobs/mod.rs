@@ -262,7 +262,7 @@ impl Jobs {
         Describe::new()
     }
 
-    pub fn update(job_id: &str, status: JobStatus) -> Update {
-        Update::new(job_id, status)
+    pub fn update<'a>(status: JobStatus) -> Update<'a> {
+        Update::new(status)
     }
 }
