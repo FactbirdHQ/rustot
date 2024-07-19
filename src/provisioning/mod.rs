@@ -232,11 +232,7 @@ impl FleetProvisioner {
                 retain_as_published: false,
                 retain_handling: RetainHandling::SendAtSubscribeTime,
             }]))
-            .await
-            .map_err(|e| {
-                error!("Failed subscription to RegisterThingAny! {:?}", e);
-                Error::Mqtt
-            })?;
+            .await?;
 
         mqtt.publish(Publish {
             dup: false,
@@ -249,11 +245,7 @@ impl FleetProvisioner {
             payload,
             properties: embedded_mqtt::Properties::Slice(&[]),
         })
-        .await
-        .map_err(|e| {
-            error!("Failed publish to RegisterThing! {:?}", e);
-            Error::Mqtt
-        })?;
+        .await?;
 
         drop(message);
         drop(create_subscription);
@@ -288,20 +280,30 @@ impl FleetProvisioner {
         mqtt: &'b embedded_mqtt::MqttClient<'a, M, SUBS>,
         csr: Option<&str>,
         payload_format: PayloadFormat,
-    ) -> Result<Subscription<'a, 'b, M, SUBS, 1>, Error> {
+    ) -> Result<Subscription<'a, 'b, M, SUBS, 2>, Error> {
         if let Some(csr) = csr {
             let subscription = mqtt
-                .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
-                    topic_path: Topic::CreateCertificateFromCsrAccepted(payload_format)
-                        .format::<47>()?
-                        .as_str(),
-                    maximum_qos: QoS::AtLeastOnce,
-                    no_local: false,
-                    retain_as_published: false,
-                    retain_handling: RetainHandling::SendAtSubscribeTime,
-                }]))
-                .await
-                .map_err(|_| Error::Mqtt)?;
+                .subscribe(Subscribe::new(&[
+                    SubscribeTopic {
+                        topic_path: Topic::CreateCertificateFromCsrRejected(payload_format)
+                            .format::<47>()?
+                            .as_str(),
+                        maximum_qos: QoS::AtLeastOnce,
+                        no_local: false,
+                        retain_as_published: false,
+                        retain_handling: RetainHandling::SendAtSubscribeTime,
+                    },
+                    SubscribeTopic {
+                        topic_path: Topic::CreateCertificateFromCsrAccepted(payload_format)
+                            .format::<47>()?
+                            .as_str(),
+                        maximum_qos: QoS::AtLeastOnce,
+                        no_local: false,
+                        retain_as_published: false,
+                        retain_handling: RetainHandling::SendAtSubscribeTime,
+                    },
+                ]))
+                .await?;
 
             let request = CreateCertificateFromCsrRequest {
                 certificate_signing_request: csr,
@@ -333,28 +335,37 @@ impl FleetProvisioner {
                 retain: false,
                 pid: None,
                 topic_name: Topic::CreateCertificateFromCsr(payload_format)
-                    .format::<38>()?
+                    .format::<40>()?
                     .as_str(),
                 payload,
                 properties: embedded_mqtt::Properties::Slice(&[]),
             })
-            .await
-            .map_err(|_| Error::Mqtt)?;
+            .await?;
 
             Ok(subscription)
         } else {
             let subscription = mqtt
-                .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
-                    topic_path: Topic::CreateKeysAndCertificateAny(payload_format)
-                        .format::<31>()?
-                        .as_str(),
-                    maximum_qos: QoS::AtLeastOnce,
-                    no_local: false,
-                    retain_as_published: false,
-                    retain_handling: RetainHandling::SendAtSubscribeTime,
-                }]))
-                .await
-                .map_err(|_| Error::Mqtt)?;
+                .subscribe(Subscribe::new(&[
+                    SubscribeTopic {
+                        topic_path: Topic::CreateKeysAndCertificateAccepted(payload_format)
+                            .format::<38>()?
+                            .as_str(),
+                        maximum_qos: QoS::AtLeastOnce,
+                        no_local: false,
+                        retain_as_published: false,
+                        retain_handling: RetainHandling::SendAtSubscribeTime,
+                    },
+                    SubscribeTopic {
+                        topic_path: Topic::CreateKeysAndCertificateRejected(payload_format)
+                            .format::<38>()?
+                            .as_str(),
+                        maximum_qos: QoS::AtLeastOnce,
+                        no_local: false,
+                        retain_as_published: false,
+                        retain_handling: RetainHandling::SendAtSubscribeTime,
+                    },
+                ]))
+                .await?;
 
             mqtt.publish(Publish {
                 dup: false,
@@ -367,8 +378,7 @@ impl FleetProvisioner {
                 payload: b"",
                 properties: embedded_mqtt::Properties::Slice(&[]),
             })
-            .await
-            .map_err(|_| Error::Mqtt)?;
+            .await?;
 
             Ok(subscription)
         }
