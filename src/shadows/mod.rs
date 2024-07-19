@@ -46,6 +46,8 @@ where
         let delta_subscription = if self.subscription.is_some() {
             self.subscription.as_mut().unwrap()
         } else {
+            self.mqtt.wait_connected().await;
+
             let sub = self
                 .mqtt
                 .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
