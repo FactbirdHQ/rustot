@@ -29,9 +29,7 @@ serde_cbor = { version = "0.11", default-features = false, optional = true }
 serde-json-core = { version = "0.5" }
 shadow-derive = { path = "shadow_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
-embedded-mqtt = { git = "ssh://git@github.com/BlackbirdHQ/embedded-mqtt/", rev = "dbf8af0", features = [
-    "defmt",
-] }
+embedded-mqtt = { git = "ssh://git@github.com/BlackbirdHQ/embedded-mqtt/", rev = "d766137" }
 
 futures = { version = "0.3.28", default-features = false }
 
@@ -75,5 +73,10 @@ ota_http_data = []
 
 std = ["serde/std", "serde_cbor?/std"]
 
-defmt = ["dep:defmt", "heapless/defmt-03", "embedded-mqtt/defmt", "embassy-time/defmt"]
+defmt = [
+    "dep:defmt",
+    "heapless/defmt-03",
+    "embedded-mqtt/defmt",
+    "embassy-time/defmt",
+]
 log = ["dep:log", "embedded-mqtt/log"]

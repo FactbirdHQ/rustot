@@ -45,7 +45,7 @@ impl<'a> FileBlock<'a> {
 }
 
 pub trait BlockTransfer {
-    async fn next_block(&mut self) -> Result<impl DerefMut<Target = [u8]>, OtaError>;
+    async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError>;
 }
 
 pub trait DataInterface {

@@ -26,8 +26,16 @@ mod common;
 
 use core::fmt::Write;
 
-use common::{clock::SysClock, credentials, network::Network};
-use embedded_mqtt::{Properties, Publish, QoS};
+use common::{
+    clock::SysClock,
+    credentials,
+    network::{Network, TlsNetwork},
+};
+use embassy_futures::select;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embedded_mqtt::{
+    transport::embedded_nal::{self, NalTransport}, DomainBroker, Properties, Publish, QoS, State
+};
 use embedded_nal::Ipv4Addr;
 use mqttrust::Mqtt;
 use mqttrust_core::{bbqueue::BBBuffer, EventLoop, MqttOptions, Notification};
@@ -38,6 +46,7 @@ use rustot::shadows::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use smlang::statemachine;
+use static_cell::StaticCell;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ConfigId(pub u8);
@@ -469,20 +478,22 @@ async fn test_shadows() {
     let (thing_name, identity) = credentials::identity();
 
     let hostname = credentials::HOSTNAME.unwrap();
-    let network = make_static!(TlsNetwork::new(hostname.to_owned(), identity));
+    
+    static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
+    let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
     // Create the MQTT stack
     let broker =
-        DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
-    let config =
-        Config::new(thing_name, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
+        DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), &network).unwrap();
+    let config = embedded_mqtt::Config::new(thing_name, broker)
+        .keepalive_interval(embassy_time::Duration::from_secs(50));
 
-    let state = make_static!(State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new());
+    let state = State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new();
     let (mut stack, client) = embedded_mqtt::new(state, config);
 
-    let mqtt_client = make_static!(client);
+    let mqtt_client = client;
 
-    let shadow = Shadow::new(WifiConfig::default(), mqtt_client).unwrap();
+    let shadow = Shadow::new(WifiConfig::default(), &mqtt_client).unwrap();
 
     // loop {
     //     if nb::block!(mqtt_eventloop.connect(&mut network)).expect("to connect to mqtt") {
@@ -499,7 +510,7 @@ async fn test_shadows() {
     //     }
     // }
 
-    cloud_updater(mqtt_client);
+    // cloud_updater(mqtt_client);
 
     let shadows_fut = async {
         shadow.next_update().await;

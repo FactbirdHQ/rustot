@@ -27,7 +27,7 @@ pub enum OtaError {
 
 impl OtaError {
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Encoding)
+        matches!(self, Self::Encoding | Self::Timeout)
     }
 }
 

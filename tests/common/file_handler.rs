@@ -138,4 +138,6 @@ impl OtaPal for FileHandler {
             Err(OtaPalError::BadFileHandle)
         }
     }
+
+    type BlockWriter;
 }
