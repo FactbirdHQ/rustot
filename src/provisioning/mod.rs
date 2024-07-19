@@ -10,14 +10,13 @@ use embedded_mqtt::{
     SubscribeTopic, Subscription,
 };
 use futures::StreamExt;
-use serde::Serialize;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub use error::Error;
 
-use self::data_types::CreateCertificateFromCsrRequest;
 use self::{
     data_types::{
+        CreateCertificateFromCsrRequest, CreateCertificateFromCsrResponse,
         CreateKeysAndCertificateResponse, ErrorResponse, RegisterThingRequest,
         RegisterThingResponse,
     },
@@ -137,8 +136,6 @@ impl FleetProvisioner {
     where
         C: DeserializeOwned,
     {
-        use crate::provisioning::data_types::CreateCertificateFromCsrResponse;
-
         let mut create_subscription = Self::begin(mqtt, csr, payload_format).await?;
 
         let mut message = create_subscription
@@ -326,7 +323,7 @@ impl FleetProvisioner {
                             .map_err(|_| EncodingError::BufferSize)?,
                     })
                 },
-                1024,
+                csr.len() + 32,
             );
 
             mqtt.publish(Publish {
