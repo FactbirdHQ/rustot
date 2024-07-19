@@ -1,8 +1,4 @@
 use core::convert::TryFrom;
-use core::fmt::Display;
-use core::str::FromStr;
-
-use heapless::String;
 
 use super::data_types::ErrorResponse;
 

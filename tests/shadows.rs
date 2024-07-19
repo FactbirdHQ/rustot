@@ -34,7 +34,8 @@ use common::{
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{
-    transport::embedded_nal::{self, NalTransport}, DomainBroker, Properties, Publish, QoS, State
+    transport::embedded_nal::{self, NalTransport},
+    DomainBroker, Properties, Publish, QoS, State,
 };
 use embedded_nal::Ipv4Addr;
 use mqttrust::Mqtt;
@@ -478,7 +479,7 @@ async fn test_shadows() {
     let (thing_name, identity) = credentials::identity();
 
     let hostname = credentials::HOSTNAME.unwrap();
-    
+
     static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
     let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
@@ -488,8 +489,8 @@ async fn test_shadows() {
     let config = embedded_mqtt::Config::new(thing_name, broker)
         .keepalive_interval(embassy_time::Duration::from_secs(50));
 
-    let state = State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new();
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let mut state = State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new();
+    let (mut stack, client) = embedded_mqtt::new(&mut state, config);
 
     let mqtt_client = client;
 

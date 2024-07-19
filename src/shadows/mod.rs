@@ -29,20 +29,23 @@ pub trait ShadowState: ShadowPatch {
     const MAX_PAYLOAD_SIZE: usize = 512;
 }
 
-struct ShadowHandler<'a, 'm, M: RawMutex, S: ShadowState>
+struct ShadowHandler<'a, 'm, M: RawMutex, S: ShadowState, const SUBS: usize>
 where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    mqtt: &'m embedded_mqtt::MqttClient<'a, M, 8>,
-    subscription: Option<embedded_mqtt::Subscription<'a, 'm, M, 8, 1>>,
+    mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>,
+    subscription: Option<embedded_mqtt::Subscription<'a, 'm, M, SUBS, 1>>,
     _shadow: PhantomData<S>,
 }
 
-impl<'a, 'm, M: RawMutex, S: ShadowState> ShadowHandler<'a, 'm, M, S>
+impl<'a, 'm, M: RawMutex, S: ShadowState, const SUBS: usize> ShadowHandler<'a, 'm, M, S, SUBS>
 where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    async fn handle_delta(&mut self, current_state: &mut S) -> Result<Option<S::PatchState>, Error> {
+    async fn handle_delta(
+        &mut self,
+        current_state: &mut S,
+    ) -> Result<Option<S::PatchState>, Error> {
         let delta_subscription = if self.subscription.is_some() {
             self.subscription.as_mut().unwrap()
         } else {
@@ -185,15 +188,21 @@ where
     }
 }
 
-pub struct PersistedShadow<'a, 'm, S: ShadowState + DeserializeOwned, M: RawMutex, D: ShadowDAO<S>>
-where
+pub struct PersistedShadow<
+    'a,
+    'm,
+    S: ShadowState + DeserializeOwned,
+    M: RawMutex,
+    D: ShadowDAO<S>,
+    const SUBS: usize,
+> where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    handler: ShadowHandler<'a, 'm, M, S>,
+    handler: ShadowHandler<'a, 'm, M, S, SUBS>,
     pub(crate) dao: D,
 }
 
-impl<'a, 'm, S, M, D> PersistedShadow<'a, 'm, S, M, D>
+impl<'a, 'm, S, M, D, const SUBS: usize> PersistedShadow<'a, 'm, S, M, D, SUBS>
 where
     S: ShadowState + DeserializeOwned + Default,
     M: RawMutex,
@@ -202,7 +211,7 @@ where
 {
     /// Instantiate a new shadow that will be automatically persisted to NVM
     /// based on the passed `DAO`.
-    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, 8>, dao: D) -> Result<Self, Error> {
+    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>, dao: D) -> Result<Self, Error> {
         let handler = ShadowHandler {
             mqtt,
             subscription: None,
@@ -284,22 +293,22 @@ where
     }
 }
 
-pub struct Shadow<'a, 'm, S: ShadowState, M: RawMutex>
+pub struct Shadow<'a, 'm, S: ShadowState, M: RawMutex, const SUBS: usize>
 where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     state: S,
-    handler: ShadowHandler<'a, 'm, M, S>,
+    handler: ShadowHandler<'a, 'm, M, S, SUBS>,
 }
 
-impl<'a, 'm, S, M> Shadow<'a, 'm, S, M>
+impl<'a, 'm, S, M, const SUBS: usize> Shadow<'a, 'm, S, M, SUBS>
 where
     S: ShadowState,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     /// Instantiate a new non-persisted shadow
-    pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M, 8>) -> Result<Self, Error> {
+    pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>) -> Result<Self, Error> {
         let handler = ShadowHandler {
             mqtt,
             subscription: None,
@@ -357,7 +366,7 @@ where
     }
 }
 
-impl<'a, 'm, S, M> core::fmt::Debug for Shadow<'a, 'm, S, M>
+impl<'a, 'm, S, M, const SUBS: usize> core::fmt::Debug for Shadow<'a, 'm, S, M, SUBS>
 where
     S: ShadowState + core::fmt::Debug,
     M: RawMutex,
