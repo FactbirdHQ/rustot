@@ -35,7 +35,7 @@ use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{
     transport::embedded_nal::{self, NalTransport},
-    Properties, Publish, QoS, State,
+    DomainBroker, Properties, Publish, QoS, State,
 };
 use embedded_nal::Ipv4Addr;
 use mqttrust::Mqtt;
@@ -47,6 +47,7 @@ use rustot::shadows::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use smlang::statemachine;
+use static_cell::StaticCell;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ConfigId(pub u8);
@@ -471,7 +472,6 @@ impl<'a> StateMachine<TestContext<'a>> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_shadows() {
-    use embedded_mqtt::DomainBroker;
     env_logger::init();
 
     log::info!("Starting shadows test...");
@@ -479,7 +479,9 @@ async fn test_shadows() {
     let (thing_name, identity) = credentials::identity();
 
     let hostname = credentials::HOSTNAME.unwrap();
-    let network = TlsNetwork::new(hostname.to_owned(), identity);
+
+    static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
+    let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
     // Create the MQTT stack
     let broker =
@@ -487,8 +489,8 @@ async fn test_shadows() {
     let config = embedded_mqtt::Config::new(thing_name, broker)
         .keepalive_interval(embassy_time::Duration::from_secs(50));
 
-    let state = State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new();
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let mut state = State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new();
+    let (mut stack, client) = embedded_mqtt::new(&mut state, config);
 
     let mqtt_client = client;
 
