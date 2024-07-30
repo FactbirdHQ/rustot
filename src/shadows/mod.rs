@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 pub use shadow_derive as derive;
 pub use shadow_diff::ShadowPatch;
 
-use data_types::{AcceptedResponse, DeltaResponse};
+use data_types::{AcceptedResponse, DeltaResponse, ErrorResponse};
 use topics::Topic;
 
 use self::dao::ShadowDAO;
@@ -29,7 +29,7 @@ pub trait ShadowState: ShadowPatch {
     const MAX_PAYLOAD_SIZE: usize = 512;
 }
 
-struct ShadowHandler<'a, 'm, M: RawMutex, S: ShadowState + DeserializeOwned, const SUBS: usize>
+struct ShadowHandler<'a, 'm, M: RawMutex, S: ShadowState, const SUBS: usize>
 where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
@@ -38,8 +38,7 @@ where
     _shadow: PhantomData<S>,
 }
 
-impl<'a, 'm, M: RawMutex, S: ShadowState + DeserializeOwned, const SUBS: usize>
-    ShadowHandler<'a, 'm, M, S, SUBS>
+impl<'a, 'm, M: RawMutex, S: ShadowState, const SUBS: usize> ShadowHandler<'a, 'm, M, S, SUBS>
 where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
@@ -106,6 +105,8 @@ where
     ) -> Result<(), Error> {
         if let Some(delta) = delta {
             state.apply_patch(delta);
+        } else {
+            error!("Delta was NONE");
         }
 
         debug!(
@@ -148,7 +149,7 @@ where
     }
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub async fn get_shadow(&mut self) -> Result<S, Error> {
+    pub async fn get_shadow(&mut self) -> Result<S::PatchState, Error> {
         //Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
@@ -193,7 +194,7 @@ where
             .await
             .map_err(Error::MqttError)?;
 
-        debug!("Wait for getAccepted or Getrejected");
+        debug!("Wait for GetAccepted or GetRejected");
         //Wait for next message on topic
         let get_message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
@@ -202,7 +203,9 @@ where
         //Persist shadow and return new shadow
         match Topic::from_str(get_message.topic_name()) {
             Some((Topic::GetAccepted, _, _)) => {
-                match serde_json_core::from_slice::<AcceptedResponse<S>>(get_message.payload()) {
+                match serde_json_core::from_slice::<AcceptedResponse<S::PatchState>>(
+                    get_message.payload(),
+                ) {
                     Ok((response, _)) => match response.state.desired {
                         Some(desired) => Ok(desired),
                         None => {
@@ -217,8 +220,20 @@ where
                 }
             }
             Some((Topic::GetRejected, _, _)) => {
-                error!("Topic was GetRejected");
-                Err(Error::WrongShadowName)
+                match serde_json_core::from_slice::<ErrorResponse>(get_message.payload()) {
+                    //Try to return shadow error from message error code. Return NotFound otherwise
+                    Ok((error_response, _)) => {
+                        if let Ok(shadow_error) = error_response.try_into() {
+                            Err(Error::ShadowError(shadow_error))
+                        } else {
+                            Err(Error::ShadowError(error::ShadowError::NotFound))
+                        }
+                    }
+                    Err(_) => {
+                        error!("Error deserializing GetRejected message");
+                        Err(Error::ShadowError(error::ShadowError::NotFound))
+                    }
+                }
             }
             _ => {
                 error!("Expected Topic name GetRejected or GetAccepted but got something else");
@@ -245,14 +260,8 @@ where
     }
 }
 
-pub struct PersistedShadow<
-    'a,
-    'm,
-    S: ShadowState + DeserializeOwned,
-    M: RawMutex,
-    D: ShadowDAO<S>,
-    const SUBS: usize,
-> where
+pub struct PersistedShadow<'a, 'm, S: ShadowState, M: RawMutex, D: ShadowDAO<S>, const SUBS: usize>
+where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     handler: ShadowHandler<'a, 'm, M, S, SUBS>,
@@ -261,7 +270,7 @@ pub struct PersistedShadow<
 
 impl<'a, 'm, S, M, D, const SUBS: usize> PersistedShadow<'a, 'm, S, M, D, SUBS>
 where
-    S: ShadowState + DeserializeOwned + Default,
+    S: ShadowState + Default,
     M: RawMutex,
     D: ShadowDAO<S>,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
@@ -307,8 +316,10 @@ where
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
     pub async fn get_shadow(&mut self) -> Result<S, Error> {
-        let state = self.handler.get_shadow().await?;
+        let new_desired = self.handler.get_shadow().await?;
         debug!("Persisting new state after get shadow request");
+        let mut state = self.dao.read().await?;
+        state.apply_patch(new_desired);
         self.dao.write(&state).await?;
         Ok(state)
     }
@@ -351,7 +362,7 @@ where
     }
 }
 
-pub struct Shadow<'a, 'm, S: ShadowState + DeserializeOwned, M: RawMutex, const SUBS: usize>
+pub struct Shadow<'a, 'm, S: ShadowState, M: RawMutex, const SUBS: usize>
 where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
@@ -361,7 +372,7 @@ where
 
 impl<'a, 'm, S, M, const SUBS: usize> Shadow<'a, 'm, S, M, SUBS>
 where
-    S: ShadowState + DeserializeOwned,
+    S: ShadowState,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
@@ -415,8 +426,10 @@ where
     }
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub async fn get_shadow(&mut self) -> Result<S, Error> {
-        self.handler.get_shadow().await
+    pub async fn get_shadow(&mut self) -> Result<&S, Error> {
+        let new_desired = self.handler.get_shadow().await?;
+        self.state.apply_patch(new_desired);
+        Ok(&self.state)
     }
 
     pub async fn delete_shadow(&mut self) -> Result<(), Error> {
@@ -426,7 +439,7 @@ where
 
 impl<'a, 'm, S, M, const SUBS: usize> core::fmt::Debug for Shadow<'a, 'm, S, M, SUBS>
 where
-    S: ShadowState + DeserializeOwned + core::fmt::Debug,
+    S: ShadowState + core::fmt::Debug,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
@@ -443,7 +456,7 @@ where
 #[cfg(feature = "defmt")]
 impl<'a, 'm, S, M, const SUBS: usize> defmt::Format for Shadow<'a, 'm, S, M, SUBS>
 where
-    S: ShadowState + DeserializeOwned + defmt::Format,
+    S: ShadowState + defmt::Format,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
