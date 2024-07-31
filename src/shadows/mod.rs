@@ -10,7 +10,6 @@ pub use data_types::Patch;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{Publish, QoS, RetainHandling, Subscribe, SubscribeTopic};
 pub use error::Error;
-use serde::de::DeserializeOwned;
 pub use shadow_derive as derive;
 pub use shadow_diff::ShadowPatch;
 
@@ -23,7 +22,7 @@ const MAX_TOPIC_LEN: usize = 128;
 const PARTIAL_REQUEST_OVERHEAD: usize = 64;
 const CLASSIC_SHADOW: &str = "Classic";
 
-pub trait ShadowState: ShadowPatch {
+pub trait ShadowState: ShadowPatch + Default {
     const NAME: Option<&'static str>;
 
     const MAX_PAYLOAD_SIZE: usize = 512;
@@ -105,8 +104,6 @@ where
     ) -> Result<(), Error> {
         if let Some(delta) = delta {
             state.apply_patch(delta);
-        } else {
-            error!("Delta was NONE");
         }
 
         debug!(
@@ -138,20 +135,15 @@ where
         match Topic::from_str(message.topic_name()) {
             Some((Topic::UpdateAccepted, _, _)) => Ok(()),
             Some((Topic::UpdateRejected, _, _)) => {
-                match serde_json_core::from_slice::<ErrorResponse>(message.payload()) {
-                    //Try to return shadow error from message error code. Return NotFound otherwise
-                    Ok((error_response, _)) => {
-                        if let Ok(shadow_error) = error_response.try_into() {
-                            Err(Error::ShadowError(shadow_error))
-                        } else {
-                            Err(Error::ShadowError(error::ShadowError::NotFound))
-                        }
-                    }
-                    Err(_) => {
-                        error!("Error deserializing GetRejected message");
-                        Err(Error::ShadowError(error::ShadowError::NotFound))
-                    }
-                }
+                let (error_response, _) =
+                    serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+
+                Err(Error::ShadowError(
+                    error_response
+                        .try_into()
+                        .unwrap_or(error::ShadowError::NotFound),
+                ))
             }
             _ => {
                 error!("Expected Topic name GetRejected or GetAccepted but got something else");
@@ -171,38 +163,30 @@ where
         //Deserialize message
         //Persist shadow and return new shadow
         match Topic::from_str(get_message.topic_name()) {
-            Some((Topic::GetAccepted, _, _)) => {
-                match serde_json_core::from_slice::<AcceptedResponse<S::PatchState>>(
-                    get_message.payload(),
-                ) {
-                    Ok((response, _)) => match response.state.desired {
-                        Some(desired) => Ok(desired),
-                        None => {
-                            error!("Shadow state was deserialized but desired was None");
-                            Err(Error::InvalidPayload)
-                        }
-                    },
-                    Err(_) => {
-                        error!("Failed deserializing shadow payload");
-                        Err(Error::InvalidPayload)
-                    }
-                }
-            }
+            Some((Topic::GetAccepted, _, _)) => serde_json_core::from_slice::<
+                AcceptedResponse<S::PatchState>,
+            >(get_message.payload())
+            .ok()
+            .and_then(|(r, _)| r.state.desired)
+            .ok_or(Error::InvalidPayload),
             Some((Topic::GetRejected, _, _)) => {
-                match serde_json_core::from_slice::<ErrorResponse>(get_message.payload()) {
-                    //Try to return shadow error from message error code. Return NotFound otherwise
-                    Ok((error_response, _)) => {
-                        if let Ok(shadow_error) = error_response.try_into() {
-                            Err(Error::ShadowError(shadow_error))
-                        } else {
-                            Err(Error::ShadowError(error::ShadowError::NotFound))
-                        }
-                    }
-                    Err(_) => {
-                        error!("Error deserializing GetRejected message");
-                        Err(Error::ShadowError(error::ShadowError::NotFound))
-                    }
+                let (error_response, _) =
+                    serde_json_core::from_slice::<ErrorResponse>(get_message.payload())
+                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+
+                if error_response.code == 404 {
+                    debug!(
+                        "[{:?}] Thing has no shadow document. Creating with defaults...",
+                        S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
+                    );
+                    return self.create_shadow().await;
                 }
+
+                Err(Error::ShadowError(
+                    error_response
+                        .try_into()
+                        .unwrap_or(error::ShadowError::NotFound),
+                ))
             }
             _ => {
                 error!("Expected Topic name GetRejected or GetAccepted but got something else");
@@ -223,20 +207,15 @@ where
         match Topic::from_str(message.topic_name()) {
             Some((Topic::DeleteAccepted, _, _)) => Ok(()),
             Some((Topic::DeleteRejected, _, _)) => {
-                match serde_json_core::from_slice::<ErrorResponse>(message.payload()) {
-                    //Try to return shadow error from message error code. Return NotFound otherwise
-                    Ok((error_response, _)) => {
-                        if let Ok(shadow_error) = error_response.try_into() {
-                            Err(Error::ShadowError(shadow_error))
-                        } else {
-                            Err(Error::ShadowError(error::ShadowError::NotFound))
-                        }
-                    }
-                    Err(_) => {
-                        error!("Error deserializing GetRejected message");
-                        Err(Error::ShadowError(error::ShadowError::NotFound))
-                    }
-                }
+                let (error_response, _) =
+                    serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+
+                Err(Error::ShadowError(
+                    error_response
+                        .try_into()
+                        .unwrap_or(error::ShadowError::NotFound),
+                ))
             }
             _ => {
                 error!("Expected Topic name GetRejected or GetAccepted but got something else");
@@ -244,6 +223,60 @@ where
             }
         }
     }
+
+    pub async fn create_shadow(&mut self) -> Result<S::PatchState, Error> {
+        debug!(
+            "[{:?}] Creating initial shadow value.",
+            S::NAME.unwrap_or(CLASSIC_SHADOW),
+        );
+
+        let state = S::default();
+
+        let request = data_types::Request {
+            state: data_types::State {
+                reported: Some(&state),
+                desired: Some(&state),
+            },
+            client_token: None,
+            version: None,
+        };
+
+        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
+        let payload = serde_json_core::to_vec::<
+            _,
+            { S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD },
+        >(&request)
+        .map_err(|_| Error::Overflow)?;
+
+        let message = self
+            .publish_and_subscribe(Topic::Update, payload.as_slice())
+            .await?;
+
+        match Topic::from_str(message.topic_name()) {
+            Some((Topic::UpdateAccepted, _, _)) => {
+                serde_json_core::from_slice::<AcceptedResponse<S::PatchState>>(message.payload())
+                    .ok()
+                    .and_then(|(r, _)| r.state.desired)
+                    .ok_or(Error::InvalidPayload)
+            }
+            Some((Topic::UpdateRejected, _, _)) => {
+                let (error_response, _) =
+                    serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+
+                Err(Error::ShadowError(
+                    error_response
+                        .try_into()
+                        .unwrap_or(error::ShadowError::NotFound),
+                ))
+            }
+            _ => {
+                error!("Expected Topic name GetRejected or GetAccepted but got something else");
+                Err(Error::WrongShadowName)
+            }
+        }
+    }
+
     ///This function will subscribe to accepted and rejected topics and then do a publish.
     ///It will only return when something is accepted or rejected
     ///Topic is the topic you want to publish to
@@ -325,14 +358,14 @@ where
 {
     /// Instantiate a new shadow that will be automatically persisted to NVM
     /// based on the passed `DAO`.
-    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>, dao: D) -> Result<Self, Error> {
+    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>, dao: D) -> Self {
         let handler = ShadowHandler {
             mqtt,
             subscription: None,
             _shadow: PhantomData,
         };
 
-        Ok(Self { handler, dao })
+        Self { handler, dao }
     }
 
     /// Wait delta will subscribe if not already to Updatedelta and wait for changes
@@ -427,13 +460,13 @@ where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     /// Instantiate a new non-persisted shadow
-    pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>) -> Result<Self, Error> {
+    pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>) -> Self {
         let handler = ShadowHandler {
             mqtt,
             subscription: None,
             _shadow: PhantomData,
         };
-        Ok(Self { handler, state })
+        Self { handler, state }
     }
 
     /// Handle incoming publish messages from the cloud on any topics relevant

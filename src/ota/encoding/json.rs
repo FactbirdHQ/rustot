@@ -65,13 +65,19 @@ impl<'a> FileDescription<'a> {
             return Some(Signature::Sha1Rsa(heapless::String::try_from(sig).unwrap()));
         }
         if let Some(sig) = self.sha256_rsa {
-            return Some(Signature::Sha256Rsa(heapless::String::try_from(sig).unwrap()));
+            return Some(Signature::Sha256Rsa(
+                heapless::String::try_from(sig).unwrap(),
+            ));
         }
         if let Some(sig) = self.sha1_ecdsa {
-            return Some(Signature::Sha1Ecdsa(heapless::String::try_from(sig).unwrap()));
+            return Some(Signature::Sha1Ecdsa(
+                heapless::String::try_from(sig).unwrap(),
+            ));
         }
         if let Some(sig) = self.sha256_ecdsa {
-            return Some(Signature::Sha256Ecdsa(heapless::String::try_from(sig).unwrap()));
+            return Some(Signature::Sha256Ecdsa(
+                heapless::String::try_from(sig).unwrap(),
+            ));
         }
         None
     }
