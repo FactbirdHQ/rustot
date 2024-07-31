@@ -60,10 +60,10 @@ pub struct FileContext {
     pub filepath: heapless::String<64>,
     pub filesize: usize,
     pub fileid: u8,
-    pub certfile: heapless::String<64>,
+    pub certfile: Option<heapless::String<64>>,
     pub update_data_url: Option<heapless::String<64>>,
     pub auth_scheme: Option<heapless::String<64>>,
-    pub signature: Signature,
+    pub signature: Option<Signature>,
     pub file_type: Option<u32>,
     pub protocols: heapless::Vec<Protocol, 2>,
 
@@ -110,7 +110,9 @@ impl FileContext {
             filesize: file_desc.filesize,
             protocols: job_data.ota_document.protocols,
             fileid: file_desc.fileid,
-            certfile: heapless::String::try_from(file_desc.certfile).unwrap(),
+            certfile: file_desc
+                .certfile
+                .map(|cert| heapless::String::try_from(cert).unwrap()),
             update_data_url: file_desc
                 .update_data_url
                 .map(|s| heapless::String::try_from(s).unwrap()),
