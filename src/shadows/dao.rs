@@ -2,7 +2,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use super::{Error, ShadowState};
 
-pub trait ShadowDAO<S: Serialize + DeserializeOwned> {
+pub trait ShadowDAO<S: Serialize> {
     async fn read(&mut self) -> Result<S, Error>;
     async fn write(&mut self, state: &S) -> Result<(), Error>;
 }

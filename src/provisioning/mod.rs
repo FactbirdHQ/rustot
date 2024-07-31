@@ -136,6 +136,7 @@ impl FleetProvisioner {
     where
         C: DeserializeOwned,
     {
+        use crate::provisioning::data_types::CreateCertificateFromCsrResponse;
         let mut create_subscription = Self::begin(mqtt, csr, payload_format).await?;
         let mut message = create_subscription
             .next()

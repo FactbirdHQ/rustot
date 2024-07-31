@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 pub use shadow_derive as derive;
 pub use shadow_diff::ShadowPatch;
 
-use data_types::DeltaResponse;
+use data_types::{AcceptedResponse, DeltaResponse, ErrorResponse};
 use topics::Topic;
 
 use self::dao::ShadowDAO;
@@ -34,7 +34,7 @@ where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>,
-    subscription: Option<embedded_mqtt::Subscription<'a, 'm, M, SUBS, 1>>,
+    subscription: Option<embedded_mqtt::Subscription<'a, 'm, M, SUBS, 2>>,
     _shadow: PhantomData<S>,
 }
 
@@ -46,25 +46,26 @@ where
         &mut self,
         current_state: &mut S,
     ) -> Result<Option<S::PatchState>, Error> {
-        let delta_subscription = if self.subscription.is_some() {
-            self.subscription.as_mut().unwrap()
-        } else {
-            self.mqtt.wait_connected().await;
+        let delta_subscription = match self.subscription.as_mut() {
+            Some(sub) => sub,
+            None => {
+                self.mqtt.wait_connected().await;
 
-            let sub = self
-                .mqtt
-                .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
-                    topic_path: topics::Topic::UpdateDelta
-                        .format::<64>(self.mqtt.client_id(), S::NAME)?
-                        .as_str(),
-                    maximum_qos: QoS::AtLeastOnce,
-                    no_local: false,
-                    retain_as_published: false,
-                    retain_handling: RetainHandling::SendAtSubscribeTime,
-                }]))
-                .await
-                .map_err(Error::MqttError)?;
-            self.subscription.insert(sub)
+                let sub = self
+                    .mqtt
+                    .subscribe::<2>(Subscribe::new(&[SubscribeTopic {
+                        topic_path: topics::Topic::UpdateDelta
+                            .format::<64>(self.mqtt.client_id(), S::NAME)?
+                            .as_str(),
+                        maximum_qos: QoS::AtLeastOnce,
+                        no_local: false,
+                        retain_as_published: false,
+                        retain_handling: RetainHandling::SendAtSubscribeTime,
+                    }]))
+                    .await
+                    .map_err(Error::MqttError)?;
+                self.subscription.insert(sub)
+            }
         };
 
         let delta_message = delta_subscription
@@ -87,7 +88,7 @@ where
                         S::NAME.unwrap_or(CLASSIC_SHADOW),
                     );
                 }
-                self.change_shadow_value(current_state, delta.state.clone(), Some(false))
+                self.change_shadow_value(current_state, delta.state.clone())
                     .await?;
                 Ok(delta.state)
             }
@@ -101,101 +102,214 @@ where
         &mut self,
         state: &mut S,
         delta: Option<S::PatchState>,
-        update_desired: Option<bool>,
     ) -> Result<(), Error> {
         if let Some(delta) = delta {
             state.apply_patch(delta);
+        } else {
+            error!("Delta was NONE");
         }
 
         debug!(
-            "[{:?}] Updating reported shadow value. Update_desired: {:?}",
+            "[{:?}] Updating reported shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
-            update_desired
         );
 
-        if let Some(update_desired) = update_desired {
-            let desired = if update_desired { Some(&state) } else { None };
+        let request = data_types::Request {
+            state: data_types::State {
+                reported: Some(&state),
+                desired: None,
+            },
+            client_token: None,
+            version: None,
+        };
 
-            let request = data_types::Request {
-                state: data_types::State {
-                    reported: Some(&state),
-                    desired,
-                },
-                client_token: None,
-                version: None,
-            };
+        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
+        let payload = serde_json_core::to_vec::<
+            _,
+            { S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD },
+        >(&request)
+        .map_err(|_| Error::Overflow)?;
 
-            // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
-            let payload = serde_json_core::to_vec::<
-                _,
-                { S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD },
-            >(&request)
-            .map_err(|_| Error::Overflow)?;
+        let message = self
+            .publish_and_subscribe(Topic::Update, payload.as_slice())
+            .await?;
 
-            let update_topic =
-                Topic::Update.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
-
-            self.mqtt
-                .publish(Publish {
-                    dup: false,
-                    qos: QoS::AtLeastOnce,
-                    retain: false,
-                    pid: None,
-                    topic_name: update_topic.as_str(),
-                    payload: payload.as_slice(),
-                    properties: embedded_mqtt::Properties::Slice(&[]),
-                })
-                .await
-                .map_err(Error::MqttError)?;
+        //Check if topic is GetAccepted
+        match Topic::from_str(message.topic_name()) {
+            Some((Topic::UpdateAccepted, _, _)) => Ok(()),
+            Some((Topic::UpdateRejected, _, _)) => {
+                match serde_json_core::from_slice::<ErrorResponse>(message.payload()) {
+                    //Try to return shadow error from message error code. Return NotFound otherwise
+                    Ok((error_response, _)) => {
+                        if let Ok(shadow_error) = error_response.try_into() {
+                            Err(Error::ShadowError(shadow_error))
+                        } else {
+                            Err(Error::ShadowError(error::ShadowError::NotFound))
+                        }
+                    }
+                    Err(_) => {
+                        error!("Error deserializing GetRejected message");
+                        Err(Error::ShadowError(error::ShadowError::NotFound))
+                    }
+                }
+            }
+            _ => {
+                error!("Expected Topic name GetRejected or GetAccepted but got something else");
+                Err(Error::WrongShadowName)
+            }
         }
-
-        Ok(())
     }
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub async fn get_shadow(&self) -> Result<(), Error> {
-        let get_topic = Topic::Get.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
-        self.mqtt
-            .publish(Publish {
-                dup: false,
-                qos: QoS::AtLeastOnce,
-                retain: false,
-                pid: None,
-                topic_name: get_topic.as_str(),
-                payload: b"",
-                properties: embedded_mqtt::Properties::Slice(&[]),
-            })
-            .await
-            .map_err(Error::MqttError)?;
-        Ok(())
+    pub async fn get_shadow(&mut self) -> Result<S::PatchState, Error> {
+        //Wait for mqtt to connect
+        self.mqtt.wait_connected().await;
+
+        let get_message = self.publish_and_subscribe(Topic::Get, b"").await?;
+
+        //Check if topic is GetAccepted
+        //Deserialize message
+        //Persist shadow and return new shadow
+        match Topic::from_str(get_message.topic_name()) {
+            Some((Topic::GetAccepted, _, _)) => {
+                match serde_json_core::from_slice::<AcceptedResponse<S::PatchState>>(
+                    get_message.payload(),
+                ) {
+                    Ok((response, _)) => match response.state.desired {
+                        Some(desired) => Ok(desired),
+                        None => {
+                            error!("Shadow state was deserialized but desired was None");
+                            Err(Error::InvalidPayload)
+                        }
+                    },
+                    Err(_) => {
+                        error!("Failed deserializing shadow payload");
+                        Err(Error::InvalidPayload)
+                    }
+                }
+            }
+            Some((Topic::GetRejected, _, _)) => {
+                match serde_json_core::from_slice::<ErrorResponse>(get_message.payload()) {
+                    //Try to return shadow error from message error code. Return NotFound otherwise
+                    Ok((error_response, _)) => {
+                        if let Ok(shadow_error) = error_response.try_into() {
+                            Err(Error::ShadowError(shadow_error))
+                        } else {
+                            Err(Error::ShadowError(error::ShadowError::NotFound))
+                        }
+                    }
+                    Err(_) => {
+                        error!("Error deserializing GetRejected message");
+                        Err(Error::ShadowError(error::ShadowError::NotFound))
+                    }
+                }
+            }
+            _ => {
+                error!("Expected Topic name GetRejected or GetAccepted but got something else");
+                Err(Error::WrongShadowName)
+            }
+        }
     }
 
     pub async fn delete_shadow(&mut self) -> Result<(), Error> {
-        let delete_topic = Topic::Delete.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
+        //Wait for mqtt to connect
+        self.mqtt.wait_connected().await;
+
+        let message = self
+            .publish_and_subscribe(topics::Topic::Delete, b"")
+            .await?;
+
+        //Check if topic is DeleteAccepted
+        match Topic::from_str(message.topic_name()) {
+            Some((Topic::DeleteAccepted, _, _)) => Ok(()),
+            Some((Topic::DeleteRejected, _, _)) => {
+                match serde_json_core::from_slice::<ErrorResponse>(message.payload()) {
+                    //Try to return shadow error from message error code. Return NotFound otherwise
+                    Ok((error_response, _)) => {
+                        if let Ok(shadow_error) = error_response.try_into() {
+                            Err(Error::ShadowError(shadow_error))
+                        } else {
+                            Err(Error::ShadowError(error::ShadowError::NotFound))
+                        }
+                    }
+                    Err(_) => {
+                        error!("Error deserializing GetRejected message");
+                        Err(Error::ShadowError(error::ShadowError::NotFound))
+                    }
+                }
+            }
+            _ => {
+                error!("Expected Topic name GetRejected or GetAccepted but got something else");
+                Err(Error::WrongShadowName)
+            }
+        }
+    }
+    ///This function will subscribe to accepted and rejected topics and then do a publish.
+    ///It will only return when something is accepted or rejected
+    ///Topic is the topic you want to publish to
+    ///The function will automatically subscribe to the accepted and rejected topic related to the publish topic
+    async fn publish_and_subscribe(
+        &mut self,
+        topic: topics::Topic,
+        payload: &[u8],
+    ) -> Result<embedded_mqtt::Message<'a, SUBS>, Error> {
+        let (accepted, rejected) = match topic {
+            Topic::Get => (Topic::GetAccepted, Topic::GetRejected),
+            Topic::Update => (Topic::UpdateAccepted, Topic::UpdateRejected),
+            Topic::Delete => (Topic::DeleteAccepted, Topic::DeleteRejected),
+            _ => return Err(Error::ShadowError(error::ShadowError::Forbidden)),
+        };
+
+        //*** SUBSCRIBE ***/
+        let mut sub = self
+            .mqtt
+            .subscribe::<2>(Subscribe::new(&[
+                SubscribeTopic {
+                    topic_path: accepted
+                        .format::<64>(self.mqtt.client_id(), S::NAME)?
+                        .as_str(),
+                    maximum_qos: QoS::AtLeastOnce,
+                    no_local: false,
+                    retain_as_published: false,
+                    retain_handling: RetainHandling::SendAtSubscribeTime,
+                },
+                SubscribeTopic {
+                    topic_path: rejected
+                        .format::<64>(self.mqtt.client_id(), S::NAME)?
+                        .as_str(),
+                    maximum_qos: QoS::AtLeastOnce,
+                    no_local: false,
+                    retain_as_published: false,
+                    retain_handling: RetainHandling::SendAtSubscribeTime,
+                },
+            ]))
+            .await
+            .map_err(Error::MqttError)?;
+
+        //*** PUBLISH REQUEST ***/
+        let topic_name = topic.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
         self.mqtt
             .publish(Publish {
                 dup: false,
                 qos: QoS::AtLeastOnce,
                 retain: false,
                 pid: None,
-                topic_name: delete_topic.as_str(),
-                payload: b"",
+                topic_name: topic_name.as_str(),
+                payload,
                 properties: embedded_mqtt::Properties::Slice(&[]),
             })
             .await
             .map_err(Error::MqttError)?;
-        Ok(())
+
+        //*** WAIT RESPONSE ***/
+        debug!("Wait for Accepted or Rejected");
+        let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+        Ok(message)
     }
 }
 
-pub struct PersistedShadow<
-    'a,
-    'm,
-    S: ShadowState + DeserializeOwned,
-    M: RawMutex,
-    D: ShadowDAO<S>,
-    const SUBS: usize,
-> where
+pub struct PersistedShadow<'a, 'm, S: ShadowState, M: RawMutex, D: ShadowDAO<S>, const SUBS: usize>
+where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     handler: ShadowHandler<'a, 'm, M, S, SUBS>,
@@ -204,7 +318,7 @@ pub struct PersistedShadow<
 
 impl<'a, 'm, S, M, D, const SUBS: usize> PersistedShadow<'a, 'm, S, M, D, SUBS>
 where
-    S: ShadowState + DeserializeOwned + Default,
+    S: ShadowState + Default,
     M: RawMutex,
     D: ShadowDAO<S>,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
@@ -249,16 +363,19 @@ where
     }
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub async fn get_shadow(&self) -> Result<(), Error> {
-        self.handler.get_shadow().await
+    pub async fn get_shadow(&mut self) -> Result<S, Error> {
+        let new_desired = self.handler.get_shadow().await?;
+        debug!("Persisting new state after get shadow request");
+        let mut state = self.dao.read().await?;
+        state.apply_patch(new_desired);
+        self.dao.write(&state).await?;
+        Ok(state)
     }
 
     /// Initiate an `UpdateShadow` request, reporting the local state to the cloud.
     pub async fn report_shadow(&mut self) -> Result<(), Error> {
         let mut state = self.dao.read().await?;
-        self.handler
-            .change_shadow_value(&mut state, None, Some(false))
-            .await?;
+        self.handler.change_shadow_value(&mut state, None).await?;
         Ok(())
     }
 
@@ -279,7 +396,7 @@ where
         f(&state, &mut desired);
 
         self.handler
-            .change_shadow_value(&mut state, Some(desired), Some(false))
+            .change_shadow_value(&mut state, Some(desired))
             .await?;
 
         //Always persist
@@ -289,7 +406,9 @@ where
     }
 
     pub async fn delete_shadow(&mut self) -> Result<(), Error> {
-        self.handler.delete_shadow().await
+        self.handler.delete_shadow().await?;
+        self.dao.write(&S::default()).await?;
+        Ok(())
     }
 }
 
@@ -335,7 +454,7 @@ where
     /// Initiate an `UpdateShadow` request, reporting the local state to the cloud.
     pub async fn report_shadow(&mut self) -> Result<(), Error> {
         self.handler
-            .change_shadow_value(&mut self.state, None, Some(false))
+            .change_shadow_value(&mut self.state, None)
             .await?;
         Ok(())
     }
@@ -350,15 +469,17 @@ where
         f(&self.state, &mut desired);
 
         self.handler
-            .change_shadow_value(&mut self.state, Some(desired), Some(false))
+            .change_shadow_value(&mut self.state, Some(desired))
             .await?;
 
         Ok(())
     }
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub async fn get_shadow(&self) -> Result<(), Error> {
-        self.handler.get_shadow().await
+    pub async fn get_shadow(&mut self) -> Result<&S, Error> {
+        let new_desired = self.handler.get_shadow().await?;
+        self.state.apply_patch(new_desired);
+        Ok(&self.state)
     }
 
     pub async fn delete_shadow(&mut self) -> Result<(), Error> {
@@ -383,7 +504,7 @@ where
 }
 
 #[cfg(feature = "defmt")]
-impl<'a, 'm, S, M> defmt::Format for Shadow<'a, 'm, S, M>
+impl<'a, 'm, S, M, const SUBS: usize> defmt::Format for Shadow<'a, 'm, S, M, SUBS>
 where
     S: ShadowState + defmt::Format,
     M: RawMutex,
