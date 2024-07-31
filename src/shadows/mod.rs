@@ -427,11 +427,19 @@ where
     pub async fn get_shadow(&mut self) -> Result<S, Error> {
         let new_desired = self.handler.get_shadow().await?;
         debug!("Persisting new state after get shadow request");
-        let mut state = self.dao.read().await?;
-        state.apply_patch(new_desired);
-
-        self.dao.write(&state).await?;
-        Ok(state)
+        match self.dao.read().await {
+            Ok(mut state) => {
+                state.apply_patch(new_desired);
+                self.dao.write(&state).await?;
+                Ok(state)
+            }
+            Err(_) => {
+                let mut state = S::default();
+                state.apply_patch(new_desired);
+                self.dao.write(&state).await?;
+                Ok(state)
+            }
+        }
     }
 
     /// Update the state of the shadow.
