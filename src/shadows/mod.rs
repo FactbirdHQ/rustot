@@ -8,7 +8,9 @@ use core::marker::PhantomData;
 
 pub use data_types::Patch;
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{Publish, QoS, RetainHandling, Subscribe, SubscribeTopic};
+use embedded_mqtt::{
+    DeferredPayload, Publish, QoS, RetainHandling, Subscribe, SubscribeTopic, ToPayload,
+};
 pub use error::Error;
 pub use shadow_derive as derive;
 pub use shadow_diff::ShadowPatch;
@@ -116,38 +118,59 @@ where
                 reported: Some(&state),
                 desired: None,
             },
-            client_token: None,
+            client_token: Some(self.mqtt.client_id()),
             version: None,
         };
 
-        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
-        let payload = serde_json_core::to_vec::<
-            _,
-            { S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD },
-        >(&request)
-        .map_err(|_| Error::Overflow)?;
+        let payload = DeferredPayload::new(
+            |buf| {
+                serde_json_core::to_slice(&request, buf)
+                    .map_err(|_| embedded_mqtt::EncodingError::BufferSize)
+            },
+            S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD,
+        );
 
-        let message = self
-            .publish_and_subscribe(Topic::Update, payload.as_slice())
-            .await?;
+        let mut sub = self.publish_and_subscribe(Topic::Update, payload).await?;
 
-        //Check if topic is GetAccepted
-        match Topic::from_str(message.topic_name()) {
-            Some((Topic::UpdateAccepted, _, _)) => Ok(()),
-            Some((Topic::UpdateRejected, _, _)) => {
-                let (error_response, _) =
-                    serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+        //*** WAIT RESPONSE ***/
+        debug!("Wait for Accepted or Rejected");
+        loop {
+            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
-                Err(Error::ShadowError(
-                    error_response
-                        .try_into()
-                        .unwrap_or(error::ShadowError::NotFound),
-                ))
-            }
-            _ => {
-                error!("Expected Topic name GetRejected or GetAccepted but got something else");
-                Err(Error::WrongShadowName)
+            //Check if topic is GetAccepted
+            match Topic::from_str(message.topic_name()) {
+                Some((Topic::UpdateAccepted, _, _)) => {
+                    // Check client token
+                    let (response, _) = serde_json_core::from_slice::<
+                        AcceptedResponse<S::PatchState>,
+                    >(message.payload())
+                    .map_err(|_| Error::InvalidPayload)?;
+
+                    if response.client_token != Some(self.mqtt.client_id()) {
+                        continue;
+                    }
+
+                    return Ok(());
+                }
+                Some((Topic::UpdateRejected, _, _)) => {
+                    let (error_response, _) =
+                        serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                            .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+
+                    if error_response.client_token != Some(self.mqtt.client_id()) {
+                        continue;
+                    }
+
+                    return Err(Error::ShadowError(
+                        error_response
+                            .try_into()
+                            .unwrap_or(error::ShadowError::NotFound),
+                    ));
+                }
+                _ => {
+                    error!("Expected Topic name GetRejected or GetAccepted but got something else");
+                    return Err(Error::WrongShadowName);
+                }
             }
         }
     }
@@ -157,74 +180,108 @@ where
         //Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
-        let get_message = self.publish_and_subscribe(Topic::Get, b"").await?;
+        let mut sub = self.publish_and_subscribe(Topic::Get, b"").await?;
 
-        //Check if topic is GetAccepted
-        //Deserialize message
-        //Persist shadow and return new shadow
-        match Topic::from_str(get_message.topic_name()) {
-            Some((Topic::GetAccepted, _, _)) => serde_json_core::from_slice::<
-                AcceptedResponse<S::PatchState>,
-            >(get_message.payload())
-            .ok()
-            .and_then(|(r, _)| r.state.desired)
-            .ok_or(Error::InvalidPayload),
-            Some((Topic::GetRejected, _, _)) => {
-                let (error_response, _) =
-                    serde_json_core::from_slice::<ErrorResponse>(get_message.payload())
-                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+        loop {
+            let get_message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
-                if error_response.code == 404 {
-                    debug!(
-                        "[{:?}] Thing has no shadow document. Creating with defaults...",
-                        S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
-                    );
-                    return self.create_shadow().await;
+            //Check if topic is GetAccepted
+            //Deserialize message
+            //Persist shadow and return new shadow
+            match Topic::from_str(get_message.topic_name()) {
+                Some((Topic::GetAccepted, _, _)) => {
+                    let (response, _) = serde_json_core::from_slice::<
+                        AcceptedResponse<S::PatchState>,
+                    >(get_message.payload())
+                    .map_err(|_| Error::InvalidPayload)?;
+
+                    if response.client_token != Some(self.mqtt.client_id()) {
+                        continue;
+                    }
+
+                    return response.state.desired.ok_or(Error::InvalidPayload);
                 }
+                Some((Topic::GetRejected, _, _)) => {
+                    let (error_response, _) =
+                        serde_json_core::from_slice::<ErrorResponse>(get_message.payload())
+                            .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
 
-                Err(Error::ShadowError(
-                    error_response
-                        .try_into()
-                        .unwrap_or(error::ShadowError::NotFound),
-                ))
-            }
-            _ => {
-                error!("Expected Topic name GetRejected or GetAccepted but got something else");
-                Err(Error::WrongShadowName)
+                    if error_response.client_token != Some(self.mqtt.client_id()) {
+                        continue;
+                    }
+
+                    if error_response.code == 404 {
+                        debug!(
+                            "[{:?}] Thing has no shadow document. Creating with defaults...",
+                            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
+                        );
+                        return self.create_shadow().await;
+                    }
+
+                    return Err(Error::ShadowError(
+                        error_response
+                            .try_into()
+                            .unwrap_or(error::ShadowError::NotFound),
+                    ));
+                }
+                _ => {
+                    error!("Expected Topic name GetRejected or GetAccepted but got something else");
+                    return Err(Error::WrongShadowName);
+                }
             }
         }
     }
 
     pub async fn delete_shadow(&mut self) -> Result<(), Error> {
-        //Wait for mqtt to connect
+        // Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
-        let message = self
+        let mut sub = self
             .publish_and_subscribe(topics::Topic::Delete, b"")
             .await?;
 
-        //Check if topic is DeleteAccepted
-        match Topic::from_str(message.topic_name()) {
-            Some((Topic::DeleteAccepted, _, _)) => Ok(()),
-            Some((Topic::DeleteRejected, _, _)) => {
-                let (error_response, _) =
-                    serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+        loop {
+            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
-                Err(Error::ShadowError(
-                    error_response
-                        .try_into()
-                        .unwrap_or(error::ShadowError::NotFound),
-                ))
-            }
-            _ => {
-                error!("Expected Topic name GetRejected or GetAccepted but got something else");
-                Err(Error::WrongShadowName)
+            // Check if topic is DeleteAccepted
+            match Topic::from_str(message.topic_name()) {
+                Some((Topic::DeleteAccepted, _, _)) => {
+                    // Check client token
+                    let (response, _) = serde_json_core::from_slice::<
+                        AcceptedResponse<S::PatchState>,
+                    >(message.payload())
+                    .map_err(|_| Error::InvalidPayload)?;
+
+                    if response.client_token != Some(self.mqtt.client_id()) {
+                        continue;
+                    }
+
+                    return Ok(());
+                }
+                Some((Topic::DeleteRejected, _, _)) => {
+                    let (error_response, _) =
+                        serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                            .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+
+                    if error_response.client_token != Some(self.mqtt.client_id()) {
+                        continue;
+                    }
+
+                    return Err(Error::ShadowError(
+                        error_response
+                            .try_into()
+                            .unwrap_or(error::ShadowError::NotFound),
+                    ));
+                }
+                _ => {
+                    error!("Expected Topic name GetRejected or GetAccepted but got something else");
+                    return Err(Error::WrongShadowName);
+                }
             }
         }
     }
 
-    pub async fn create_shadow(&mut self) -> Result<S::PatchState, Error> {
+    pub async fn create_shadow(&self) -> Result<S::PatchState, Error> {
         debug!(
             "[{:?}] Creating initial shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
@@ -237,7 +294,7 @@ where
                 reported: Some(&state),
                 desired: Some(&state),
             },
-            client_token: None,
+            client_token: Some(self.mqtt.client_id()),
             version: None,
         };
 
@@ -248,31 +305,44 @@ where
         >(&request)
         .map_err(|_| Error::Overflow)?;
 
-        let message = self
+        let mut sub = self
             .publish_and_subscribe(Topic::Update, payload.as_slice())
             .await?;
+        loop {
+            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
-        match Topic::from_str(message.topic_name()) {
-            Some((Topic::UpdateAccepted, _, _)) => {
-                serde_json_core::from_slice::<AcceptedResponse<S::PatchState>>(message.payload())
-                    .ok()
-                    .and_then(|(r, _)| r.state.desired)
-                    .ok_or(Error::InvalidPayload)
-            }
-            Some((Topic::UpdateRejected, _, _)) => {
-                let (error_response, _) =
-                    serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+            match Topic::from_str(message.topic_name()) {
+                Some((Topic::UpdateAccepted, _, _)) => {
+                    let (response, _) = serde_json_core::from_slice::<
+                        AcceptedResponse<S::PatchState>,
+                    >(message.payload())
+                    .map_err(|_| Error::InvalidPayload)?;
 
-                Err(Error::ShadowError(
-                    error_response
-                        .try_into()
-                        .unwrap_or(error::ShadowError::NotFound),
-                ))
-            }
-            _ => {
-                error!("Expected Topic name GetRejected or GetAccepted but got something else");
-                Err(Error::WrongShadowName)
+                    if response.client_token != Some(self.mqtt.client_id()) {
+                        continue;
+                    }
+
+                    return response.state.desired.ok_or(Error::InvalidPayload);
+                }
+                Some((Topic::UpdateRejected, _, _)) => {
+                    let (error_response, _) =
+                        serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                            .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+
+                    if error_response.client_token != Some(self.mqtt.client_id()) {
+                        continue;
+                    }
+
+                    return Err(Error::ShadowError(
+                        error_response
+                            .try_into()
+                            .unwrap_or(error::ShadowError::NotFound),
+                    ));
+                }
+                _ => {
+                    error!("Expected Topic name GetRejected or GetAccepted but got something else");
+                    return Err(Error::WrongShadowName);
+                }
             }
         }
     }
@@ -282,10 +352,10 @@ where
     ///Topic is the topic you want to publish to
     ///The function will automatically subscribe to the accepted and rejected topic related to the publish topic
     async fn publish_and_subscribe(
-        &mut self,
+        &self,
         topic: topics::Topic,
-        payload: &[u8],
-    ) -> Result<embedded_mqtt::Message<'a, SUBS>, Error> {
+        payload: impl ToPayload,
+    ) -> Result<embedded_mqtt::Subscription<'a, '_, M, SUBS, 2>, Error> {
         let (accepted, rejected) = match topic {
             Topic::Get => (Topic::GetAccepted, Topic::GetRejected),
             Topic::Update => (Topic::UpdateAccepted, Topic::UpdateRejected),
@@ -294,7 +364,7 @@ where
         };
 
         //*** SUBSCRIBE ***/
-        let mut sub = self
+        let sub = self
             .mqtt
             .subscribe::<2>(Subscribe::new(&[
                 SubscribeTopic {
@@ -334,10 +404,7 @@ where
             .await
             .map_err(Error::MqttError)?;
 
-        //*** WAIT RESPONSE ***/
-        debug!("Wait for Accepted or Rejected");
-        let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
-        Ok(message)
+        Ok(sub)
     }
 }
 
@@ -474,7 +541,7 @@ where
     ///
     /// This function needs to be fed all relevant incoming MQTT payloads in
     /// order for the shadow manager to work.
-    pub async fn handle_message(&mut self) -> Result<(&S, Option<S::PatchState>), Error> {
+    pub async fn wait_delta(&mut self) -> Result<(&S, Option<S::PatchState>), Error> {
         let delta = self.handler.handle_delta(&mut self.state).await?;
         Ok((&self.state, delta))
     }
