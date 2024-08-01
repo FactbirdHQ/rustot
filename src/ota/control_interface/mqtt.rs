@@ -69,7 +69,7 @@ impl<'a, M: RawMutex, const SUBS: usize> ControlInterface
             }
 
             // Don't override the progress on succeeded, nor on self-test
-            // active. (Cases where progess counter is lost due to device
+            // active. (Cases where progress counter is lost due to device
             // restarts)
             if status != JobStatus::Succeeded && reason != JobStatusReason::SelfTestActive {
                 let mut progress = heapless::String::new();

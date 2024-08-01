@@ -78,19 +78,11 @@ where
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
 
-        match serde_json_core::from_slice::<DeltaResponse<S::PatchState>>(delta_message.payload()) {
-            Ok((delta, _)) => {
-                if let Some(state) = &delta.state {
-                    debug!(
-                        "[{:?}] Delta reports new desired value. Changing local value...",
-                        S::NAME.unwrap_or(CLASSIC_SHADOW),
-                    );
-                    self.report_delta(state).await?;
-                }
-                Ok(delta.state)
-            }
-            Err(_) => Err(Error::InvalidPayload),
-        }
+        let (delta, _) =
+            serde_json_core::from_slice::<DeltaResponse<S::PatchState>>(delta_message.payload())
+                .map_err(|_| Error::InvalidPayload)?;
+
+        Ok(delta.state)
     }
 
     /// Internal helper function for applying a delta state to the actual shadow
@@ -125,7 +117,7 @@ where
         loop {
             let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
-            //Check if topic is GetAccepted
+            // Check if topic is GetAccepted
             match Topic::from_str(message.topic_name()) {
                 Some((Topic::UpdateAccepted, _, _)) => {
                     // Check client token
@@ -135,6 +127,11 @@ where
                     .map_err(|_| Error::InvalidPayload)?;
 
                     if response.client_token != Some(self.mqtt.client_id()) {
+                        warn!(
+                            "Unexpected client_token! {:?} != {:?}",
+                            response.client_token,
+                            self.mqtt.client_id()
+                        );
                         continue;
                     }
 
@@ -411,6 +408,12 @@ where
         // Something has changed as part of handling a message. Persist it
         // to NVM storage.
         if let Some(delta) = &delta {
+            debug!(
+                "[{:?}] Delta reports new desired value. Changing local value...",
+                S::NAME.unwrap_or(CLASSIC_SHADOW),
+            );
+            self.handler.report_delta(delta).await?;
+
             state.apply_patch(delta.clone());
             self.dao.write(&state).await?;
         }
@@ -448,10 +451,10 @@ where
     /// and depending on whether the state update is rejected or accepted, it
     /// will automatically update the local version after response
     ///
-    /// The returned `bool` from the update closure will determine wether the
+    /// The returned `bool` from the update closure will determine whether the
     /// update is persisted using the `DAO`, or just updated in the cloud. This
     /// can be handy for activity or status field updates that are not relevant
-    /// to store persistant on the device, but are required to be part of the
+    /// to store persistent on the device, but are required to be part of the
     /// same cloud shadow.
     pub async fn update<F: FnOnce(&S, &mut S::PatchState)>(&mut self, f: F) -> Result<(), Error> {
         let mut desired = S::PatchState::default();
@@ -506,6 +509,14 @@ where
     /// order for the shadow manager to work.
     pub async fn wait_delta(&mut self) -> Result<(&S, Option<S::PatchState>), Error> {
         let delta = self.handler.handle_delta().await?;
+        if let Some(delta) = &delta {
+            debug!(
+                "[{:?}] Delta reports new desired value. Changing local value...",
+                S::NAME.unwrap_or(CLASSIC_SHADOW),
+            );
+            self.handler.report_delta(delta).await?;
+        }
+
         Ok((&self.state, delta))
     }
 

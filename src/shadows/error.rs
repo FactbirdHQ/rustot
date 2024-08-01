@@ -6,7 +6,7 @@ use super::data_types::ErrorResponse;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
     Overflow,
-    NoPersistance,
+    NoPersistence,
     DaoRead,
     DaoWrite,
     InvalidPayload,
