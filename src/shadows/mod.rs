@@ -12,10 +12,11 @@ use embedded_mqtt::{
     DeferredPayload, Publish, QoS, RetainHandling, Subscribe, SubscribeTopic, ToPayload,
 };
 pub use error::Error;
+use serde::Serialize;
 pub use shadow_derive as derive;
 pub use shadow_diff::ShadowPatch;
 
-use data_types::{AcceptedResponse, DeltaResponse, ErrorResponse};
+use data_types::{AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse};
 use topics::Topic;
 
 use self::dao::ShadowDAO;
@@ -87,7 +88,7 @@ where
 
     /// Internal helper function for applying a delta state to the actual shadow
     /// state, and update the cloud shadow.
-    async fn report_delta(&self, delta: &S::PatchState) -> Result<(), Error> {
+    async fn report<R: Serialize>(&self, reported: &R) -> Result<(), Error> {
         debug!(
             "[{:?}] Updating reported shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
@@ -95,7 +96,7 @@ where
 
         let request = data_types::Request {
             state: data_types::State {
-                reported: Some(delta),
+                reported: Some(reported),
                 desired: None,
             },
             client_token: Some(self.mqtt.client_id()),
@@ -127,9 +128,9 @@ where
                     .map_err(|_| Error::InvalidPayload)?;
 
                     if response.client_token != Some(self.mqtt.client_id()) {
-                        warn!(
-                            "Unexpected client_token! {:?} != {:?}",
-                            response.client_token,
+                        error!(
+                            "Unexpected client token received: {}, expected: {}",
+                            response.client_token.unwrap_or("None"),
                             self.mqtt.client_id()
                         );
                         continue;
@@ -161,7 +162,7 @@ where
     }
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    async fn get_shadow(&mut self) -> Result<S::PatchState, Error> {
+    async fn get_shadow(&mut self) -> Result<DeltaState<S::PatchState>, Error> {
         //Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
@@ -179,7 +180,7 @@ where
                 )
                 .map_err(|_| Error::InvalidPayload)?;
 
-                response.state.desired.ok_or(Error::InvalidPayload)
+                Ok(response.state)
             }
             Some((Topic::GetRejected, _, _)) => {
                 let (error_response, _) =
@@ -191,7 +192,7 @@ where
                         "[{:?}] Thing has no shadow document. Creating with defaults...",
                         S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
                     );
-                    return self.create_shadow().await;
+                    self.create_shadow().await?;
                 }
 
                 Err(Error::ShadowError(
@@ -238,7 +239,7 @@ where
         }
     }
 
-    pub async fn create_shadow(&self) -> Result<S::PatchState, Error> {
+    pub async fn create_shadow(&self) -> Result<DeltaState<S::PatchState>, Error> {
         debug!(
             "[{:?}] Creating initial shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
@@ -279,7 +280,7 @@ where
                         continue;
                     }
 
-                    return response.state.desired.ok_or(Error::InvalidPayload);
+                    return Ok(response.state);
                 }
                 Some((Topic::UpdateRejected, _, _)) => {
                     let (error_response, _) =
@@ -398,6 +399,7 @@ where
         let mut state = match self.dao.read().await {
             Ok(state) => state,
             Err(_) => {
+                error!("Could not read state from flash writing default");
                 self.dao.write(&S::default()).await?;
                 S::default()
             }
@@ -412,9 +414,11 @@ where
                 "[{:?}] Delta reports new desired value. Changing local value...",
                 S::NAME.unwrap_or(CLASSIC_SHADOW),
             );
-            self.handler.report_delta(delta).await?;
 
             state.apply_patch(delta.clone());
+
+            self.handler.report(&state).await?;
+
             self.dao.write(&state).await?;
         }
 
@@ -428,21 +432,19 @@ where
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
     pub async fn get_shadow(&mut self) -> Result<S, Error> {
-        let new_desired = self.handler.get_shadow().await?;
+        let delta_state = self.handler.get_shadow().await?;
+
         debug!("Persisting new state after get shadow request");
-        match self.dao.read().await {
-            Ok(mut state) => {
-                state.apply_patch(new_desired);
-                self.dao.write(&state).await?;
-                Ok(state)
-            }
-            Err(_) => {
-                let mut state = S::default();
-                state.apply_patch(new_desired);
-                self.dao.write(&state).await?;
-                Ok(state)
+        let mut state = self.dao.read().await.unwrap_or_default();
+        if let Some(desired) = delta_state.desired {
+            state.apply_patch(desired);
+            self.dao.write(&state).await?;
+            if delta_state.delta.is_some() {
+                self.handler.report(&state).await?;
             }
         }
+
+        Ok(state)
     }
 
     /// Update the state of the shadow.
@@ -461,7 +463,7 @@ where
         let mut state = self.dao.read().await?;
         f(&state, &mut desired);
 
-        self.handler.report_delta(&desired).await?;
+        self.handler.report(&desired).await?;
 
         state.apply_patch(desired);
 
@@ -514,7 +516,7 @@ where
                 "[{:?}] Delta reports new desired value. Changing local value...",
                 S::NAME.unwrap_or(CLASSIC_SHADOW),
             );
-            self.handler.report_delta(delta).await?;
+            self.handler.report(delta).await?;
         }
 
         Ok((&self.state, delta))
@@ -534,7 +536,7 @@ where
         let mut desired = S::PatchState::default();
         f(&self.state, &mut desired);
 
-        self.handler.report_delta(&desired).await?;
+        self.handler.report(&desired).await?;
 
         self.state.apply_patch(desired);
 
@@ -543,8 +545,15 @@ where
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
     pub async fn get_shadow(&mut self) -> Result<&S, Error> {
-        let new_desired = self.handler.get_shadow().await?;
-        self.state.apply_patch(new_desired);
+        let delta_state = self.handler.get_shadow().await?;
+
+        if let Some(desired) = delta_state.desired {
+            self.state.apply_patch(desired);
+            if delta_state.delta.is_some() {
+                self.handler.report(&self.state).await?;
+            }
+        }
+
         Ok(&self.state)
     }
 
