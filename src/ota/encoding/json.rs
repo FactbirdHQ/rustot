@@ -158,24 +158,24 @@ mod tests {
     #[test]
     fn deserializ() {
         let data = r#"{
-    "protocols": [
-      "MQTT"
-    ],
-    "streamname": "AFR_OTA-d11032e9-38d5-4dca-8c7c-1e6f24533ede",
-    "files": [
-      {
-        "filepath": "3.8.4",
-        "filesize": 537600,
-        "fileid": 0,
-        "certfile": null,
-        "fileType": 0,
-        "update_data_url": null,
-        "auth_scheme": null,
-        "sig--": null
-      }
-    ]
-  }"#;
+            "protocols": [
+            "MQTT"
+            ],
+            "streamname": "AFR_OTA-d11032e9-38d5-4dca-8c7c-1e6f24533ede",
+            "files": [
+            {
+                "filepath": "3.8.4",
+                "filesize": 537600,
+                "fileid": 0,
+                "certfile": null,
+                "fileType": 0,
+                "update_data_url": null,
+                "auth_scheme": null,
+                "sig--": null
+            }
+            ]
+        }"#;
 
-        let job: (OtaJob, _) = serde_json_core::from_str(&data).unwrap();
+        serde_json_core::from_str::<OtaJob>(&data).unwrap();
     }
 }

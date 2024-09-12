@@ -1,14 +1,13 @@
 use core::ops::Deref;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::mutex::Mutex;
+use embedded_storage_async::nor_flash::{ErrorType, NorFlash, ReadNorFlash};
 use rustot::ota::{
-    self,
+    encoding::json,
     pal::{OtaPal, OtaPalError, PalImageState},
 };
 use sha2::{Digest, Sha256};
 use std::{
-    fs::File,
-    io::{Cursor, Read, Write},
+    convert::Infallible,
+    io::{Cursor, Write},
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -17,8 +16,44 @@ pub enum State {
     Boot,
 }
 
+pub struct BlockFile {
+    filebuf: Cursor<Vec<u8>>,
+}
+
+impl NorFlash for BlockFile {
+    const WRITE_SIZE: usize = 1;
+
+    const ERASE_SIZE: usize = 1;
+
+    async fn erase(&mut self, _from: u32, _to: u32) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.filebuf.set_position(offset as u64);
+        self.filebuf.write_all(bytes).unwrap();
+        Ok(())
+    }
+}
+
+impl ReadNorFlash for BlockFile {
+    const READ_SIZE: usize = 1;
+
+    async fn read(&mut self, _offset: u32, _bytes: &mut [u8]) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn capacity(&self) -> usize {
+        self.filebuf.get_ref().capacity()
+    }
+}
+
+impl ErrorType for BlockFile {
+    type Error = Infallible;
+}
+
 pub struct FileHandler {
-    filebuf: Option<Cursor<Vec<u8>>>,
+    filebuf: Option<BlockFile>,
     compare_file_path: String,
     pub plateform_state: State,
 }
@@ -34,6 +69,8 @@ impl FileHandler {
 }
 
 impl OtaPal for FileHandler {
+    type BlockWriter = BlockFile;
+
     async fn abort(
         &mut self,
         _file: &rustot::ota::encoding::FileContext,
@@ -44,9 +81,10 @@ impl OtaPal for FileHandler {
     async fn create_file_for_rx(
         &mut self,
         file: &rustot::ota::encoding::FileContext,
-    ) -> Result<(), OtaPalError> {
-        self.filebuf = Some(Cursor::new(Vec::with_capacity(file.filesize)));
-        Ok(())
+    ) -> Result<&mut Self::BlockWriter, OtaPalError> {
+        Ok(self.filebuf.get_or_insert(BlockFile {
+            filebuf: Cursor::new(Vec::with_capacity(file.filesize)),
+        }))
     }
 
     async fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError> {
@@ -78,12 +116,12 @@ impl OtaPal for FileHandler {
         if let Some(ref mut buf) = &mut self.filebuf {
             log::debug!(
                 "Closing completed file. Len: {}/{} -> {}",
-                buf.get_ref().len(),
+                buf.filebuf.get_ref().len(),
                 file.filesize,
                 file.filepath.as_str()
             );
 
-            let mut expected_data = std::fs::read(self.compare_file_path.as_str()).unwrap();
+            let expected_data = std::fs::read(self.compare_file_path.as_str()).unwrap();
             let mut expected_hasher = <Sha256 as Digest>::new();
             expected_hasher.update(&expected_data);
             let expected_hash = expected_hasher.finalize();
@@ -93,27 +131,19 @@ impl OtaPal for FileHandler {
                 self.compare_file_path,
                 file.filepath.as_str()
             );
-            assert_eq!(buf.get_ref().len(), file.filesize);
+            assert_eq!(buf.filebuf.get_ref().len(), file.filesize);
 
             let mut hasher = <Sha256 as Digest>::new();
-            hasher.update(&buf.get_ref());
+            hasher.update(&buf.filebuf.get_ref());
             assert_eq!(hasher.finalize().deref(), expected_hash.deref());
 
             // Check file signature
-            match &file.signature {
-                ota::encoding::json::Signature::Sha1Rsa(_) => {
-                    panic!("Unexpected signature format: Sha1Rsa. Expected Sha256Ecdsa")
-                }
-                ota::encoding::json::Signature::Sha256Rsa(_) => {
-                    panic!("Unexpected signature format: Sha256Rsa. Expected Sha256Ecdsa")
-                }
-                ota::encoding::json::Signature::Sha1Ecdsa(_) => {
-                    panic!("Unexpected signature format: Sha1Ecdsa. Expected Sha256Ecdsa")
-                }
-                ota::encoding::json::Signature::Sha256Ecdsa(sig) => {
-                    assert_eq!(sig.as_str(), "This is my custom signature\\n")
-                }
-            }
+            let signature = match file.signature.as_ref() {
+                Some(json::Signature::Sha256Ecdsa(ref s)) => s.as_str(),
+                sig => panic!("Unexpected signature format! {:?}", sig),
+            };
+
+            assert_eq!(signature, "This is my custom signature\\n");
 
             self.plateform_state = State::Swap;
 
@@ -122,22 +152,4 @@ impl OtaPal for FileHandler {
             Err(OtaPalError::BadFileHandle)
         }
     }
-
-    async fn write_block(
-        &mut self,
-        _file: &mut rustot::ota::encoding::FileContext,
-        block_offset: usize,
-        block_payload: &[u8],
-    ) -> Result<usize, OtaPalError> {
-        if let Some(ref mut buf) = &mut self.filebuf {
-            buf.set_position(block_offset as u64);
-            buf.write(block_payload)
-                .map_err(|_e| OtaPalError::FileWriteFailed)?;
-            Ok(block_payload.len())
-        } else {
-            Err(OtaPalError::BadFileHandle)
-        }
-    }
-
-    type BlockWriter;
 }

@@ -21,15 +21,12 @@ impl<'a, M: RawMutex, const SUBS: usize> ControlInterface
         let mut buf = [0u8; 512];
         let (topic, payload_len) = Jobs::describe().topic_payload(self.client_id(), &mut buf)?;
 
-        self.publish(Publish {
-            dup: false,
-            qos: QoS::AtLeastOnce,
-            retain: false,
-            pid: None,
-            topic_name: &topic,
-            payload: &buf[..payload_len],
-            properties: embedded_mqtt::Properties::Slice(&[]),
-        })
+        self.publish(
+            Publish::builder()
+                .topic_name(&topic)
+                .payload(&buf[..payload_len])
+                .build(),
+        )
         .await?;
 
         Ok(())
@@ -105,15 +102,13 @@ impl<'a, M: RawMutex, const SUBS: usize> ControlInterface
             512,
         );
 
-        self.publish(Publish {
-            dup: false,
-            qos,
-            retain: false,
-            pid: None,
-            topic_name: &topic,
-            payload,
-            properties: embedded_mqtt::Properties::Slice(&[]),
-        })
+        self.publish(
+            Publish::builder()
+                .qos(qos)
+                .topic_name(&topic)
+                .payload(payload)
+                .build(),
+        )
         .await?;
 
         Ok(())

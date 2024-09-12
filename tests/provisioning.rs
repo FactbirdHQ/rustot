@@ -3,23 +3,16 @@
 
 mod common;
 
-use std::{net::ToSocketAddrs, process};
-
 use common::credentials;
 use common::network::TlsNetwork;
 use ecdsa::Signature;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{
-    transport::embedded_nal::NalTransport, Config, DomainBroker, IpBroker, State, Subscribe,
-    SubscribeTopic,
-};
+use embedded_mqtt::{transport::embedded_nal::NalTransport, Config, DomainBroker, State};
 use p256::{ecdsa::signature::Signer, NistP256};
-use rustot::provisioning::{
-    topics::Topic, CredentialHandler, Credentials, Error, FleetProvisioner,
-};
+use rustot::provisioning::{CredentialHandler, Credentials, Error, FleetProvisioner};
 use serde::{Deserialize, Serialize};
-use static_cell::make_static;
+use static_cell::StaticCell;
 
 pub struct OwnedCredentials {
     pub certificate_id: String,
@@ -82,8 +75,7 @@ async fn test_provisioning() {
     // Create the MQTT stack
     let broker =
         DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
-    let config =
-        Config::new(thing_name, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
+    let config = Config::new(thing_name).keepalive_interval(embassy_time::Duration::from_secs(50));
 
     static STATE: StaticCell<State<NoopRawMutex, 2048, 4096, 2>> = StaticCell::new();
     let state = STATE.init(State::<NoopRawMutex, 2048, 4096, 2>::new());
@@ -115,7 +107,7 @@ async fn test_provisioning() {
         &mut credential_handler,
     );
 
-    let mut transport = NalTransport::new(network);
+    let mut transport = NalTransport::new(network, broker);
 
     let device_config = match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(15),

@@ -8,10 +8,9 @@ use core::marker::PhantomData;
 
 pub use data_types::Patch;
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{
-    DeferredPayload, Publish, QoS, RetainHandling, Subscribe, SubscribeTopic, ToPayload,
-};
+use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 pub use error::Error;
+use futures::StreamExt;
 use serde::Serialize;
 pub use shadow_derive as derive;
 pub use shadow_diff::ShadowPatch;
@@ -52,15 +51,17 @@ where
 
                 let sub = self
                     .mqtt
-                    .subscribe::<2>(Subscribe::new(&[SubscribeTopic {
-                        topic_path: topics::Topic::UpdateDelta
-                            .format::<64>(self.mqtt.client_id(), S::NAME)?
-                            .as_str(),
-                        maximum_qos: QoS::AtLeastOnce,
-                        no_local: false,
-                        retain_as_published: false,
-                        retain_handling: RetainHandling::SendAtSubscribeTime,
-                    }]))
+                    .subscribe::<2>(
+                        Subscribe::builder()
+                            .topics(&[SubscribeTopic::builder()
+                                .topic_path(
+                                    topics::Topic::UpdateDelta
+                                        .format::<64>(self.mqtt.client_id(), S::NAME)?
+                                        .as_str(),
+                                )
+                                .build()])
+                            .build(),
+                    )
                     .await
                     .map_err(Error::MqttError)?;
                 self.subscription.insert(sub)
@@ -68,7 +69,7 @@ where
         };
 
         let delta_message = delta_subscription
-            .next_message()
+            .next()
             .await
             .ok_or(Error::InvalidPayload)?;
 
@@ -116,7 +117,7 @@ where
         //*** WAIT RESPONSE ***/
         debug!("Wait for Accepted or Rejected");
         loop {
-            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+            let message = sub.next().await.ok_or(Error::InvalidPayload)?;
 
             // Check if topic is GetAccepted
             match Topic::from_str(message.topic_name()) {
@@ -168,7 +169,7 @@ where
 
         let mut sub = self.publish_and_subscribe(Topic::Get, b"").await?;
 
-        let get_message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+        let get_message = sub.next().await.ok_or(Error::InvalidPayload)?;
 
         //Check if topic is GetAccepted
         //Deserialize message
@@ -216,7 +217,7 @@ where
             .publish_and_subscribe(topics::Topic::Delete, b"")
             .await?;
 
-        let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+        let message = sub.next().await.ok_or(Error::InvalidPayload)?;
 
         // Check if topic is DeleteAccepted
         match Topic::from_str(message.topic_name()) {
@@ -267,7 +268,7 @@ where
             .publish_and_subscribe(Topic::Update, payload.as_slice())
             .await?;
         loop {
-            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+            let message = sub.next().await.ok_or(Error::InvalidPayload)?;
 
             match Topic::from_str(message.topic_name()) {
                 Some((Topic::UpdateAccepted, _, _)) => {
@@ -324,41 +325,38 @@ where
         //*** SUBSCRIBE ***/
         let sub = self
             .mqtt
-            .subscribe::<2>(Subscribe::new(&[
-                SubscribeTopic {
-                    topic_path: accepted
-                        .format::<64>(self.mqtt.client_id(), S::NAME)?
-                        .as_str(),
-                    maximum_qos: QoS::AtLeastOnce,
-                    no_local: false,
-                    retain_as_published: false,
-                    retain_handling: RetainHandling::SendAtSubscribeTime,
-                },
-                SubscribeTopic {
-                    topic_path: rejected
-                        .format::<64>(self.mqtt.client_id(), S::NAME)?
-                        .as_str(),
-                    maximum_qos: QoS::AtLeastOnce,
-                    no_local: false,
-                    retain_as_published: false,
-                    retain_handling: RetainHandling::SendAtSubscribeTime,
-                },
-            ]))
+            .subscribe::<2>(
+                Subscribe::builder()
+                    .topics(&[
+                        SubscribeTopic::builder()
+                            .topic_path(
+                                accepted
+                                    .format::<64>(self.mqtt.client_id(), S::NAME)?
+                                    .as_str(),
+                            )
+                            .build(),
+                        SubscribeTopic::builder()
+                            .topic_path(
+                                rejected
+                                    .format::<64>(self.mqtt.client_id(), S::NAME)?
+                                    .as_str(),
+                            )
+                            .build(),
+                    ])
+                    .build(),
+            )
             .await
             .map_err(Error::MqttError)?;
 
         //*** PUBLISH REQUEST ***/
         let topic_name = topic.format::<MAX_TOPIC_LEN>(self.mqtt.client_id(), S::NAME)?;
         self.mqtt
-            .publish(Publish {
-                dup: false,
-                qos: QoS::AtLeastOnce,
-                retain: false,
-                pid: None,
-                topic_name: topic_name.as_str(),
-                payload,
-                properties: embedded_mqtt::Properties::Slice(&[]),
-            })
+            .publish(
+                Publish::builder()
+                    .topic_name(topic_name.as_str())
+                    .payload(payload)
+                    .build(),
+            )
             .await
             .map_err(Error::MqttError)?;
 
