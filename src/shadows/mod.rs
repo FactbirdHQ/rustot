@@ -525,6 +525,12 @@ where
         &self.state
     }
 
+    /// Report the state of the shadow.
+    pub async fn report(&mut self) -> Result<(), Error> {
+        self.handler.report(&self.state).await?;
+        Ok(())
+    }
+
     /// Update the state of the shadow.
     ///
     /// This function will update the desired state of the shadow in the cloud,
