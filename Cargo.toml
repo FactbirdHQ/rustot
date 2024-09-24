@@ -29,7 +29,7 @@ serde_cbor = { version = "0.11", default-features = false, optional = true }
 serde-json-core = { version = "0.5" }
 shadow-derive = { path = "shadow_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
-embedded-mqtt = { git = "ssh://git@github.com/FactbirdHQ/embedded-mqtt.git", rev = "d75bda6" }
+embedded-mqtt = { git = "ssh://git@github.com/FactbirdHQ/embedded-mqtt.git", rev = "d2b7c02" }
 
 futures = { version = "0.3.28", default-features = false }
 

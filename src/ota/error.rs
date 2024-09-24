@@ -1,4 +1,4 @@
-use crate::jobs::JobError;
+use crate::jobs::{data_types::ErrorCode, JobError};
 
 use super::pal::OtaPalError;
 
@@ -6,7 +6,6 @@ use super::pal::OtaPalError;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OtaError {
     NoActiveJob,
-    SignalEventFailed,
     Momentum,
     MomentumAbort,
     InvalidInterface,
@@ -14,7 +13,9 @@ pub enum OtaError {
     BlockOutOfRange,
     ZeroFileSize,
     Overflow,
+    UnexpectedTopic,
     InvalidFile,
+    UpdateRejected(ErrorCode),
     Write(
         #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
         embedded_storage_async::nor_flash::NorFlashErrorKind,
