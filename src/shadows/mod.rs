@@ -4,11 +4,14 @@ mod error;
 mod shadow_diff;
 pub mod topics;
 
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ops::DerefMut};
 
 use bitmaps::{Bits, BitsImpl};
 pub use data_types::Patch;
-use embassy_sync::blocking_mutex::raw::RawMutex;
+use embassy_sync::{
+    blocking_mutex::raw::{NoopRawMutex, RawMutex},
+    mutex::Mutex,
+};
 use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 pub use error::Error;
 use futures::StreamExt;
@@ -37,7 +40,7 @@ where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>,
-    subscription: Option<embedded_mqtt::Subscription<'a, 'm, M, SUBS, 2>>,
+    subscription: Mutex<NoopRawMutex, Option<embedded_mqtt::Subscription<'a, 'm, M, SUBS, 2>>>,
     _shadow: PhantomData<S>,
 }
 
@@ -46,8 +49,10 @@ where
     BitsImpl<{ SUBS }>: Bits,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    async fn handle_delta(&mut self) -> Result<Option<S::PatchState>, Error> {
-        let delta_subscription = match self.subscription.as_mut() {
+    async fn handle_delta(&self) -> Result<Option<S::PatchState>, Error> {
+        let mut sub_ref = self.subscription.lock().await;
+
+        let delta_subscription = match sub_ref.deref_mut() {
             Some(sub) => sub,
             None => {
                 self.mqtt.wait_connected().await;
@@ -67,7 +72,8 @@ where
                     )
                     .await
                     .map_err(Error::MqttError)?;
-                self.subscription.insert(sub)
+
+                sub_ref.insert(sub)
             }
         };
 
@@ -86,6 +92,12 @@ where
         let (delta, _) =
             serde_json_core::from_slice::<DeltaResponse<S::PatchState>>(delta_message.payload())
                 .map_err(|_| Error::InvalidPayload)?;
+
+        if let Some(client) = delta.client_token {
+            if client.eq(self.mqtt.client_id()) {
+                return Ok(None);
+            }
+        }
 
         Ok(delta.state)
     }
@@ -166,7 +178,7 @@ where
     }
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    async fn get_shadow(&mut self) -> Result<DeltaState<S::PatchState>, Error> {
+    async fn get_shadow(&self) -> Result<DeltaState<S::PatchState>, Error> {
         //Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
@@ -194,7 +206,7 @@ where
                 if error_response.code == 404 {
                     debug!(
                         "[{:?}] Thing has no shadow document. Creating with defaults...",
-                        S::NAME.unwrap_or_else(|| CLASSIC_SHADOW)
+                        S::NAME.unwrap_or(CLASSIC_SHADOW)
                     );
                     self.create_shadow().await?;
                 }
@@ -373,7 +385,7 @@ where
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     handler: ShadowHandler<'a, 'm, M, S, SUBS>,
-    pub(crate) dao: D,
+    pub(crate) dao: Mutex<NoopRawMutex, D>,
 }
 
 impl<'a, 'm, S, M, D, const SUBS: usize> PersistedShadow<'a, 'm, S, M, D, SUBS>
@@ -389,21 +401,24 @@ where
     pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>, dao: D) -> Self {
         let handler = ShadowHandler {
             mqtt,
-            subscription: None,
+            subscription: Mutex::new(None),
             _shadow: PhantomData,
         };
 
-        Self { handler, dao }
+        Self {
+            handler,
+            dao: Mutex::new(dao),
+        }
     }
 
     /// Wait delta will subscribe if not already to Updatedelta and wait for changes
     ///
-    pub async fn wait_delta(&mut self) -> Result<(S, Option<S::PatchState>), Error> {
-        let mut state = match self.dao.read().await {
+    pub async fn wait_delta(&self) -> Result<(S, Option<S::PatchState>), Error> {
+        let mut state = match self.dao.lock().await.read().await {
             Ok(state) => state,
             Err(_) => {
                 error!("Could not read state from flash writing default");
-                self.dao.write(&S::default()).await?;
+                self.dao.lock().await.write(&S::default()).await?;
                 S::default()
             }
         };
@@ -422,7 +437,7 @@ where
 
             self.handler.report(&state).await?;
 
-            self.dao.write(&state).await?;
+            self.dao.lock().await.write(&state).await?;
         }
 
         Ok((state, delta))
@@ -430,18 +445,18 @@ where
 
     /// Get an immutable reference to the internal local state.
     pub async fn try_get(&mut self) -> Result<S, Error> {
-        self.dao.read().await
+        self.dao.lock().await.read().await
     }
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub async fn get_shadow(&mut self) -> Result<S, Error> {
+    pub async fn get_shadow(&self) -> Result<S, Error> {
         let delta_state = self.handler.get_shadow().await?;
 
         debug!("Persisting new state after get shadow request");
-        let mut state = self.dao.read().await.unwrap_or_default();
+        let mut state = self.dao.lock().await.read().await.unwrap_or_default();
         if let Some(desired) = delta_state.desired {
             state.apply_patch(desired);
-            self.dao.write(&state).await?;
+            self.dao.lock().await.write(&state).await?;
             if delta_state.delta.is_some() {
                 self.handler.report(&state).await?;
             }
@@ -461,9 +476,9 @@ where
     /// can be handy for activity or status field updates that are not relevant
     /// to store persistent on the device, but are required to be part of the
     /// same cloud shadow.
-    pub async fn update<F: FnOnce(&S, &mut S::PatchState)>(&mut self, f: F) -> Result<(), Error> {
+    pub async fn update<F: FnOnce(&S, &mut S::PatchState)>(&self, f: F) -> Result<(), Error> {
         let mut desired = S::PatchState::default();
-        let mut state = self.dao.read().await?;
+        let mut state = self.dao.lock().await.read().await?;
         f(&state, &mut desired);
 
         self.handler.report(&desired).await?;
@@ -471,14 +486,14 @@ where
         state.apply_patch(desired);
 
         // Always persist
-        self.dao.write(&state).await?;
+        self.dao.lock().await.write(&state).await?;
 
         Ok(())
     }
 
     pub async fn delete_shadow(&mut self) -> Result<(), Error> {
         self.handler.delete_shadow().await?;
-        self.dao.write(&S::default()).await?;
+        self.dao.lock().await.write(&S::default()).await?;
         Ok(())
     }
 }
@@ -503,7 +518,7 @@ where
     pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>) -> Self {
         let handler = ShadowHandler {
             mqtt,
-            subscription: None,
+            subscription: Mutex::new(None),
             _shadow: PhantomData,
         };
         Self { handler, state }
