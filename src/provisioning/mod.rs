@@ -4,10 +4,11 @@ pub mod topics;
 
 use core::future::Future;
 
+use bitmaps::{Bits, BitsImpl};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
-    DeferredPayload, EncodingError, Message, Publish, QoS, RetainHandling, Subscribe,
-    SubscribeTopic, Subscription,
+    BufferProvider, DeferredPayload, EncodingError, Message, Publish, Subscribe, SubscribeTopic,
+    Subscription,
 };
 use futures::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -41,12 +42,13 @@ pub struct FleetProvisioner;
 
 impl FleetProvisioner {
     pub async fn provision<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
+        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
+        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
         Self::provision_inner(
@@ -68,6 +70,7 @@ impl FleetProvisioner {
         credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
+        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
         Self::provision_inner(
@@ -83,12 +86,13 @@ impl FleetProvisioner {
 
     #[cfg(feature = "provision_cbor")]
     pub async fn provision_cbor<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &'a embedded_mqtt::MqttClient<'a, M, SUBS>,
+        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
+        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
         Self::provision_inner(
@@ -111,6 +115,7 @@ impl FleetProvisioner {
         credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
+        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
         Self::provision_inner(
@@ -134,10 +139,12 @@ impl FleetProvisioner {
         payload_format: PayloadFormat,
     ) -> Result<Option<C>, Error>
     where
+        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
-        let mut create_subscription = Self::begin(mqtt, csr, payload_format).await?;
+        use embedded_mqtt::SliceBufferProvider;
 
+        let mut create_subscription = Self::begin(mqtt, csr, payload_format).await?;
         let mut message = create_subscription
             .next()
             .await
@@ -145,10 +152,11 @@ impl FleetProvisioner {
 
         let ownership_token = match Topic::from_str(message.topic_name()) {
             Some(Topic::CreateKeysAndCertificateAccepted(format)) => {
-                let response = Self::deserialize::<CreateKeysAndCertificateResponse, SUBS>(
-                    format,
-                    &mut message,
-                )?;
+                let response = Self::deserialize::<
+                    CreateKeysAndCertificateResponse,
+                    SliceBufferProvider<'a>,
+                    SUBS,
+                >(format, &mut message)?;
 
                 credential_handler
                     .store_credentials(Credentials {
@@ -162,10 +170,11 @@ impl FleetProvisioner {
             }
 
             Some(Topic::CreateCertificateFromCsrAccepted(format)) => {
-                let response = Self::deserialize::<CreateCertificateFromCsrResponse, SUBS>(
-                    format,
-                    &mut message,
-                )?;
+                let response = Self::deserialize::<
+                    CreateCertificateFromCsrResponse,
+                    SliceBufferProvider<'a>,
+                    SUBS,
+                >(format, &mut message)?;
 
                 credential_handler
                     .store_credentials(Credentials {
@@ -220,28 +229,29 @@ impl FleetProvisioner {
         debug!("Starting RegisterThing");
 
         let mut register_subscription = mqtt
-            .subscribe::<1>(Subscribe::new(&[SubscribeTopic {
-                topic_path: Topic::RegisterThingAccepted(template_name, payload_format)
-                    .format::<150>()?
-                    .as_str(),
-                maximum_qos: QoS::AtLeastOnce,
-                no_local: false,
-                retain_as_published: false,
-                retain_handling: RetainHandling::SendAtSubscribeTime,
-            }]))
+            .subscribe::<1>(
+                Subscribe::builder()
+                    .topics(&[SubscribeTopic::builder()
+                        .topic_path(
+                            Topic::RegisterThingAccepted(template_name, payload_format)
+                                .format::<150>()?
+                                .as_str(),
+                        )
+                        .build()])
+                    .build(),
+            )
             .await?;
 
-        mqtt.publish(Publish {
-            dup: false,
-            qos: QoS::AtLeastOnce,
-            retain: false,
-            pid: None,
-            topic_name: Topic::RegisterThing(template_name, payload_format)
-                .format::<69>()?
-                .as_str(),
-            payload,
-            properties: embedded_mqtt::Properties::Slice(&[]),
-        })
+        mqtt.publish(
+            Publish::builder()
+                .topic_name(
+                    Topic::RegisterThing(template_name, payload_format)
+                        .format::<69>()?
+                        .as_str(),
+                )
+                .payload(payload)
+                .build(),
+        )
         .await?;
 
         drop(message);
@@ -254,8 +264,11 @@ impl FleetProvisioner {
 
         match Topic::from_str(message.topic_name()) {
             Some(Topic::RegisterThingAccepted(_, format)) => {
-                let response =
-                    Self::deserialize::<RegisterThingResponse<'_, C>, SUBS>(format, &mut message)?;
+                let response = Self::deserialize::<
+                    RegisterThingResponse<'_, C>,
+                    SliceBufferProvider<'a>,
+                    SUBS,
+                >(format, &mut message)?;
 
                 Ok(response.device_configuration)
             }
@@ -277,29 +290,32 @@ impl FleetProvisioner {
         mqtt: &'b embedded_mqtt::MqttClient<'a, M, SUBS>,
         csr: Option<&str>,
         payload_format: PayloadFormat,
-    ) -> Result<Subscription<'a, 'b, M, SUBS, 2>, Error> {
+    ) -> Result<Subscription<'a, 'b, M, SUBS, 2>, Error>
+    where
+        BitsImpl<{ SUBS }>: Bits,
+    {
         if let Some(csr) = csr {
             let subscription = mqtt
-                .subscribe(Subscribe::new(&[
-                    SubscribeTopic {
-                        topic_path: Topic::CreateCertificateFromCsrRejected(payload_format)
-                            .format::<47>()?
-                            .as_str(),
-                        maximum_qos: QoS::AtLeastOnce,
-                        no_local: false,
-                        retain_as_published: false,
-                        retain_handling: RetainHandling::SendAtSubscribeTime,
-                    },
-                    SubscribeTopic {
-                        topic_path: Topic::CreateCertificateFromCsrAccepted(payload_format)
-                            .format::<47>()?
-                            .as_str(),
-                        maximum_qos: QoS::AtLeastOnce,
-                        no_local: false,
-                        retain_as_published: false,
-                        retain_handling: RetainHandling::SendAtSubscribeTime,
-                    },
-                ]))
+                .subscribe(
+                    Subscribe::builder()
+                        .topics(&[
+                            SubscribeTopic::builder()
+                                .topic_path(
+                                    Topic::CreateCertificateFromCsrRejected(payload_format)
+                                        .format::<47>()?
+                                        .as_str(),
+                                )
+                                .build(),
+                            SubscribeTopic::builder()
+                                .topic_path(
+                                    Topic::CreateCertificateFromCsrAccepted(payload_format)
+                                        .format::<47>()?
+                                        .as_str(),
+                                )
+                                .build(),
+                        ])
+                        .build(),
+                )
                 .await?;
 
             let request = CreateCertificateFromCsrRequest {
@@ -326,65 +342,66 @@ impl FleetProvisioner {
                 csr.len() + 32,
             );
 
-            mqtt.publish(Publish {
-                dup: false,
-                qos: QoS::AtLeastOnce,
-                retain: false,
-                pid: None,
-                topic_name: Topic::CreateCertificateFromCsr(payload_format)
-                    .format::<40>()?
-                    .as_str(),
-                payload,
-                properties: embedded_mqtt::Properties::Slice(&[]),
-            })
+            mqtt.publish(
+                Publish::builder()
+                    .topic_name(
+                        Topic::CreateCertificateFromCsr(payload_format)
+                            .format::<40>()?
+                            .as_str(),
+                    )
+                    .payload(payload)
+                    .build(),
+            )
             .await?;
 
             Ok(subscription)
         } else {
             let subscription = mqtt
-                .subscribe(Subscribe::new(&[
-                    SubscribeTopic {
-                        topic_path: Topic::CreateKeysAndCertificateAccepted(payload_format)
-                            .format::<38>()?
-                            .as_str(),
-                        maximum_qos: QoS::AtLeastOnce,
-                        no_local: false,
-                        retain_as_published: false,
-                        retain_handling: RetainHandling::SendAtSubscribeTime,
-                    },
-                    SubscribeTopic {
-                        topic_path: Topic::CreateKeysAndCertificateRejected(payload_format)
-                            .format::<38>()?
-                            .as_str(),
-                        maximum_qos: QoS::AtLeastOnce,
-                        no_local: false,
-                        retain_as_published: false,
-                        retain_handling: RetainHandling::SendAtSubscribeTime,
-                    },
-                ]))
+                .subscribe(
+                    Subscribe::builder()
+                        .topics(&[
+                            SubscribeTopic::builder()
+                                .topic_path(
+                                    Topic::CreateKeysAndCertificateAccepted(payload_format)
+                                        .format::<38>()?
+                                        .as_str(),
+                                )
+                                .build(),
+                            SubscribeTopic::builder()
+                                .topic_path(
+                                    Topic::CreateKeysAndCertificateRejected(payload_format)
+                                        .format::<38>()?
+                                        .as_str(),
+                                )
+                                .build(),
+                        ])
+                        .build(),
+                )
                 .await?;
 
-            mqtt.publish(Publish {
-                dup: false,
-                qos: QoS::AtLeastOnce,
-                retain: false,
-                pid: None,
-                topic_name: Topic::CreateKeysAndCertificate(payload_format)
-                    .format::<29>()?
-                    .as_str(),
-                payload: b"",
-                properties: embedded_mqtt::Properties::Slice(&[]),
-            })
+            mqtt.publish(
+                Publish::builder()
+                    .topic_name(
+                        Topic::CreateKeysAndCertificate(payload_format)
+                            .format::<29>()?
+                            .as_str(),
+                    )
+                    .payload(b"")
+                    .build(),
+            )
             .await?;
 
             Ok(subscription)
         }
     }
 
-    fn deserialize<'a, R: Deserialize<'a>, const SUBS: usize>(
+    fn deserialize<'a, R: Deserialize<'a>, B: BufferProvider, const SUBS: usize>(
         payload_format: PayloadFormat,
-        message: &'a mut Message<'_, SUBS>,
-    ) -> Result<R, Error> {
+        message: &'a mut Message<'_, B, SUBS>,
+    ) -> Result<R, Error>
+    where
+        BitsImpl<{ SUBS }>: Bits,
+    {
         trace!(
             "Accepted Topic {:?}. Payload len: {:?}",
             payload_format,
@@ -398,10 +415,13 @@ impl FleetProvisioner {
         })
     }
 
-    fn handle_error<const SUBS: usize>(
+    fn handle_error<B: BufferProvider, const SUBS: usize>(
         format: PayloadFormat,
-        mut message: Message<'_, SUBS>,
-    ) -> Result<(), Error> {
+        mut message: Message<'_, B, SUBS>,
+    ) -> Result<(), Error>
+    where
+        BitsImpl<{ SUBS }>: Bits,
+    {
         error!(">> {:?}", message.topic_name());
 
         let response = match format {

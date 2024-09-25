@@ -26,7 +26,17 @@
 
 // use core::fmt::Write;
 
-// use common::{clock::SysClock, credentials, network::Network};
+// use common::{
+//     clock::SysClock,
+//     credentials,
+//     network::{Network, TlsNetwork},
+// };
+// use embassy_futures::select;
+// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+// use embedded_mqtt::{
+//     transport::embedded_nal::{self, NalTransport},
+//     DomainBroker, Properties, Publish, QoS, State,
+// };
 // use embedded_nal::Ipv4Addr;
 // use mqttrust::Mqtt;
 // use mqttrust_core::{bbqueue::BBBuffer, EventLoop, MqttOptions, Notification};
@@ -37,9 +47,7 @@
 // use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 // use smlang::statemachine;
-
-// const Q_SIZE: usize = 1024 * 6;
-// static mut Q: BBBuffer<Q_SIZE> = BBBuffer::new();
+// use static_cell::StaticCell;
 
 // #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 // pub struct ConfigId(pub u8);
@@ -284,7 +292,7 @@
 //     pub fn spin(
 //         &mut self,
 //         notification: Notification,
-//         mqtt_client: &mqttrust_core::Client<'static, 'static, Q_SIZE>,
+//         mqtt_client: &embedded_mqtt::MqttClient<'a, M, 1>,
 //     ) -> bool {
 //         log::info!("State: {:?}", self.state());
 //         match (self.state(), notification) {
@@ -294,15 +302,19 @@
 //             (&States::DeleteShadow, Notification::Suback(_)) => {
 //                 mqtt_client
 //                     .publish(
-//                         &Topic::Update
-//                             .format::<128>(
-//                                 mqtt_client.client_id(),
-//                                 <WifiConfig as ShadowState>::NAME,
+//                         Publish::builder()
+//                             .topic_name(
+//                                 &Topic::Update
+//                                     .format::<128>(
+//                                         mqtt_client.client_id(),
+//                                         <WifiConfig as ShadowState>::NAME,
+//                                     )
+//                                     .unwrap(),
 //                             )
-//                             .unwrap(),
-//                         b"{\"state\":{\"desired\":null,\"reported\":null}}",
-//                         mqttrust::QoS::AtLeastOnce,
+//                             .payload(b"{\"state\":{\"desired\":null,\"reported\":null}}")
+//                             .build(),
 //                     )
+//                     .await
 //                     .unwrap();
 
 //                 self.process_event(Events::Get).unwrap();
@@ -387,14 +399,17 @@
 
 //                 mqtt_client
 //                     .publish(
-//                         &Topic::Update
-//                             .format::<128>(
-//                                 mqtt_client.client_id(),
-//                                 <WifiConfig as ShadowState>::NAME,
+//                         Publish::builder()
+//                             .topic_name(
+//                                 &Topic::Update
+//                                     .format::<128>(
+//                                         mqtt_client.client_id(),
+//                                         <WifiConfig as ShadowState>::NAME,
+//                                     )
+//                                     .unwrap(),
 //                             )
-//                             .unwrap(),
-//                         payload.as_bytes(),
-//                         mqttrust::QoS::AtLeastOnce,
+//                             .payload(payload.as_bytes())
+//                             .build(),
 //                     )
 //                     .unwrap();
 //                 self.process_event(Events::Ack).unwrap();
@@ -453,50 +468,66 @@
 //     }
 // }
 
-// #[test]
-// fn test_shadows() {
+// #[tokio::test(flavor = "current_thread")]
+// async fn test_shadows() {
 //     env_logger::init();
-
-//     let (p, c) = unsafe { Q.try_split_framed().unwrap() };
 
 //     log::info!("Starting shadows test...");
 
-//     let hostname = credentials::HOSTNAME.unwrap();
 //     let (thing_name, identity) = credentials::identity();
 
-//     let connector = TlsConnector::builder()
-//         .identity(identity)
-//         .add_root_certificate(credentials::root_ca())
-//         .build()
-//         .unwrap();
+//     let hostname = credentials::HOSTNAME.unwrap();
 
-//     let mut network = Network::new_tls(connector, std::string::String::from(hostname));
+//     static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
+//     let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
-//     let mut mqtt_eventloop = EventLoop::new(
-//         c,
-//         SysClock::new(),
-//         MqttOptions::new(thing_name, hostname.into(), 8883).set_clean_session(true),
-//     );
+//     // Create the MQTT stack
+//     let broker =
+//         DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), &network).unwrap();
+//     let config = embedded_mqtt::Config::new(thing_name)
+//         .keepalive_interval(embassy_time::Duration::from_secs(50));
 
-//     let mqtt_client = mqttrust_core::Client::new(p, thing_name);
+//     let mut state = State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new();
+//     let (mut stack, client) = embedded_mqtt::new(&mut state, config);
 
-//     let mut test_state = StateMachine::new(TestContext {
-//         shadow: Shadow::new(WifiConfig::default(), &mqtt_client, true).unwrap(),
-//         update_cnt: 0,
-//     });
+//     let mqtt_client = client;
 
-//     loop {
-//         if nb::block!(mqtt_eventloop.connect(&mut network)).expect("to connect to mqtt") {
-//             log::info!("Successfully connected to broker");
+//     let shadow = Shadow::new(WifiConfig::default(), &mqtt_client).unwrap();
+
+//     // loop {
+//     //     if nb::block!(mqtt_eventloop.connect(&mut network)).expect("to connect to mqtt") {
+//     //         log::info!("Successfully connected to broker");
+//     //     }
+
+//     //     match mqtt_eventloop.yield_event(&mut network) {
+//     //         Ok(notification) => {
+//     //             if test_state.spin(notification, &mqtt_client) {
+//     //                 break;
+//     //             }
+//     //         }
+//     //         Err(_) => {}
+//     //     }
+//     // }
+
+//     // cloud_updater(mqtt_client);
+
+//     let shadows_fut = async {
+//         shadow.next_update().await;
+//         todo!()
+//     };
+
+//     let mut transport = NalTransport::new(network, broker);
+
+//     match embassy_time::with_timeout(
+//         embassy_time::Duration::from_secs(25),
+//         select::select(stack.run(&mut transport), shadows_fut),
+//     )
+//     .await
+//     .unwrap()
+//     {
+//         select::Either::First(_) => {
+//             unreachable!()
 //         }
-
-//         match mqtt_eventloop.yield_event(&mut network) {
-//             Ok(notification) => {
-//                 if test_state.spin(notification, &mqtt_client) {
-//                     break;
-//                 }
-//             }
-//             Err(_) => {}
-//         }
-//     }
+//         select::Either::Second(result) => result.unwrap(),
+//     };
 // }

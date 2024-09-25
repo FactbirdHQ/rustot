@@ -22,7 +22,8 @@ pub enum JobStatus {
     Removed,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ErrorCode {
     /// The request was sent to a topic in the AWS IoT Jobs namespace that does
     /// not map to any API.
@@ -89,7 +90,7 @@ pub struct GetPendingJobExecutionsResponse<'a> {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: &'a str,
+    pub client_token: Option<&'a str>,
 }
 
 /// Contains data about a job execution.
@@ -211,7 +212,7 @@ pub struct StartNextPendingJobExecutionResponse<'a, J> {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: &'a str,
+    pub client_token: Option<&'a str>,
 }
 
 /// Topic (accepted): $aws/things/{thingName}/jobs/{jobId}/update/accepted \
@@ -232,7 +233,7 @@ pub struct UpdateJobExecutionResponse<'a, J> {
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]
-    pub client_token: &'a str,
+    pub client_token: Option<&'a str>,
 }
 
 /// Sent whenever a job execution is added to or removed from the list of
@@ -289,7 +290,7 @@ pub struct Jobs {
 /// service operation.
 #[derive(Debug, PartialEq, Deserialize)]
 pub struct ErrorResponse<'a> {
-    code: ErrorCode,
+    pub code: ErrorCode,
     /// An error message string.
     message: &'a str,
     /// A client token used to correlate requests and responses. Enter an
@@ -394,7 +395,7 @@ mod test {
                 in_progress_jobs: Some(Vec::<JobExecutionSummary, MAX_RUNNING_JOBS>::new()),
                 queued_jobs: None,
                 timestamp: 1587381778,
-                client_token: "0:client_name",
+                client_token: Some("0:client_name"),
             }
         );
 
@@ -433,7 +434,7 @@ mod test {
                 in_progress_jobs: Some(Vec::<JobExecutionSummary, MAX_RUNNING_JOBS>::new()),
                 queued_jobs: Some(queued_jobs),
                 timestamp: 1587381778,
-                client_token: "0:client_name",
+                client_token: Some("0:client_name"),
             }
         );
     }

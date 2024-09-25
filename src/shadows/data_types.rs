@@ -34,16 +34,22 @@ impl<T> From<T> for Patch<T> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct State<T> {
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "desired")]
     pub desired: Option<T>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "reported")]
     pub reported: Option<T>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeltaState<T> {
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "desired")]
     pub desired: Option<T>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "reported")]
     pub reported: Option<T>,
     #[serde(rename = "delta")]
@@ -172,7 +178,7 @@ mod tests {
         exp_map
             .0
             .insert(
-                heapless::String::from("1"),
+                heapless::String::try_from("1").unwrap(),
                 Patch::Set(Test { field: true }),
             )
             .unwrap();
@@ -189,7 +195,7 @@ mod tests {
         exp_map
             .0
             .insert(
-                heapless::String::from("1"),
+                heapless::String::try_from("1").unwrap(),
                 Patch::Set(Test { field: true }),
             )
             .unwrap();
@@ -215,7 +221,7 @@ mod tests {
         let mut exp_map = TestMap(heapless::LinearMap::default());
         exp_map
             .0
-            .insert(heapless::String::from("1"), Patch::Unset)
+            .insert(heapless::String::try_from("1").unwrap(), Patch::Unset)
             .unwrap();
 
         let (patch, _) = serde_json_core::from_str::<TestMap>(payload).unwrap();

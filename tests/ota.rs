@@ -3,28 +3,21 @@
 
 mod common;
 
-use std::{net::ToSocketAddrs, process};
-
 use common::credentials;
 use common::file_handler::{FileHandler, State as FileHandlerState};
 use common::network::TlsNetwork;
 use embassy_futures::select;
-use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
-use embassy_time::Duration;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::transport::embedded_nal::NalTransport;
-use embedded_mqtt::{
-    Config, DomainBroker, IpBroker, Message, Publish, QoS, RetainHandling, State, Subscribe,
-    SubscribeTopic,
-};
+use embedded_mqtt::{Config, DomainBroker, Message, State, Subscribe, SubscribeTopic};
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
-use static_cell::make_static;
+use serde::Deserialize;
+use static_cell::StaticCell;
 
 use rustot::{
     jobs::{
         self,
         data_types::{DescribeJobExecutionResponse, NextJobExecutionChanged},
-        JobTopic, StatusDetails,
     },
     ota::{
         self,
@@ -49,7 +42,7 @@ impl<'a> Jobs<'a> {
 }
 
 fn handle_ota<'a, const SUBS: usize>(
-    message: Message<'a, NoopRawMutex, SUBS>,
+    message: Message<'a, SUBS>,
     config: &ota::config::Config,
 ) -> Option<FileContext> {
     let job = match jobs::Topic::from_str(message.topic_name()) {
@@ -99,8 +92,7 @@ async fn test_mqtt_ota() {
     // Create the MQTT stack
     let broker =
         DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
-    let config =
-        Config::new(thing_name, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
+    let config = Config::new(thing_name).keepalive_interval(embassy_time::Duration::from_secs(50));
 
     static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }, 4>> = StaticCell::new();
     let state = STATE.init(State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new());
@@ -110,26 +102,26 @@ async fn test_mqtt_ota() {
 
     let ota_fut = async {
         let mut jobs_subscription = client
-            .subscribe::<2>(Subscribe::new(&[
-                SubscribeTopic {
-                    topic_path: jobs::JobTopic::NotifyNext
-                        .format::<64>(thing_name)?
-                        .as_str(),
-                    maximum_qos: QoS::AtLeastOnce,
-                    no_local: false,
-                    retain_as_published: false,
-                    retain_handling: RetainHandling::SendAtSubscribeTime,
-                },
-                SubscribeTopic {
-                    topic_path: jobs::JobTopic::DescribeAccepted("$next")
-                        .format::<64>(thing_name)?
-                        .as_str(),
-                    maximum_qos: QoS::AtLeastOnce,
-                    no_local: false,
-                    retain_as_published: false,
-                    retain_handling: RetainHandling::SendAtSubscribeTime,
-                },
-            ]))
+            .subscribe::<2>(
+                Subscribe::builder()
+                    .topics(&[
+                        SubscribeTopic::builder()
+                            .topic_path(
+                                jobs::JobTopic::NotifyNext
+                                    .format::<64>(thing_name)?
+                                    .as_str(),
+                            )
+                            .build(),
+                        SubscribeTopic::builder()
+                            .topic_path(
+                                jobs::JobTopic::DescribeAccepted("$next")
+                                    .format::<64>(thing_name)?
+                                    .as_str(),
+                            )
+                            .build(),
+                    ])
+                    .build(),
+            )
             .await?;
 
         Updater::check_for_job(&client).await?;
@@ -167,7 +159,7 @@ async fn test_mqtt_ota() {
         Ok::<_, ota::error::OtaError>(())
     };
 
-    let mut transport = NalTransport::new(network);
+    let mut transport = NalTransport::new(network, broker);
 
     match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(25),

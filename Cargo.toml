@@ -4,13 +4,13 @@ members = ["shadow_derive"]
 [package]
 name = "rustot"
 version = "0.5.0"
-authors = ["Mathias Koch <mk@blackbird.online>"]
+authors = ["Factbird team <support@factbird.com>"]
 description = "AWS IoT"
 readme = "README.md"
 keywords = ["iot", "no-std"]
 categories = ["embedded", "no-std"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/BlackbirdHQ/rustot"
+repository = "https://github.com/FactbirdHQ/rustot"
 edition = "2021"
 documentation = "https://docs.rs/rustot"
 exclude = ["/documentation"]
@@ -29,7 +29,7 @@ serde_cbor = { version = "0.11", default-features = false, optional = true }
 serde-json-core = { version = "0.5" }
 shadow-derive = { path = "shadow_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
-embedded-mqtt = { git = "ssh://git@github.com/BlackbirdHQ/embedded-mqtt/", rev = "d766137" }
+embedded-mqtt = { git = "ssh://git@github.com/FactbirdHQ/embedded-mqtt", rev = "d2b7c02" }
 
 futures = { version = "0.3.28", default-features = false }
 
@@ -46,6 +46,7 @@ embedded-nal-async = "0.7"
 env_logger = "0.11"
 sha2 = "0.10.1"
 static_cell = { version = "2", features = ["nightly"] }
+
 tokio = { version = "1.33", default-features = false, features = [
     "macros",
     "rt",
@@ -73,5 +74,13 @@ ota_http_data = []
 
 std = ["serde/std", "serde_cbor?/std"]
 
-defmt = ["dep:defmt", "heapless/defmt-03", "embedded-mqtt/defmt"]
+defmt = [
+    "dep:defmt",
+    "heapless/defmt-03",
+    "embedded-mqtt/defmt",
+    "embassy-time/defmt",
+]
 log = ["dep:log", "embedded-mqtt/log"]
+
+# [patch."ssh://git@github.com/FactbirdHQ/embedded-mqtt"]
+# embedded-mqtt = { path = "../embedded-mqtt" }

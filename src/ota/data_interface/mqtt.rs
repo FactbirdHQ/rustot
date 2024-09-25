@@ -2,10 +2,10 @@ use core::fmt::{Display, Write};
 use core::ops::DerefMut;
 use core::str::FromStr;
 
+use bitmaps::{Bits, BitsImpl};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
-    DeferredPayload, EncodingError, MqttClient, Properties, Publish, RetainHandling, Subscribe,
-    SubscribeTopic, Subscription,
+    DeferredPayload, EncodingError, MqttClient, Publish, Subscribe, SubscribeTopic, Subscription,
 };
 use futures::StreamExt;
 
@@ -124,13 +124,19 @@ impl<'a> OtaTopic<'a> {
     }
 }
 
-impl<'a, 'b, M: RawMutex, const SUBS: usize> BlockTransfer for Subscription<'a, 'b, M, SUBS, 1> {
+impl<'a, 'b, M: RawMutex, const SUBS: usize> BlockTransfer for Subscription<'a, 'b, M, SUBS, 1>
+where
+    BitsImpl<{ SUBS }>: Bits,
+{
     async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError> {
         Ok(self.next().await)
     }
 }
 
-impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUBS> {
+impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUBS>
+where
+    BitsImpl<{ SUBS }>: Bits,
+{
     const PROTOCOL: Protocol = Protocol::Mqtt;
 
     type ActiveTransfer<'t> = Subscription<'a, 't, M, SUBS, 1> where Self: 't;
@@ -143,17 +149,15 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
         let topic_path = OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
             .format::<256>(self.client_id())?;
 
-        let topic = SubscribeTopic {
-            topic_path: topic_path.as_str(),
-            maximum_qos: embedded_mqtt::QoS::AtMostOnce,
-            no_local: false,
-            retain_as_published: false,
-            retain_handling: RetainHandling::SendAtSubscribeTime,
-        };
+        let topics = [SubscribeTopic::builder()
+            .topic_path(topic_path.as_str())
+            .build()];
 
         debug!("Subscribing to: [{:?}]", &topic_path);
 
-        Ok(self.subscribe::<1>(Subscribe::new(&[topic])).await?)
+        Ok(self
+            .subscribe::<1>(Subscribe::builder().topics(&topics).build())
+            .await?)
     }
 
     /// Request file block by publishing to the get stream topic
@@ -189,17 +193,18 @@ impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUB
             file_ctx.request_block_remaining
         );
 
-        self.publish(Publish {
-            dup: false,
-            qos: embedded_mqtt::QoS::AtLeastOnce,
-            retain: false,
-            pid: None,
-            topic_name: OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())
-                .format::<{ MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30 }>(self.client_id())?
-                .as_str(),
-            payload,
-            properties: Properties::Slice(&[]),
-        })
+        self.publish(
+            Publish::builder()
+                .topic_name(
+                    OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())
+                        .format::<{ MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30 }>(
+                            self.client_id(),
+                        )?
+                        .as_str(),
+                )
+                .payload(payload)
+                .build(),
+        )
         .await?;
 
         Ok(())
