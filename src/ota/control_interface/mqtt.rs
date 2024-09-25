@@ -1,18 +1,21 @@
 use core::fmt::Write;
 
+use bitmaps::{Bits, BitsImpl};
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{DeferredPayload, EncodingError, Publish, QoS};
+use embedded_mqtt::{DeferredPayload, EncodingError, Publish, QoS, Subscribe, SubscribeTopic};
+use futures::StreamExt as _;
 
 use super::ControlInterface;
-use crate::jobs::data_types::JobStatus;
-use crate::jobs::{JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
+use crate::jobs::data_types::{ErrorResponse, JobStatus, UpdateJobExecutionResponse};
+use crate::jobs::{JobError, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 use crate::ota::config::Config;
 use crate::ota::encoding::json::JobStatusReason;
-use crate::ota::encoding::FileContext;
+use crate::ota::encoding::{self, FileContext};
 use crate::ota::error::OtaError;
 
-impl<'a, M: RawMutex, const SUBS: usize> ControlInterface
-    for embedded_mqtt::MqttClient<'a, M, SUBS>
+impl<'a, M: RawMutex, const SUBS: usize> ControlInterface for embedded_mqtt::MqttClient<'a, M, SUBS>
+where
+    BitsImpl<{ SUBS }>: Bits,
 {
     /// Check for next available OTA job from the job service by publishing a
     /// "get next job" message to the job service.
@@ -90,11 +93,39 @@ impl<'a, M: RawMutex, const SUBS: usize> ControlInterface
             }
         }
 
+        let mut sub = self
+            .subscribe::<2>(
+                Subscribe::builder()
+                    .topics(&[
+                        SubscribeTopic::builder()
+                            .topic_path(
+                                JobTopic::UpdateAccepted(file_ctx.job_name.as_str())
+                                    .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
+                                        self.client_id(),
+                                    )?
+                                    .as_str(),
+                            )
+                            .build(),
+                        SubscribeTopic::builder()
+                            .topic_path(
+                                JobTopic::UpdateRejected(file_ctx.job_name.as_str())
+                                    .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
+                                        self.client_id(),
+                                    )?
+                                    .as_str(),
+                            )
+                            .build(),
+                    ])
+                    .build(),
+            )
+            .await?;
+
         let topic = JobTopic::Update(file_ctx.job_name.as_str())
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.client_id())?;
         let payload = DeferredPayload::new(
             |buf| {
                 Jobs::update(status)
+                    .client_token(self.client_id())
                     .status_details(&file_ctx.status_details)
                     .payload(buf)
                     .map_err(|_| EncodingError::BufferSize)
@@ -111,6 +142,44 @@ impl<'a, M: RawMutex, const SUBS: usize> ControlInterface
         )
         .await?;
 
-        Ok(())
+        loop {
+            let message = sub.next().await.ok_or(JobError::Encoding)?;
+
+            // Check if topic is GetAccepted
+            match crate::jobs::Topic::from_str(message.topic_name()) {
+                Some(crate::jobs::Topic::UpdateAccepted(_)) => {
+                    // Check client token
+                    let (response, _) = serde_json_core::from_slice::<
+                        UpdateJobExecutionResponse<encoding::json::OtaJob<'_>>,
+                    >(message.payload())
+                    .map_err(|_| JobError::Encoding)?;
+
+                    if response.client_token != Some(self.client_id()) {
+                        error!(
+                            "Unexpected client token received: {}, expected: {}",
+                            response.client_token.unwrap_or("None"),
+                            self.client_id()
+                        );
+                        continue;
+                    }
+
+                    return Ok(());
+                }
+                Some(crate::jobs::Topic::UpdateRejected(_)) => {
+                    let (error_response, _) =
+                        serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                            .map_err(|_| JobError::Encoding)?;
+
+                    if error_response.client_token != Some(self.client_id()) {
+                        continue;
+                    }
+
+                    return Err(OtaError::UpdateRejected(error_response.code));
+                }
+                _ => {
+                    error!("Expected Topic name GetRejected or GetAccepted but got something else");
+                }
+            }
+        }
     }
 }

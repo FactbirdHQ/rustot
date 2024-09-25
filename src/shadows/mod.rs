@@ -6,6 +6,7 @@ pub mod topics;
 
 use core::{marker::PhantomData, ops::DerefMut};
 
+use bitmaps::{Bits, BitsImpl};
 pub use data_types::Patch;
 use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
@@ -35,6 +36,7 @@ pub trait ShadowState: ShadowPatch + Default {
 
 struct ShadowHandler<'a, 'm, M: RawMutex, S: ShadowState, const SUBS: usize>
 where
+    BitsImpl<{ SUBS }>: Bits,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>,
@@ -44,6 +46,7 @@ where
 
 impl<'a, 'm, M: RawMutex, S: ShadowState, const SUBS: usize> ShadowHandler<'a, 'm, M, S, SUBS>
 where
+    BitsImpl<{ SUBS }>: Bits,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     async fn handle_delta(&self) -> Result<Option<S::PatchState>, Error> {
@@ -378,6 +381,7 @@ where
 
 pub struct PersistedShadow<'a, 'm, S: ShadowState, M: RawMutex, D: ShadowDAO<S>, const SUBS: usize>
 where
+    BitsImpl<{ SUBS }>: Bits,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     handler: ShadowHandler<'a, 'm, M, S, SUBS>,
@@ -386,6 +390,7 @@ where
 
 impl<'a, 'm, S, M, D, const SUBS: usize> PersistedShadow<'a, 'm, S, M, D, SUBS>
 where
+    BitsImpl<{ SUBS }>: Bits,
     S: ShadowState + Default,
     M: RawMutex,
     D: ShadowDAO<S>,
@@ -495,6 +500,7 @@ where
 
 pub struct Shadow<'a, 'm, S: ShadowState, M: RawMutex, const SUBS: usize>
 where
+    BitsImpl<{ SUBS }>: Bits,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     state: S,
@@ -503,6 +509,7 @@ where
 
 impl<'a, 'm, S, M, const SUBS: usize> Shadow<'a, 'm, S, M, SUBS>
 where
+    BitsImpl<{ SUBS }>: Bits,
     S: ShadowState,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
@@ -583,6 +590,7 @@ where
 
 impl<'a, 'm, S, M, const SUBS: usize> core::fmt::Debug for Shadow<'a, 'm, S, M, SUBS>
 where
+    BitsImpl<{ SUBS }>: Bits,
     S: ShadowState + core::fmt::Debug,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
@@ -600,6 +608,7 @@ where
 #[cfg(feature = "defmt")]
 impl<'a, 'm, S, M, const SUBS: usize> defmt::Format for Shadow<'a, 'm, S, M, SUBS>
 where
+    BitsImpl<{ SUBS }>: Bits,
     S: ShadowState + defmt::Format,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
