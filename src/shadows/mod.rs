@@ -224,7 +224,7 @@ where
         }
     }
 
-    pub async fn delete_shadow(&mut self) -> Result<(), Error> {
+    pub async fn delete_shadow(&self) -> Result<(), Error> {
         // Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
@@ -444,7 +444,7 @@ where
     }
 
     /// Get an immutable reference to the internal local state.
-    pub async fn try_get(&mut self) -> Result<S, Error> {
+    pub async fn try_get(&self) -> Result<S, Error> {
         self.dao.lock().await.read().await
     }
 
@@ -463,6 +463,14 @@ where
         }
 
         Ok(state)
+    }
+
+    /// Report the state of the shadow.
+    pub async fn report(&self) -> Result<(), Error> {
+        let state = self.dao.lock().await.read().await?;
+
+        self.handler.report(&state).await?;
+        Ok(())
     }
 
     /// Update the state of the shadow.
@@ -491,7 +499,7 @@ where
         Ok(())
     }
 
-    pub async fn delete_shadow(&mut self) -> Result<(), Error> {
+    pub async fn delete_shadow(&self) -> Result<(), Error> {
         self.handler.delete_shadow().await?;
         self.dao.lock().await.write(&S::default()).await?;
         Ok(())
