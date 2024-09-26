@@ -4,7 +4,7 @@ mod error;
 mod shadow_diff;
 pub mod topics;
 
-use core::{marker::PhantomData, ops::DerefMut};
+use core::{marker::PhantomData, ops::DerefMut, sync::atomic};
 
 use bitmaps::{Bits, BitsImpl};
 pub use data_types::Patch;
@@ -42,6 +42,10 @@ where
     mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>,
     subscription: Mutex<NoopRawMutex, Option<embedded_mqtt::Subscription<'a, 'm, M, SUBS, 2>>>,
     _shadow: PhantomData<S>,
+    update_requested: Mutex<NoopRawMutex, ()>,
+    get_requested: Mutex<NoopRawMutex, ()>,
+    delete_requested: Mutex<NoopRawMutex, ()>,
+    create_requested: Mutex<NoopRawMutex, ()>,
 }
 
 impl<'a, 'm, M: RawMutex, S: ShadowState, const SUBS: usize> ShadowHandler<'a, 'm, M, S, SUBS>
@@ -105,6 +109,8 @@ where
     /// Internal helper function for applying a delta state to the actual shadow
     /// state, and update the cloud shadow.
     async fn report<R: Serialize>(&self, reported: &R) -> Result<(), Error> {
+        let _update_requested_lock = self.update_requested.lock().await;
+
         debug!(
             "[{:?}] Updating reported shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
@@ -179,6 +185,8 @@ where
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
     async fn get_shadow(&self) -> Result<DeltaState<S::PatchState>, Error> {
+        let _get_requested_lock = self.get_requested.lock().await;
+
         //Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
@@ -225,6 +233,8 @@ where
     }
 
     pub async fn delete_shadow(&mut self) -> Result<(), Error> {
+        let _delete_request = self.delete_requested.lock().await;
+
         // Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
@@ -256,6 +266,8 @@ where
     }
 
     pub async fn create_shadow(&self) -> Result<DeltaState<S::PatchState>, Error> {
+        let _create_requested_lock = self.create_requested.lock().await;
+
         debug!(
             "[{:?}] Creating initial shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
@@ -403,6 +415,10 @@ where
             mqtt,
             subscription: Mutex::new(None),
             _shadow: PhantomData,
+            update_requested: Mutex::new(()),
+            get_requested: Mutex::new(()),
+            delete_requested: Mutex::new(()),
+            create_requested: Mutex::new(()),
         };
 
         Self {
@@ -520,6 +536,10 @@ where
             mqtt,
             subscription: Mutex::new(None),
             _shadow: PhantomData,
+            update_requested: Mutex::new(()),
+            get_requested: Mutex::new(()),
+            delete_requested: Mutex::new(()),
+            create_requested: Mutex::new(()),
         };
         Self { handler, state }
     }
