@@ -14,7 +14,7 @@ use super::data_interface::Protocol;
 use super::error::OtaError;
 use super::JobEventData;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Bitmap(bitmaps::Bitmap<32>);
 
 impl Bitmap {

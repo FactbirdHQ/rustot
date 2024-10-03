@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::ota::config::Config;
 
-use super::{encoding::FileContext, error::OtaError};
+use super::{encoding::FileContext, error::OtaError, ProgressState};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -60,15 +60,12 @@ pub trait DataInterface {
         file_ctx: &FileContext,
     ) -> Result<Self::ActiveTransfer<'_>, OtaError>;
 
-    async fn request_file_block(
+    async fn request_file_blocks(
         &self,
-        file_ctx: &mut FileContext,
+        file_ctx: &FileContext,
+        progress_state: &mut ProgressState,
         config: &Config,
     ) -> Result<(), OtaError>;
 
-    fn decode_file_block<'a>(
-        &self,
-        file_ctx: &FileContext,
-        payload: &'a mut [u8],
-    ) -> Result<FileBlock<'a>, OtaError>;
+    fn decode_file_block<'a>(&self, payload: &'a mut [u8]) -> Result<FileBlock<'a>, OtaError>;
 }

@@ -46,6 +46,7 @@ embedded-nal-async = "0.7"
 env_logger = "0.11"
 sha2 = "0.10.1"
 static_cell = { version = "2", features = ["nightly"] }
+log = { version = "0.4" }
 
 tokio = { version = "1.33", default-features = false, features = [
     "macros",
@@ -82,5 +83,5 @@ defmt = [
 ]
 log = ["dep:log", "embedded-mqtt/log"]
 
-# [patch."ssh://git@github.com/FactbirdHQ/embedded-mqtt"]
-# embedded-mqtt = { path = "../embedded-mqtt" }
+[patch."ssh://git@github.com/FactbirdHQ/embedded-mqtt"]
+embedded-mqtt = { path = "../embedded-mqtt" }

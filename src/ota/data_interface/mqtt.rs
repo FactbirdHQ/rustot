@@ -10,6 +10,7 @@ use embedded_mqtt::{
 use futures::StreamExt;
 
 use crate::ota::error::OtaError;
+use crate::ota::ProgressState;
 use crate::{
     jobs::{MAX_STREAM_ID_LEN, MAX_THING_NAME_LEN},
     ota::{
@@ -161,12 +162,13 @@ where
     }
 
     /// Request file block by publishing to the get stream topic
-    async fn request_file_block(
+    async fn request_file_blocks(
         &self,
-        file_ctx: &mut FileContext,
+        file_ctx: &FileContext,
+        progress_state: &mut ProgressState,
         config: &Config,
     ) -> Result<(), OtaError> {
-        file_ctx.request_block_remaining = file_ctx.bitmap.len() as u32;
+        progress_state.request_block_remaining = progress_state.bitmap.len() as u32;
 
         let payload = DeferredPayload::new(
             |buf| {
@@ -177,9 +179,9 @@ where
                         stream_version: None,
                         file_id: file_ctx.fileid,
                         block_size: config.block_size,
-                        block_offset: Some(file_ctx.block_offset),
-                        block_bitmap: Some(&file_ctx.bitmap),
-                        number_of_blocks: None,
+                        block_offset: Some(progress_state.block_offset),
+                        block_bitmap: Some(&progress_state.bitmap),
+                        number_of_blocks: Some(progress_state.request_block_remaining),
                     },
                     buf,
                 )
@@ -190,7 +192,7 @@ where
 
         debug!(
             "Requesting more file blocks. Remaining: {}",
-            file_ctx.request_block_remaining
+            progress_state.request_block_remaining
         );
 
         self.publish(
@@ -202,6 +204,7 @@ where
                         )?
                         .as_str(),
                 )
+                // .qos(embedded_mqtt::QoS::AtMostOnce)
                 .payload(payload)
                 .build(),
         )
@@ -211,11 +214,7 @@ where
     }
 
     /// Decode a cbor encoded fileblock received from streaming service
-    fn decode_file_block<'c>(
-        &self,
-        _file_ctx: &FileContext,
-        payload: &'c mut [u8],
-    ) -> Result<FileBlock<'c>, OtaError> {
+    fn decode_file_block<'c>(&self, payload: &'c mut [u8]) -> Result<FileBlock<'c>, OtaError> {
         Ok(
             serde_cbor::de::from_mut_slice::<cbor::GetStreamResponse>(payload)
                 .map_err(|_| OtaError::Encoding)?

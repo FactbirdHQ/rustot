@@ -3,13 +3,16 @@
 
 mod common;
 
+use bitmaps::{Bits, BitsImpl};
 use common::credentials;
 use common::file_handler::{FileHandler, State as FileHandlerState};
 use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::transport::embedded_nal::NalTransport;
-use embedded_mqtt::{Config, DomainBroker, Message, State, Subscribe, SubscribeTopic};
+use embedded_mqtt::{
+    Config, DomainBroker, Message, SliceBufferProvider, State, Subscribe, SubscribeTopic,
+};
 use futures::StreamExt;
 use serde::Deserialize;
 use static_cell::StaticCell;
@@ -42,9 +45,12 @@ impl<'a> Jobs<'a> {
 }
 
 fn handle_ota<'a, const SUBS: usize>(
-    message: Message<'a, SUBS>,
+    message: Message<'a, SliceBufferProvider<'a>, SUBS>,
     config: &ota::config::Config,
-) -> Option<FileContext> {
+) -> Option<FileContext>
+where
+    BitsImpl<SUBS>: Bits,
+{
     let job = match jobs::Topic::from_str(message.topic_name()) {
         Some(jobs::Topic::NotifyNext) => {
             let (execution_changed, _) =
@@ -92,10 +98,13 @@ async fn test_mqtt_ota() {
     // Create the MQTT stack
     let broker =
         DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
-    let config = Config::new(thing_name).keepalive_interval(embassy_time::Duration::from_secs(50));
+    let config = Config::builder()
+        .client_id(thing_name.try_into().unwrap())
+        .keepalive_interval(embassy_time::Duration::from_secs(50))
+        .build();
 
-    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }, 4>> = StaticCell::new();
-    let state = STATE.init(State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new());
+    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }, 32>> = StaticCell::new();
+    let state = STATE.init(State::new());
     let (mut stack, client) = embedded_mqtt::new(state, config);
 
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
@@ -127,33 +136,41 @@ async fn test_mqtt_ota() {
         Updater::check_for_job(&client).await?;
 
         let config = ota::config::Config::default();
-        while let Some(message) = jobs_subscription.next().await {
-            if let Some(mut file_ctx) = handle_ota(message, &config) {
-                // We have an OTA job, leeeets go!
-                Updater::perform_ota(
-                    &client,
-                    &client,
-                    file_ctx.clone(),
-                    &mut file_handler,
-                    &config,
+
+        let message = jobs_subscription.next().await.unwrap();
+
+        if let Some(mut file_ctx) = handle_ota(message, &config) {
+            // Nested subscriptions are a problem for embedded-mqtt, so drop the
+            // subscription here
+            drop(jobs_subscription);
+
+            // We have an OTA job, leeeets go!
+            Updater::perform_ota(
+                &client,
+                &client,
+                file_ctx.clone(),
+                &mut file_handler,
+                &config,
+            )
+            .await?;
+
+            assert_eq!(file_handler.plateform_state, FileHandlerState::Swap);
+
+            log::info!("Running OTA handler second time to verify state match...");
+
+            // Run it twice in this particular integration test, in order to
+            // simulate image commit after bootloader swap
+            file_ctx
+                .status_details
+                .insert(
+                    heapless::String::try_from("self_test").unwrap(),
+                    heapless::String::try_from("active").unwrap(),
                 )
-                .await?;
+                .unwrap();
 
-                assert_eq!(file_handler.plateform_state, FileHandlerState::Swap);
+            Updater::perform_ota(&client, &client, file_ctx, &mut file_handler, &config).await?;
 
-                // Run it twice in this particular integration test, in order to simulate image commit after bootloader swap
-                file_ctx
-                    .status_details
-                    .insert(
-                        heapless::String::try_from("self_test").unwrap(),
-                        heapless::String::try_from("active").unwrap(),
-                    )
-                    .unwrap();
-                Updater::perform_ota(&client, &client, file_ctx, &mut file_handler, &config)
-                    .await?;
-
-                return Ok(());
-            }
+            return Ok(());
         }
 
         Ok::<_, ota::error::OtaError>(())

@@ -75,7 +75,10 @@ async fn test_provisioning() {
     // Create the MQTT stack
     let broker =
         DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
-    let config = Config::new(thing_name).keepalive_interval(embassy_time::Duration::from_secs(50));
+    let config = Config::builder()
+        .client_id(thing_name.try_into().unwrap())
+        .keepalive_interval(embassy_time::Duration::from_secs(50))
+        .build();
 
     static STATE: StaticCell<State<NoopRawMutex, 2048, 4096, 2>> = StaticCell::new();
     let state = STATE.init(State::<NoopRawMutex, 2048, 4096, 2>::new());

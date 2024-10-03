@@ -12,6 +12,7 @@ use crate::ota::config::Config;
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::{self, FileContext};
 use crate::ota::error::OtaError;
+use crate::ota::ProgressState;
 
 impl<'a, M: RawMutex, const SUBS: usize> ControlInterface for embedded_mqtt::MqttClient<'a, M, SUBS>
 where
@@ -35,16 +36,21 @@ where
         Ok(())
     }
 
-    /// Update the job status on the service side with progress or completion
-    /// info
+    /// Update the job status on the service side.
+    ///
+    /// Returns a Result indicating success or an error,
+    /// along with an Option containing the updated status details
+    /// if they were modified.
     async fn update_job_status(
         &self,
-        file_ctx: &mut FileContext,
+        file_ctx: &FileContext,
+        progress_state: &mut ProgressState,
         config: &Config,
         status: JobStatus,
         reason: JobStatusReason,
     ) -> Result<(), OtaError> {
-        file_ctx
+        // Update the status details within this function.
+        progress_state
             .status_details
             .insert(
                 heapless::String::try_from("self_test").unwrap(),
@@ -54,16 +60,14 @@ where
 
         let mut qos = QoS::AtLeastOnce;
 
-        if let (JobStatus::InProgress, _) | (JobStatus::Succeeded, _) = (status, reason) {
-            let total_blocks =
-                ((file_ctx.filesize + config.block_size - 1) / config.block_size) as u32;
-            let received_blocks = total_blocks - file_ctx.blocks_remaining as u32;
+        if let JobStatus::InProgress | JobStatus::Succeeded = status {
+            let received_blocks = progress_state.total_blocks - progress_state.blocks_remaining;
 
             // Output a status update once in a while. Always update first and
             // last status
-            if file_ctx.blocks_remaining != 0
+            if progress_state.blocks_remaining != 0
                 && received_blocks != 0
-                && received_blocks % config.status_update_frequency != 0
+                && received_blocks % config.status_update_frequency as usize != 0
             {
                 return Ok(());
             }
@@ -74,10 +78,13 @@ where
             if status != JobStatus::Succeeded && reason != JobStatusReason::SelfTestActive {
                 let mut progress = heapless::String::new();
                 progress
-                    .write_fmt(format_args!("{}/{}", received_blocks, total_blocks))
+                    .write_fmt(format_args!(
+                        "{}/{}",
+                        received_blocks, progress_state.total_blocks
+                    ))
                     .map_err(|_| OtaError::Overflow)?;
 
-                file_ctx
+                progress_state
                     .status_details
                     .insert(heapless::String::try_from("progress").unwrap(), progress)
                     .map_err(|_| OtaError::Overflow)?;
@@ -86,7 +93,7 @@ where
             // Downgrade progress updates to QOS 0 to avoid overloading MQTT
             // buffers during active streaming. But make sure to always send and await ack for first update and last update
             if status == JobStatus::InProgress
-                && file_ctx.blocks_remaining != 0
+                && progress_state.blocks_remaining != 0
                 && received_blocks != 0
             {
                 qos = QoS::AtMostOnce;
@@ -126,12 +133,14 @@ where
             |buf| {
                 Jobs::update(status)
                     .client_token(self.client_id())
-                    .status_details(&file_ctx.status_details)
+                    .status_details(&progress_state.status_details)
                     .payload(buf)
                     .map_err(|_| EncodingError::BufferSize)
             },
             512,
         );
+
+        warn!("Updating job status! {:?}", status);
 
         self.publish(
             Publish::builder()
