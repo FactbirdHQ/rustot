@@ -110,7 +110,6 @@ impl Updater {
                 // Select over the futures
                 match subscription.next_block().await {
                     Ok(Some(mut payload)) => {
-                        warn!("Got block!");
                         // Decode the file block received
                         let mut progress = progress_state.lock().await;
 
@@ -170,8 +169,6 @@ impl Updater {
                                 } else {
                                     data.request_file_blocks(&file_ctx, &mut progress, &config)
                                         .await?;
-
-                                    warn!("Done requesting more blocks! {:#?}", progress);
                                 }
                             }
                             Err(e) if e.is_retryable() => {
@@ -481,8 +478,6 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
             let (status, reason) = self.status_update_signal.wait().await;
 
             // Update the job status based on the signal
-            warn!("Signaled status update {:?} {:?}", status, reason);
-
             let mut progress = self.progress_state.lock().await;
             self.control
                 .update_job_status(self.file_ctx, &mut progress, self.config, status, reason)

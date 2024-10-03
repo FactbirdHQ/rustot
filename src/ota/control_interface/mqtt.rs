@@ -140,7 +140,7 @@ where
             512,
         );
 
-        warn!("Updating job status! {:?}", status);
+        debug!("Updating job status! {:?}", status);
 
         self.publish(
             Publish::builder()

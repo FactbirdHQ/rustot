@@ -1,4 +1,3 @@
-//!
 //! ## Integration test of `AWS IoT Shadows`
 //!
 //!
@@ -21,6 +20,7 @@
 //! 11. Update state from cloud
 //! 12. Assert on shadow state
 //!
+
 #![allow(async_fn_in_trait)]
 #![feature(type_alias_impl_trait)]
 
@@ -31,13 +31,16 @@ use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{
-    self, transport::embedded_nal::NalTransport, Config, DomainBroker, Publish, QoS, State,
-    Subscribe, SubscribeTopic,
+    self, transport::embedded_nal::NalTransport, Config, DomainBroker, MqttClient, Publish, QoS,
+    State, Subscribe, SubscribeTopic,
 };
 use futures::StreamExt;
-use rustot::shadows::{derive::ShadowState, Shadow};
+use rustot::shadows::{derive::ShadowState, Shadow, ShadowState};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use static_cell::StaticCell;
+
+const MAX_SUBSCRIBERS: usize = 8;
 
 #[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
 #[shadow("state")]
@@ -47,24 +50,83 @@ pub struct TestShadow {
     // bar: Option<bool>,
 }
 
+/// Helper function to mimic cloud side updates using MQTT client directly
+async fn cloud_update(client: &MqttClient<'static, NoopRawMutex, MAX_SUBSCRIBERS>, payload: &[u8]) {
+    client
+        .publish(
+            Publish::builder()
+                .topic_name(
+                    rustot::shadows::topics::Topic::Update
+                        .format::<128>(client.client_id(), TestShadow::NAME)
+                        .unwrap()
+                        .as_str(),
+                )
+                .payload(payload)
+                .qos(QoS::AtLeastOnce)
+                .build(),
+        )
+        .await
+        .unwrap();
+}
+
+/// Helper function to assert on the current shadow state
+async fn assert_shadow(
+    client: &MqttClient<'static, NoopRawMutex, MAX_SUBSCRIBERS>,
+    expected: serde_json::Value,
+) {
+    let mut get_shadow_sub = client
+        .subscribe::<1>(
+            Subscribe::builder()
+                .topics(&[SubscribeTopic::builder()
+                    .topic_path(
+                        rustot::shadows::topics::Topic::GetAccepted
+                            .format::<128>(client.client_id(), TestShadow::NAME)
+                            .unwrap()
+                            .as_str(),
+                    )
+                    .build()])
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    client
+        .publish(
+            Publish::builder()
+                .topic_name(
+                    rustot::shadows::topics::Topic::Get
+                        .format::<128>(client.client_id(), TestShadow::NAME)
+                        .unwrap()
+                        .as_str(),
+                )
+                .payload(b"")
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let current_shadow = get_shadow_sub.next().await.unwrap();
+
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(current_shadow.payload())
+            .unwrap()
+            .get("state")
+            .unwrap(),
+        &expected,
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn test_shadow_update_from_device() {
     env_logger::init();
 
     const DESIRED_1: &str = r#"{
-    "state": {
-        "desired": {
-            "foo": 42
+        "state": {
+            "desired": {
+                "foo": 42
+            }
         }
-    },
-    "metadata": {
-        "foo": {
-            "timestamp": 1672047508
-        }
-    },
-    "version": 2,
-    "timestamp": 1672047508
-}"#;
+    }"#;
 
     let (thing_name, identity) = credentials::identity();
     let hostname = credentials::HOSTNAME.unwrap();
@@ -80,153 +142,96 @@ async fn test_shadow_update_from_device() {
         .client_id(thing_name.try_into().unwrap())
         .keepalive_interval(embassy_time::Duration::from_secs(50))
         .build();
-    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }, 4>> = StaticCell::new();
-    let state = STATE.init(State::<NoopRawMutex, 4096, { 4096 * 10 }, 4>::new());
+
+    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }, MAX_SUBSCRIBERS>> =
+        StaticCell::new();
+    let state = STATE.init(State::new());
     let (mut stack, client) = embedded_mqtt::new(state, config);
 
     // Create the shadow
-    let mut shadow = Shadow::<TestShadow, _, 4>::new(TestShadow::default(), &client);
+    let mut shadow = Shadow::<TestShadow, _, MAX_SUBSCRIBERS>::new(TestShadow::default(), &client);
+
+    // let delta_fut = async {
+    //     loop {
+    //         let delta = shadow.wait_delta().await.unwrap();
+    //     }
+    // };
 
     let mqtt_fut = async {
-        let mut update_subscription = client
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[SubscribeTopic::builder()
-                        .topic_path(
-                            rustot::shadows::topics::Topic::Update
-                                .format::<128>(client.client_id(), Some("state"))
-                                .unwrap()
-                                .as_str(),
-                        )
-                        .build()])
-                    .build(),
-            )
-            .await
-            .unwrap();
+        // 1. Setup clean starting point (`desired = null, reported = null`)
+        cloud_update(
+            &client,
+            r#"{"state": {"desired": null, "reported": null} }"#.as_bytes(),
+        )
+        .await;
 
-        let mut get_subscription = client
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[SubscribeTopic::builder()
-                        .topic_path(
-                            rustot::shadows::topics::Topic::Get
-                                .format::<128>(client.client_id(), Some("state"))
-                                .unwrap()
-                                .as_str(),
-                        )
-                        .build()])
-                    .build(),
-            )
-            .await
-            .unwrap();
+        // 2. Do a `GetShadow` request to sync empty state
+        let _ = shadow.get_shadow().await.unwrap();
 
-        // Force a shadow get first, to sync up state
-        client
-            .publish(
-                Publish::builder()
-                    .topic_name(
-                        rustot::shadows::topics::Topic::Get
-                            .format::<128>(client.client_id(), Some("state"))
-                            .unwrap()
-                            .as_str(),
-                    )
-                    .qos(QoS::AtLeastOnce)
-                    .payload(&[])
-                    .build(),
-            )
-            .await
-            .unwrap();
+        // 3. Update to initial shadow state from the device
+        let _ = shadow.report().await.unwrap();
 
-        // Wait for the device to try to fetch the shadow first.
-        let _ = get_subscription.next().await;
+        // 4. Assert on the initial state
+        assert_shadow(
+            &client,
+            json!({
+                "reported": {
+                    "foo": 0
+                }
+            }),
+        )
+        .await;
 
-        // Initial shadow state update
-        log::info!("Doing initial shadow update");
-        client
-            .publish(
-                Publish::builder()
-                    .topic_name(
-                        rustot::shadows::topics::Topic::Update
-                            .format::<128>(client.client_id(), Some("state"))
-                            .unwrap()
-                            .as_str(),
-                    )
-                    .payload(DESIRED_1.as_bytes())
-                    .qos(QoS::AtLeastOnce)
-                    .build(),
-            )
-            .await
-            .unwrap();
+        // 5. Update state from device
+        // 6. Assert on shadow state
+        // 7. Update state from cloud
+        cloud_update(&client, DESIRED_1.as_bytes()).await;
 
-        loop {
-            select::select(update_subscription.next(), async {
-                // Device-side update 1
-                shadow
-                    .update(|_, desired| {
-                        desired.foo = Some(1337);
-                    })
-                    .await
-                    .unwrap();
+        // 8. Assert on shadow state
+        // 9. Update state from device
 
-                let current = shadow.get();
-                assert_eq!(current.foo, 1337);
-                let payload = serde_json_core::to_string::<_, 512>(current).unwrap();
-                log::info!("ASSERT-DEVICE: {:?}", payload);
+        // 10. Assert on shadow state
+        assert_shadow(
+            &client,
+            json!({
+                "reported": {
+                    "foo": 0
+                },
+                "desired": {
+                    "foo": 42
+                },
+                "delta": {
+                    "foo": 42
+                }
+            }),
+        )
+        .await;
 
-                // Cloud-side update 1
-                client
-                    .publish(
-                        Publish::builder()
-                            .topic_name(
-                                rustot::shadows::topics::Topic::Update
-                                    .format::<128>(client.client_id(), Some("state"))
-                                    .unwrap()
-                                    .as_str(),
-                            )
-                            .payload(r#"{"state": {"desired": {"bar": true}}}"#.as_bytes())
-                            .qos(QoS::AtLeastOnce)
-                            .build(),
-                    )
-                    .await
-                    .unwrap();
+        // 11. Update desired state from cloud
+        cloud_update(
+            &client,
+            r#"{"state": {"desired": {"bar": true}}}"#.as_bytes(),
+        )
+        .await;
 
-                // Device-side update 2
-                // shadow
-                //     .update(|_state, desired| {
-                //         // desired.bar = Some(false);
-                //     })
-                //     .await
-                //     .unwrap();
-
-                // let current = shadow.get();
-                // let payload = serde_json_core::to_string::<_, 512>(current).unwrap();
-                // log::info!("ASSERT-DEVICE: {}", payload);
-                // assert_eq!(current.bar, Some(false));
-
-                // Cloud-side update 2
-                client
-                    .publish(
-                        Publish::builder()
-                            .topic_name(
-                                rustot::shadows::topics::Topic::Update
-                                    .format::<128>(client.client_id(), Some("state"))
-                                    .unwrap()
-                                    .as_str(),
-                            )
-                            .payload(r#"{"state": {"desired": {"foo": 100}}}"#.as_bytes())
-                            .qos(QoS::AtLeastOnce)
-                            .build(),
-                    )
-                    .await
-                    .unwrap();
-
-                let (s, _) = shadow.wait_delta().await.unwrap();
-                let payload = serde_json_core::to_string::<_, 512>(s).unwrap();
-                log::info!("ASSERT-DEVICE: {:?}", payload);
-                assert_eq!(s.foo, 100);
-            })
-            .await;
-        }
+        // 12. Assert on shadow state
+        assert_shadow(
+            &client,
+            json!({
+                "reported": {
+                    "foo": 0
+                },
+                "desired": {
+                    "foo": 42,
+                    "bar": true
+                },
+                "delta": {
+                    "foo": 42,
+                    "bar": true
+                }
+            }),
+        )
+        .await;
     };
 
     let mut transport = NalTransport::new(network, broker);

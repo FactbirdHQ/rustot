@@ -47,6 +47,7 @@ env_logger = "0.11"
 sha2 = "0.10.1"
 static_cell = { version = "2", features = ["nightly"] }
 log = { version = "0.4" }
+serde_json = "1"
 
 tokio = { version = "1.33", default-features = false, features = [
     "macros",
