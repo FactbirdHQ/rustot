@@ -255,7 +255,7 @@ impl FleetProvisioner {
         .await?;
 
         drop(message);
-        drop(create_subscription);
+        create_subscription.unsubscribe().await?;
 
         let mut message = register_subscription
             .next()

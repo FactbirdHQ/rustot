@@ -140,9 +140,8 @@ async fn test_mqtt_ota() {
         let message = jobs_subscription.next().await.unwrap();
 
         if let Some(mut file_ctx) = handle_ota(message, &config) {
-            // Nested subscriptions are a problem for embedded-mqtt, so drop the
-            // subscription here
-            drop(jobs_subscription);
+            // Nested subscriptions are a problem for embedded-mqtt, so unsubscribe here
+            jobs_subscription.unsubscribe().await.unwrap();
 
             // We have an OTA job, leeeets go!
             Updater::perform_ota(

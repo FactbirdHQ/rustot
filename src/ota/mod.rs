@@ -55,7 +55,7 @@ impl Updater {
             request_block_remaining: file_ctx.bitmap.len() as u32,
             bitmap: file_ctx.bitmap.clone(),
             file_size: file_ctx.filesize,
-            request_momentum: 0,
+            request_momentum: None,
             status_details: file_ctx.status_details.clone(),
         });
 
@@ -151,7 +151,7 @@ impl Updater {
                             }
                             Ok(false) => {
                                 // ... (Handle successful block processing) ...
-                                progress.request_momentum = 0;
+                                progress.request_momentum = Some(0);
 
                                 // Update the job status to reflect the download progress
                                 if progress.blocks_remaining
@@ -327,15 +327,19 @@ impl Updater {
                 break;
             }
 
-            if progress.request_momentum <= config.max_request_momentum {
+            let Some(request_momentum) = &mut progress.request_momentum else {
+                continue;
+            };
+
+            if *request_momentum <= config.max_request_momentum {
                 // Increment momentum
-                progress.request_momentum += 1;
+                *request_momentum += 1;
 
                 warn!("Momentum requesting more blocks!");
 
                 // Request data blocks
-                data.request_file_blocks(file_ctx, &mut progress, config)
-                    .await?;
+                // data.request_file_blocks(file_ctx, &mut progress, config)
+                //     .await?;
             } else {
                 // Too much momentum, abort
                 return Err(error::OtaError::MomentumAbort);
@@ -353,7 +357,7 @@ pub struct ProgressState {
     pub file_size: usize,
     pub block_offset: u32,
     pub request_block_remaining: u32,
-    pub request_momentum: u8,
+    pub request_momentum: Option<u8>,
     pub bitmap: Bitmap,
     pub status_details: StatusDetailsOwned,
 }
