@@ -99,6 +99,7 @@ where
 
         if let Some(client) = delta.client_token {
             if client.eq(self.mqtt.client_id()) {
+                warn!("DELTA CLIENT TOKEN WAS == TO DEVICE CLIENT ID");
                 return Ok(None);
             }
         }
@@ -132,6 +133,9 @@ where
             },
             S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD,
         );
+
+        //Wait for mqtt to connect
+        self.mqtt.wait_connected().await;
 
         let mut sub = self.publish_and_subscribe(Topic::Update, payload).await?;
 
