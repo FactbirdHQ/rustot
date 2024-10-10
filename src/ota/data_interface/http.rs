@@ -20,23 +20,11 @@ impl DataInterface for HttpInterface {
         Ok(())
     }
 
-    fn request_file_block(
+    fn request_file_blocks(
         &self,
         _file_ctx: &mut FileContext,
         _config: &Config,
     ) -> Result<(), OtaError> {
-        Ok(())
-    }
-
-    fn decode_file_block<'b>(
-        &self,
-        _file_ctx: &mut FileContext,
-        _payload: &'b mut [u8],
-    ) -> Result<FileBlock<'b>, OtaError> {
-        unimplemented!()
-    }
-
-    fn cleanup(&self, _file_ctx: &mut FileContext, _config: &Config) -> Result<(), OtaError> {
         Ok(())
     }
 }

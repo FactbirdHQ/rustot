@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 
-# Registers the device in Blackbird's DynamoDB containing whitelisted devices to
+# Registers the device in Factbird's DynamoDB containing whitelisted devices to
 # be provisioned.
-# 
+#
 # This script will populate `tests/secrets` with `claim_certificate.pem.crt` &
 # `claim_private.pem.key`, as well as combine them into `claim_identity.pfx`,
-# which is password protected with `env:DEVICE_ADVISOR_PASSWORD`
+# which is password protected with `env:IDENTITY_PASSWORD`
 
-if [[ -z "${DEVICE_ADVISOR_PASSWORD}" ]]; then
-    echo "DEVICE_ADVISOR_PASSWORD environment variable is required!"
+if [[ -z "${IDENTITY_PASSWORD}" ]]; then
+    echo "IDENTITY_PASSWORD environment variable is required!"
     exit 1
 fi
 
@@ -27,6 +27,6 @@ jq -r '.certificatePem' response.json > $SECRETS_DIR/claim_certificate.pem.crt
 jq -r '.privateKey' response.json > $SECRETS_DIR/claim_private.pem.key
 rm response.json
 
-openssl pkcs12 -export -out $SECRETS_DIR/claim_identity.pfx -inkey $SECRETS_DIR/claim_private.pem.key -in $SECRETS_DIR/claim_certificate.pem.crt -certfile $SECRETS_DIR/root-ca.pem -passout pass:$DEVICE_ADVISOR_PASSWORD
+openssl pkcs12 -export -out $SECRETS_DIR/claim_identity.pfx -inkey $SECRETS_DIR/claim_private.pem.key -in $SECRETS_DIR/claim_certificate.pem.crt -certfile $SECRETS_DIR/root-ca.pem -passout pass:$IDENTITY_PASSWORD
 rm $SECRETS_DIR/claim_certificate.pem.crt
 rm $SECRETS_DIR/claim_private.pem.key

@@ -8,4 +8,4 @@ You can find an example of how to use this crate for iot shadow states in the `t
 
 pfx identity files can be created from a set of device certificate and private key using OpenSSL as: `openssl pkcs12 -export -out identity.pfx -inkey private.pem.key -in certificate.pem.crt -certfile root-ca.pem`
 
-The example functions as a CI integration test, that is run against `Blackbirds` integration account on every PR. This test will run through a statemachine of shadow delete, updates and gets from both device & cloud side with assertions in between.
+The example functions as a CI integration test, that is run against Factbirds integration account on every PR. This test will run through a statemachine of shadow delete, updates and gets from both device & cloud side with assertions in between.

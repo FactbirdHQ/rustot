@@ -1,4 +1,3 @@
-use mqttrust::{Mqtt, QoS};
 use serde::Serialize;
 
 use crate::jobs::JobTopic;
@@ -38,27 +37,17 @@ impl<'a> GetPending<'a> {
     pub fn topic_payload(
         self,
         client_id: &str,
-    ) -> Result<
-        (
-            heapless::String<{ MAX_THING_NAME_LEN + 21 }>,
-            heapless::Vec<u8, { MAX_CLIENT_TOKEN_LEN + 2 }>,
-        ),
-        JobError,
-    > {
-        let payload = serde_json_core::to_vec(&&GetPendingJobExecutionsRequest {
-            client_token: self.client_token,
-        })
+        buf: &mut [u8],
+    ) -> Result<(heapless::String<{ MAX_THING_NAME_LEN + 21 }>, usize), JobError> {
+        let payload_len = serde_json_core::to_slice(
+            &&GetPendingJobExecutionsRequest {
+                client_token: self.client_token,
+            },
+            buf,
+        )
         .map_err(|_| JobError::Encoding)?;
 
-        Ok((JobTopic::GetPending.format(client_id)?, payload))
-    }
-
-    pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), JobError> {
-        let (topic, payload) = self.topic_payload(mqtt.client_id())?;
-
-        mqtt.publish(topic.as_str(), &payload, qos)?;
-
-        Ok(())
+        Ok((JobTopic::GetPending.format(client_id)?, payload_len))
     }
 }
 
@@ -80,12 +69,16 @@ mod test {
 
     #[test]
     fn topic_payload() {
-        let (topic, payload) = GetPending::new()
+        let mut buf = [0u8; 512];
+        let (topic, payload_len) = GetPending::new()
             .client_token("test_client:token_pending")
-            .topic_payload("test_client")
+            .topic_payload("test_client", &mut buf)
             .unwrap();
 
-        assert_eq!(payload, br#"{"clientToken":"test_client:token_pending"}"#);
+        assert_eq!(
+            &buf[..payload_len],
+            br#"{"clientToken":"test_client:token_pending"}"#
+        );
 
         assert_eq!(topic.as_str(), "$aws/things/test_client/jobs/get");
     }

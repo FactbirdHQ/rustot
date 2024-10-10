@@ -11,9 +11,9 @@ use syn::DeriveInput;
 use syn::Generics;
 use syn::Ident;
 use syn::Result;
-use syn::{parenthesized, Attribute, Error, Field, LitStr};
+use syn::{parenthesized, Error, Field, LitStr};
 
-#[proc_macro_derive(ShadowState, attributes(shadow, static_shadow_field))]
+#[proc_macro_derive(ShadowState, attributes(shadow, static_shadow_field, patch))]
 pub fn shadow_state(input: TokenStream) -> TokenStream {
     match parse_macro_input!(input as ParseInput) {
         ParseInput::Struct(input) => {
@@ -32,7 +32,7 @@ pub fn shadow_state(input: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_derive(ShadowPatch, attributes(static_shadow_field, serde))]
+#[proc_macro_derive(ShadowPatch, attributes(static_shadow_field, patch))]
 pub fn shadow_patch(input: TokenStream) -> TokenStream {
     TokenStream::from(match parse_macro_input!(input as ParseInput) {
         ParseInput::Struct(input) => generate_shadow_patch_struct(&input),
@@ -56,7 +56,7 @@ struct StructParseInput {
     pub ident: Ident,
     pub generics: Generics,
     pub shadow_fields: Vec<Field>,
-    pub copy_attrs: Vec<Attribute>,
+    pub copy_attrs: Vec<proc_macro2::TokenStream>,
     pub shadow_name: Option<LitStr>,
 }
 
@@ -67,8 +67,6 @@ impl Parse for ParseInput {
         let mut shadow_name = None;
         let mut copy_attrs = vec![];
 
-        let attrs_to_copy = ["serde"];
-
         // Parse valid container attributes
         for attr in derive_input.attrs {
             if attr.path.is_ident("shadow") {
@@ -78,12 +76,14 @@ impl Parse for ParseInput {
                     content.parse()
                 }
                 shadow_name = Some(shadow_arg.parse2(attr.tokens)?);
-            } else if attrs_to_copy
-                .iter()
-                .find(|a| attr.path.is_ident(a))
-                .is_some()
-            {
-                copy_attrs.push(attr);
+            } else if attr.path.is_ident("patch") {
+                fn patch_arg(input: ParseStream) -> Result<proc_macro2::TokenStream> {
+                    let content;
+                    parenthesized!(content in input);
+                    content.parse()
+                }
+                let args = patch_arg.parse2(attr.tokens)?;
+                copy_attrs.push(quote! { #[ #args ]})
             }
         }
 
@@ -161,7 +161,7 @@ fn create_optional_fields(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> 
                 Some(if type_name_string.starts_with("Option<") {
                     quote! { #(#attrs)* pub #field_name: Option<rustot::shadows::Patch<<#type_name as rustot::shadows::ShadowPatch>::PatchState>> }
                 } else {
-                    quote! { #(#attrs)* pub #field_name: Option<<#type_name as rustot::shadows::ShadowPatch>::PatchState> }
+                    quote! { #(#attrs)* #[serde(skip_serializing_if = "Option::is_none")] pub #field_name: Option<<#type_name as rustot::shadows::ShadowPatch>::PatchState> }
                 })
             }
         })
