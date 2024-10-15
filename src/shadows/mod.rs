@@ -234,14 +234,17 @@ where
                                 response.state.delta.clone(),
                                 Some(false),
                             )?;
+                            Ok(response.state.delta)
                         } else if let Some(_) = response.state.reported {
                             self.handler.change_shadow_value(
                                 &mut state,
-                                response.state.reported,
-                                None,
+                                response.state.reported.clone(),
+                                Some(false),
                             )?;
+                            Ok(response.state.reported)
+                        } else {
+                            Ok(None)
                         }
-                        Ok(response.state.delta)
                     })?
             }
             Topic::GetRejected | Topic::UpdateRejected => {
