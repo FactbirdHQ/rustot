@@ -13,7 +13,7 @@ impl Default for Config {
         Self {
             block_size: 1024,
             max_request_momentum: 3,
-            request_wait: Duration::from_secs(8),
+            request_wait: Duration::from_secs(5),
             status_update_frequency: 24,
             self_test_timeout: None,
         }

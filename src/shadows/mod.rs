@@ -6,7 +6,6 @@ pub mod topics;
 
 use core::{marker::PhantomData, ops::DerefMut, sync::atomic};
 
-use bitmaps::{Bits, BitsImpl};
 pub use data_types::Patch;
 use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
@@ -34,22 +33,20 @@ pub trait ShadowState: ShadowPatch + Default {
     const MAX_PAYLOAD_SIZE: usize = 512;
 }
 
-struct ShadowHandler<'a, 'm, M: RawMutex, S: ShadowState, const SUBS: usize>
+struct ShadowHandler<'a, 'm, M: RawMutex, S: ShadowState>
 where
-    BitsImpl<{ SUBS }>: Bits,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>,
-    subscription: Mutex<NoopRawMutex, Option<embedded_mqtt::Subscription<'a, 'm, M, SUBS, 2>>>,
+    mqtt: &'m embedded_mqtt::MqttClient<'a, M>,
+    subscription: Mutex<NoopRawMutex, Option<embedded_mqtt::Subscription<'a, 'm, M, 2>>>,
     _shadow: PhantomData<S>,
     // request_lock is used to ensure that shadow operations such as subscribing, updating, or
     // deleting are serialized, preventing multiple concurrent requests to the same MQTT topics.
     request_lock: Mutex<NoopRawMutex, ()>,
 }
 
-impl<'a, 'm, M: RawMutex, S: ShadowState, const SUBS: usize> ShadowHandler<'a, 'm, M, S, SUBS>
+impl<'a, 'm, M: RawMutex, S: ShadowState> ShadowHandler<'a, 'm, M, S>
 where
-    BitsImpl<{ SUBS }>: Bits,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     async fn handle_delta(&self) -> Result<Option<S::PatchState>, Error> {
@@ -344,7 +341,7 @@ where
         &self,
         topic: topics::Topic,
         payload: impl ToPayload,
-    ) -> Result<embedded_mqtt::Subscription<'a, '_, M, SUBS, 2>, Error> {
+    ) -> Result<embedded_mqtt::Subscription<'a, '_, M, 2>, Error> {
         let (accepted, rejected) = match topic {
             Topic::Get => (Topic::GetAccepted, Topic::GetRejected),
             Topic::Update => (Topic::UpdateAccepted, Topic::UpdateRejected),
@@ -394,18 +391,16 @@ where
     }
 }
 
-pub struct PersistedShadow<'a, 'm, S: ShadowState, M: RawMutex, D: ShadowDAO<S>, const SUBS: usize>
+pub struct PersistedShadow<'a, 'm, S: ShadowState, M: RawMutex, D: ShadowDAO<S>>
 where
-    BitsImpl<{ SUBS }>: Bits,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
-    handler: ShadowHandler<'a, 'm, M, S, SUBS>,
+    handler: ShadowHandler<'a, 'm, M, S>,
     pub(crate) dao: Mutex<NoopRawMutex, D>,
 }
 
-impl<'a, 'm, S, M, D, const SUBS: usize> PersistedShadow<'a, 'm, S, M, D, SUBS>
+impl<'a, 'm, S, M, D> PersistedShadow<'a, 'm, S, M, D>
 where
-    BitsImpl<{ SUBS }>: Bits,
     S: ShadowState + Default,
     M: RawMutex,
     D: ShadowDAO<S>,
@@ -413,7 +408,7 @@ where
 {
     /// Instantiate a new shadow that will be automatically persisted to NVM
     /// based on the passed `DAO`.
-    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>, dao: D) -> Self {
+    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M>, dao: D) -> Self {
         let handler = ShadowHandler {
             mqtt,
             subscription: Mutex::new(None),
@@ -522,24 +517,22 @@ where
     }
 }
 
-pub struct Shadow<'a, 'm, S: ShadowState, M: RawMutex, const SUBS: usize>
+pub struct Shadow<'a, 'm, S: ShadowState, M: RawMutex>
 where
-    BitsImpl<{ SUBS }>: Bits,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     state: S,
-    handler: ShadowHandler<'a, 'm, M, S, SUBS>,
+    handler: ShadowHandler<'a, 'm, M, S>,
 }
 
-impl<'a, 'm, S, M, const SUBS: usize> Shadow<'a, 'm, S, M, SUBS>
+impl<'a, 'm, S, M> Shadow<'a, 'm, S, M>
 where
-    BitsImpl<{ SUBS }>: Bits,
     S: ShadowState,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
 {
     /// Instantiate a new non-persisted shadow
-    pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M, SUBS>) -> Self {
+    pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M>) -> Self {
         let handler = ShadowHandler {
             mqtt,
             subscription: Mutex::new(None),
@@ -613,9 +606,8 @@ where
     }
 }
 
-impl<'a, 'm, S, M, const SUBS: usize> core::fmt::Debug for Shadow<'a, 'm, S, M, SUBS>
+impl<'a, 'm, S, M> core::fmt::Debug for Shadow<'a, 'm, S, M>
 where
-    BitsImpl<{ SUBS }>: Bits,
     S: ShadowState + core::fmt::Debug,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,
@@ -631,9 +623,8 @@ where
 }
 
 #[cfg(feature = "defmt")]
-impl<'a, 'm, S, M, const SUBS: usize> defmt::Format for Shadow<'a, 'm, S, M, SUBS>
+impl<'a, 'm, S, M> defmt::Format for Shadow<'a, 'm, S, M>
 where
-    BitsImpl<{ SUBS }>: Bits,
     S: ShadowState + defmt::Format,
     M: RawMutex,
     [(); S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD]:,

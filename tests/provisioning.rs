@@ -80,8 +80,8 @@ async fn test_provisioning() {
         .keepalive_interval(embassy_time::Duration::from_secs(50))
         .build();
 
-    static STATE: StaticCell<State<NoopRawMutex, 2048, 4096, 2>> = StaticCell::new();
-    let state = STATE.init(State::<NoopRawMutex, 2048, 4096, 2>::new());
+    static STATE: StaticCell<State<NoopRawMutex, 2048, 4096>> = StaticCell::new();
+    let state = STATE.init(State::new());
     let (mut stack, client) = embedded_mqtt::new(state, config);
 
     let signing_key = credentials::signing_key();
@@ -96,14 +96,14 @@ async fn test_provisioning() {
     let mut credential_handler = CredentialDAO { creds: None };
 
     #[cfg(not(feature = "provision_cbor"))]
-    let provision_fut = FleetProvisioner::provision::<DeviceConfig, NoopRawMutex, 2>(
+    let provision_fut = FleetProvisioner::provision::<DeviceConfig, NoopRawMutex>(
         &client,
         &template_name,
         Some(parameters),
         &mut credential_handler,
     );
     #[cfg(feature = "provision_cbor")]
-    let provision_fut = FleetProvisioner::provision_cbor::<DeviceConfig, NoopRawMutex, 2>(
+    let provision_fut = FleetProvisioner::provision_cbor::<DeviceConfig, NoopRawMutex>(
         &client,
         &template_name,
         Some(parameters),

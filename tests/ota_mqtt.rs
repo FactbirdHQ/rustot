@@ -3,7 +3,6 @@
 
 mod common;
 
-use bitmaps::{Bits, BitsImpl};
 use common::credentials;
 use common::file_handler::{FileHandler, State as FileHandlerState};
 use common::network::TlsNetwork;
@@ -44,13 +43,10 @@ impl<'a> Jobs<'a> {
     }
 }
 
-fn handle_ota<'a, const SUBS: usize>(
-    message: Message<'a, SliceBufferProvider<'a>, SUBS>,
+fn handle_ota<'a>(
+    message: Message<'a, NoopRawMutex, SliceBufferProvider<'a>>,
     config: &ota::config::Config,
-) -> Option<FileContext>
-where
-    BitsImpl<SUBS>: Bits,
-{
+) -> Option<FileContext> {
     let job = match jobs::Topic::from_str(message.topic_name()) {
         Some(jobs::Topic::NotifyNext) => {
             let (execution_changed, _) =
@@ -103,7 +99,7 @@ async fn test_mqtt_ota() {
         .keepalive_interval(embassy_time::Duration::from_secs(50))
         .build();
 
-    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }, 32>> = StaticCell::new();
+    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }>> = StaticCell::new();
     let state = STATE.init(State::new());
     let (mut stack, client) = embedded_mqtt::new(state, config);
 

@@ -26,10 +26,10 @@ bitmaps = { version = "3.1", default-features = false }
 heapless = { version = "0.8", features = ["serde"] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_cbor = { version = "0.11", default-features = false, optional = true }
-serde-json-core = { version = "0.5" }
+serde-json-core = { version = "0.6" }
 shadow-derive = { path = "shadow_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
-embedded-mqtt = { git = "ssh://git@github.com/FactbirdHQ/embedded-mqtt", rev = "5e28a55da737356a3a9c1597ae4ff123e2481b1b" }
+embedded-mqtt = { git = "ssh://git@github.com/FactbirdHQ/embedded-mqtt", rev = "74eb53d" }
 
 futures = { version = "0.3.28", default-features = false }
 
@@ -42,7 +42,7 @@ defmt = { version = "0.3", optional = true }
 
 [dev-dependencies]
 native-tls = { version = "0.2" }
-embedded-nal-async = "0.7"
+embedded-nal-async = "0.8"
 env_logger = "0.11"
 sha2 = "0.10.1"
 static_cell = { version = "2", features = ["nightly"] }

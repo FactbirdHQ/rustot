@@ -139,6 +139,7 @@ mod tests {
             (JobStatusReason::Accepted, "accepted"),
             (JobStatusReason::Rejected, "rejected"),
             (JobStatusReason::Aborted, "aborted"),
+            (JobStatusReason::Pal(123), "pal err"),
         ];
 
         for (reason, exp) in reasons {

@@ -4,7 +4,6 @@ pub mod topics;
 
 use core::future::Future;
 
-use bitmaps::{Bits, BitsImpl};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
     BufferProvider, DeferredPayload, EncodingError, Message, Publish, Subscribe, SubscribeTopic,
@@ -41,14 +40,13 @@ pub struct Credentials<'a> {
 pub struct FleetProvisioner;
 
 impl FleetProvisioner {
-    pub async fn provision<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
+    pub async fn provision<'a, C, M: RawMutex>(
+        mqtt: &embedded_mqtt::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
-        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
         Self::provision_inner(
@@ -62,15 +60,14 @@ impl FleetProvisioner {
         .await
     }
 
-    pub async fn provision_csr<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
+    pub async fn provision_csr<'a, C, M: RawMutex>(
+        mqtt: &embedded_mqtt::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: &str,
         credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
-        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
         Self::provision_inner(
@@ -85,14 +82,13 @@ impl FleetProvisioner {
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub async fn provision_cbor<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
+    pub async fn provision_cbor<'a, C, M: RawMutex>(
+        mqtt: &embedded_mqtt::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
-        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
         Self::provision_inner(
@@ -107,15 +103,14 @@ impl FleetProvisioner {
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub async fn provision_csr_cbor<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
+    pub async fn provision_csr_cbor<'a, C, M: RawMutex>(
+        mqtt: &embedded_mqtt::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: &str,
         credential_handler: &mut impl CredentialHandler,
     ) -> Result<Option<C>, Error>
     where
-        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
         Self::provision_inner(
@@ -130,8 +125,8 @@ impl FleetProvisioner {
     }
 
     #[cfg(feature = "provision_cbor")]
-    async fn provision_inner<'a, C, M: RawMutex, const SUBS: usize>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M, SUBS>,
+    async fn provision_inner<'a, C, M: RawMutex>(
+        mqtt: &embedded_mqtt::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: Option<&str>,
@@ -139,7 +134,6 @@ impl FleetProvisioner {
         payload_format: PayloadFormat,
     ) -> Result<Option<C>, Error>
     where
-        BitsImpl<{ SUBS }>: Bits,
         C: DeserializeOwned,
     {
         use embedded_mqtt::SliceBufferProvider;
@@ -154,8 +148,8 @@ impl FleetProvisioner {
             Some(Topic::CreateKeysAndCertificateAccepted(format)) => {
                 let response = Self::deserialize::<
                     CreateKeysAndCertificateResponse,
+                    M,
                     SliceBufferProvider<'a>,
-                    SUBS,
                 >(format, &mut message)?;
 
                 credential_handler
@@ -172,8 +166,8 @@ impl FleetProvisioner {
             Some(Topic::CreateCertificateFromCsrAccepted(format)) => {
                 let response = Self::deserialize::<
                     CreateCertificateFromCsrResponse,
+                    M,
                     SliceBufferProvider<'a>,
-                    SUBS,
                 >(format, &mut message)?;
 
                 credential_handler
@@ -266,8 +260,8 @@ impl FleetProvisioner {
             Some(Topic::RegisterThingAccepted(_, format)) => {
                 let response = Self::deserialize::<
                     RegisterThingResponse<'_, C>,
+                    M,
                     SliceBufferProvider<'a>,
-                    SUBS,
                 >(format, &mut message)?;
 
                 Ok(response.device_configuration)
@@ -286,14 +280,11 @@ impl FleetProvisioner {
         }
     }
 
-    async fn begin<'a, 'b, M: RawMutex, const SUBS: usize>(
-        mqtt: &'b embedded_mqtt::MqttClient<'a, M, SUBS>,
+    async fn begin<'a, 'b, M: RawMutex>(
+        mqtt: &'b embedded_mqtt::MqttClient<'a, M>,
         csr: Option<&str>,
         payload_format: PayloadFormat,
-    ) -> Result<Subscription<'a, 'b, M, SUBS, 2>, Error>
-    where
-        BitsImpl<{ SUBS }>: Bits,
-    {
+    ) -> Result<Subscription<'a, 'b, M, 2>, Error> {
         if let Some(csr) = csr {
             let subscription = mqtt
                 .subscribe(
@@ -395,13 +386,10 @@ impl FleetProvisioner {
         }
     }
 
-    fn deserialize<'a, R: Deserialize<'a>, B: BufferProvider, const SUBS: usize>(
+    fn deserialize<'a, R: Deserialize<'a>, M: RawMutex, B: BufferProvider>(
         payload_format: PayloadFormat,
-        message: &'a mut Message<'_, B, SUBS>,
-    ) -> Result<R, Error>
-    where
-        BitsImpl<{ SUBS }>: Bits,
-    {
+        message: &'a mut Message<'_, M, B>,
+    ) -> Result<R, Error> {
         trace!(
             "Accepted Topic {:?}. Payload len: {:?}",
             payload_format,
@@ -415,13 +403,10 @@ impl FleetProvisioner {
         })
     }
 
-    fn handle_error<B: BufferProvider, const SUBS: usize>(
+    fn handle_error<M: RawMutex, B: BufferProvider>(
         format: PayloadFormat,
-        mut message: Message<'_, B, SUBS>,
-    ) -> Result<(), Error>
-    where
-        BitsImpl<{ SUBS }>: Bits,
-    {
+        mut message: Message<'_, M, B>,
+    ) -> Result<(), Error> {
         error!(">> {:?}", message.topic_name());
 
         let response = match format {
