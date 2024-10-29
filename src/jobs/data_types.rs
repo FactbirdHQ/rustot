@@ -292,7 +292,7 @@ pub struct Jobs {
 pub struct ErrorResponse<'a> {
     pub code: ErrorCode,
     /// An error message string.
-    message: &'a str,
+    pub message: &'a str,
     /// A client token used to correlate requests and responses. Enter an
     /// arbitrary value here and it is reflected in the response.
     #[serde(rename = "clientToken")]

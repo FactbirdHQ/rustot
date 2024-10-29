@@ -1,7 +1,6 @@
 use crate::jobs::data_types::JobStatus;
 
 use super::{
-    config::Config,
     encoding::{json::JobStatusReason, FileContext},
     error::OtaError,
     ProgressState,
@@ -16,7 +15,6 @@ pub trait ControlInterface {
         &self,
         file_ctx: &FileContext,
         progress: &mut ProgressState,
-        config: &Config,
         status: JobStatus,
         reason: JobStatusReason,
     ) -> Result<(), OtaError>;

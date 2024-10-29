@@ -1,9 +1,8 @@
 use core::fmt::Write;
 
-use bitmaps::{Bits, BitsImpl};
 use embassy_sync::blocking_mutex::raw::RawMutex;
+use embassy_time::with_timeout;
 use embedded_mqtt::{DeferredPayload, EncodingError, Publish, QoS, Subscribe, SubscribeTopic};
-use futures::StreamExt as _;
 
 use super::ControlInterface;
 use crate::jobs::data_types::{ErrorResponse, JobStatus, UpdateJobExecutionResponse};
@@ -14,10 +13,7 @@ use crate::ota::encoding::{self, FileContext};
 use crate::ota::error::OtaError;
 use crate::ota::ProgressState;
 
-impl<'a, M: RawMutex, const SUBS: usize> ControlInterface for embedded_mqtt::MqttClient<'a, M, SUBS>
-where
-    BitsImpl<{ SUBS }>: Bits,
-{
+impl<'a, M: RawMutex> ControlInterface for embedded_mqtt::MqttClient<'a, M> {
     /// Check for next available OTA job from the job service by publishing a
     /// "get next job" message to the job service.
     async fn request_job(&self) -> Result<(), OtaError> {
@@ -45,7 +41,6 @@ where
         &self,
         file_ctx: &FileContext,
         progress_state: &mut ProgressState,
-        config: &Config,
         status: JobStatus,
         reason: JobStatusReason,
     ) -> Result<(), OtaError> {
@@ -62,15 +57,6 @@ where
 
         if let JobStatus::InProgress | JobStatus::Succeeded = status {
             let received_blocks = progress_state.total_blocks - progress_state.blocks_remaining;
-
-            // Output a status update once in a while. Always update first and
-            // last status
-            if progress_state.blocks_remaining != 0
-                && received_blocks != 0
-                && received_blocks % config.status_update_frequency as usize != 0
-            {
-                return Ok(());
-            }
 
             // Don't override the progress on succeeded, nor on self-test
             // active. (Cases where progress counter is lost due to device
@@ -92,40 +78,40 @@ where
 
             // Downgrade progress updates to QOS 0 to avoid overloading MQTT
             // buffers during active streaming. But make sure to always send and await ack for first update and last update
-            if status == JobStatus::InProgress
-                && progress_state.blocks_remaining != 0
-                && received_blocks != 0
-            {
-                qos = QoS::AtMostOnce;
-            }
+            // if status == JobStatus::InProgress
+            //     && progress_state.blocks_remaining != 0
+            //     && received_blocks != 0
+            // {
+            //     qos = QoS::AtMostOnce;
+            // }
         }
 
-        let mut sub = self
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                JobTopic::UpdateAccepted(file_ctx.job_name.as_str())
-                                    .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
-                                        self.client_id(),
-                                    )?
-                                    .as_str(),
-                            )
-                            .build(),
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                JobTopic::UpdateRejected(file_ctx.job_name.as_str())
-                                    .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
-                                        self.client_id(),
-                                    )?
-                                    .as_str(),
-                            )
-                            .build(),
-                    ])
-                    .build(),
-            )
-            .await?;
+        // let mut sub = self
+        //     .subscribe::<2>(
+        //         Subscribe::builder()
+        //             .topics(&[
+        //                 SubscribeTopic::builder()
+        //                     .topic_path(
+        //                         JobTopic::UpdateAccepted(file_ctx.job_name.as_str())
+        //                             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
+        //                                 self.client_id(),
+        //                             )?
+        //                             .as_str(),
+        //                     )
+        //                     .build(),
+        //                 SubscribeTopic::builder()
+        //                     .topic_path(
+        //                         JobTopic::UpdateRejected(file_ctx.job_name.as_str())
+        //                             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
+        //                                 self.client_id(),
+        //                             )?
+        //                             .as_str(),
+        //                     )
+        //                     .build(),
+        //             ])
+        //             .build(),
+        //     )
+        //     .await?;
 
         let topic = JobTopic::Update(file_ctx.job_name.as_str())
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.client_id())?;
@@ -151,44 +137,61 @@ where
         )
         .await?;
 
-        loop {
-            let message = sub.next().await.ok_or(JobError::Encoding)?;
+        Ok(())
 
-            // Check if topic is GetAccepted
-            match crate::jobs::Topic::from_str(message.topic_name()) {
-                Some(crate::jobs::Topic::UpdateAccepted(_)) => {
-                    // Check client token
-                    let (response, _) = serde_json_core::from_slice::<
-                        UpdateJobExecutionResponse<encoding::json::OtaJob<'_>>,
-                    >(message.payload())
-                    .map_err(|_| JobError::Encoding)?;
+        // loop {
+        //     let message = match with_timeout(
+        //         embassy_time::Duration::from_secs(1),
+        //         sub.next_message(),
+        //     )
+        //     .await
+        //     {
+        //         Ok(res) => res.ok_or(JobError::Encoding)?,
+        //         Err(_) => return Err(OtaError::Timeout),
+        //     };
 
-                    if response.client_token != Some(self.client_id()) {
-                        error!(
-                            "Unexpected client token received: {}, expected: {}",
-                            response.client_token.unwrap_or("None"),
-                            self.client_id()
-                        );
-                        continue;
-                    }
+        //     // Check if topic is GetAccepted
+        //     match crate::jobs::Topic::from_str(message.topic_name()) {
+        //         Some(crate::jobs::Topic::UpdateAccepted(_)) => {
+        //             // Check client token
+        //             let (response, _) = serde_json_core::from_slice::<
+        //                 UpdateJobExecutionResponse<encoding::json::OtaJob<'_>>,
+        //             >(message.payload())
+        //             .map_err(|_| JobError::Encoding)?;
 
-                    return Ok(());
-                }
-                Some(crate::jobs::Topic::UpdateRejected(_)) => {
-                    let (error_response, _) =
-                        serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                            .map_err(|_| JobError::Encoding)?;
+        //             if response.client_token != Some(self.client_id()) {
+        //                 error!(
+        //                     "Unexpected client token received: {}, expected: {}",
+        //                     response.client_token.unwrap_or("None"),
+        //                     self.client_id()
+        //                 );
+        //                 continue;
+        //             }
 
-                    if error_response.client_token != Some(self.client_id()) {
-                        continue;
-                    }
+        //             return Ok(());
+        //         }
+        //         Some(crate::jobs::Topic::UpdateRejected(_)) => {
+        //             let (error_response, _) =
+        //                 serde_json_core::from_slice::<ErrorResponse>(message.payload())
+        //                     .map_err(|_| JobError::Encoding)?;
 
-                    return Err(OtaError::UpdateRejected(error_response.code));
-                }
-                _ => {
-                    error!("Expected Topic name GetRejected or GetAccepted but got something else");
-                }
-            }
-        }
+        //             if error_response.client_token != Some(self.client_id()) {
+        //                 error!(
+        //                     "Unexpected client token received: {}, expected: {}",
+        //                     error_response.client_token.unwrap_or("None"),
+        //                     self.client_id()
+        //                 );
+        //                 continue;
+        //             }
+
+        //             error!("OTA Update rejected: {:?}", error_response.message);
+
+        //             return Err(OtaError::UpdateRejected(error_response.code));
+        //         }
+        //         _ => {
+        //             error!("Expected Topic name GetRejected or GetAccepted but got something else");
+        //         }
+        //     }
+        // }
     }
 }

@@ -40,8 +40,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use static_cell::StaticCell;
 
-const MAX_SUBSCRIBERS: usize = 8;
-
 #[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
 #[shadow("state")]
 pub struct TestShadow {
@@ -51,7 +49,7 @@ pub struct TestShadow {
 }
 
 /// Helper function to mimic cloud side updates using MQTT client directly
-async fn cloud_update(client: &MqttClient<'static, NoopRawMutex, MAX_SUBSCRIBERS>, payload: &[u8]) {
+async fn cloud_update(client: &MqttClient<'static, NoopRawMutex>, payload: &[u8]) {
     client
         .publish(
             Publish::builder()
@@ -70,10 +68,7 @@ async fn cloud_update(client: &MqttClient<'static, NoopRawMutex, MAX_SUBSCRIBERS
 }
 
 /// Helper function to assert on the current shadow state
-async fn assert_shadow(
-    client: &MqttClient<'static, NoopRawMutex, MAX_SUBSCRIBERS>,
-    expected: serde_json::Value,
-) {
+async fn assert_shadow(client: &MqttClient<'static, NoopRawMutex>, expected: serde_json::Value) {
     let mut get_shadow_sub = client
         .subscribe::<1>(
             Subscribe::builder()
@@ -143,13 +138,12 @@ async fn test_shadow_update_from_device() {
         .keepalive_interval(embassy_time::Duration::from_secs(50))
         .build();
 
-    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }, MAX_SUBSCRIBERS>> =
-        StaticCell::new();
+    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }>> = StaticCell::new();
     let state = STATE.init(State::new());
     let (mut stack, client) = embedded_mqtt::new(state, config);
 
     // Create the shadow
-    let mut shadow = Shadow::<TestShadow, _, MAX_SUBSCRIBERS>::new(TestShadow::default(), &client);
+    let mut shadow = Shadow::<TestShadow, _>::new(TestShadow::default(), &client);
 
     // let delta_fut = async {
     //     loop {

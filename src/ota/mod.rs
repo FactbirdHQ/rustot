@@ -126,10 +126,11 @@ impl Updater {
                                 // ... (Handle end of file) ...
                                 match pal.close_file(&file_ctx).await {
                                     Err(e) => {
-                                        job_updater.signal_update(
-                                            JobStatus::Failed,
-                                            JobStatusReason::Pal(0),
-                                        );
+                                        // FIXME: This seems like duplicate status update, as it will also report during cleanup
+                                        // job_updater.signal_update(
+                                        //     JobStatus::Failed,
+                                        //     JobStatusReason::Pal(0),
+                                        // );
 
                                         return Err(e.into());
                                     }
@@ -211,6 +212,11 @@ impl Updater {
                 } else {
                     pal::OtaEvent::UpdateComplete
                 };
+
+                info!(
+                    "OTA Download finished! Running complete callback: {:?}",
+                    event
+                );
 
                 pal.complete_callback(event).await?;
 
@@ -331,15 +337,19 @@ impl Updater {
                 continue;
             };
 
-            if *request_momentum <= config.max_request_momentum {
-                // Increment momentum
-                *request_momentum += 1;
+            // Increment momentum
+            *request_momentum += 1;
 
+            if *request_momentum == 1 {
+                continue;
+            }
+
+            if *request_momentum <= config.max_request_momentum {
                 warn!("Momentum requesting more blocks!");
 
                 // Request data blocks
-                // data.request_file_blocks(file_ctx, &mut progress, config)
-                //     .await?;
+                data.request_file_blocks(file_ctx, &mut progress, config)
+                    .await?;
             } else {
                 // Too much momentum, abort
                 return Err(error::OtaError::MomentumAbort);
@@ -351,6 +361,7 @@ impl Updater {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ProgressState {
     pub total_blocks: usize,
     pub blocks_remaining: usize,
@@ -358,7 +369,9 @@ pub struct ProgressState {
     pub block_offset: u32,
     pub request_block_remaining: u32,
     pub request_momentum: Option<u8>,
+    #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
     pub bitmap: Bitmap,
+    #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
     pub status_details: StatusDetailsOwned,
 }
 
@@ -430,7 +443,6 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                     .update_job_status(
                         &self.file_ctx,
                         &mut progress,
-                        self.config,
                         JobStatus::Succeeded,
                         JobStatusReason::Accepted,
                     )
@@ -484,7 +496,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
             // Update the job status based on the signal
             let mut progress = self.progress_state.lock().await;
             self.control
-                .update_job_status(self.file_ctx, &mut progress, self.config, status, reason)
+                .update_job_status(self.file_ctx, &mut progress, status, reason)
                 .await?;
 
             match status {
@@ -531,7 +543,6 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                     .update_job_status(
                         &self.file_ctx,
                         &mut progress,
-                        self.config,
                         JobStatus::InProgress,
                         JobStatusReason::SelfTestActive,
                     )
@@ -544,7 +555,6 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                     .update_job_status(
                         &self.file_ctx,
                         &mut progress,
-                        self.config,
                         JobStatus::Succeeded,
                         JobStatusReason::Accepted,
                     )
@@ -559,7 +569,6 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                     .update_job_status(
                         &self.file_ctx,
                         &mut progress,
-                        self.config,
                         JobStatus::Failed,
                         JobStatusReason::Rejected,
                     )
@@ -574,7 +583,6 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                     .update_job_status(
                         &self.file_ctx,
                         &mut progress,
-                        self.config,
                         JobStatus::Failed,
                         JobStatusReason::Aborted,
                     )
@@ -598,7 +606,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
         let mut progress = self.progress_state.lock().await;
 
         self.control
-            .update_job_status(&self.file_ctx, &mut progress, self.config, status, reason)
+            .update_job_status(&self.file_ctx, &mut progress, status, reason)
             .await?;
         Ok(())
     }

@@ -2,7 +2,6 @@ use core::fmt::{Display, Write};
 use core::ops::DerefMut;
 use core::str::FromStr;
 
-use bitmaps::{Bits, BitsImpl};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
     DeferredPayload, EncodingError, MqttClient, Publish, Subscribe, SubscribeTopic, Subscription,
@@ -125,22 +124,16 @@ impl<'a> OtaTopic<'a> {
     }
 }
 
-impl<'a, 'b, M: RawMutex, const SUBS: usize> BlockTransfer for Subscription<'a, 'b, M, SUBS, 1>
-where
-    BitsImpl<{ SUBS }>: Bits,
-{
+impl<'a, 'b, M: RawMutex> BlockTransfer for Subscription<'a, 'b, M, 1> {
     async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError> {
         Ok(self.next().await)
     }
 }
 
-impl<'a, M: RawMutex, const SUBS: usize> DataInterface for MqttClient<'a, M, SUBS>
-where
-    BitsImpl<{ SUBS }>: Bits,
-{
+impl<'a, M: RawMutex> DataInterface for MqttClient<'a, M> {
     const PROTOCOL: Protocol = Protocol::Mqtt;
 
-    type ActiveTransfer<'t> = Subscription<'a, 't, M, SUBS, 1> where Self: 't;
+    type ActiveTransfer<'t> = Subscription<'a, 't, M, 1> where Self: 't;
 
     /// Init file transfer by subscribing to the OTA data stream topic
     async fn init_file_transfer(
