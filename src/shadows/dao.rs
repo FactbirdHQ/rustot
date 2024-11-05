@@ -28,10 +28,8 @@ where
                 }
 
                 Ok(
-                    serde_cbor::de::from_mut_slice::<S>(
-                        &mut buf[U32_SIZE..len as usize + U32_SIZE],
-                    )
-                    .map_err(|_| Error::InvalidPayload)?,
+                    minicbor_serde::from_slice::<S>(&mut buf[U32_SIZE..len as usize + U32_SIZE])
+                        .map_err(|_| Error::InvalidPayload)?,
                 )
             }
             _ => Err(Error::InvalidPayload),
@@ -43,14 +41,13 @@ where
 
         let buf = &mut [0u8; S::MAX_PAYLOAD_SIZE + U32_SIZE];
 
-        let mut serializer = serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(
-            &mut buf[U32_SIZE..],
-        ))
-        .packed_format();
+        let mut serializer = minicbor_serde::Serializer::new(&mut buf[U32_SIZE..]);
+
         state
             .serialize(&mut serializer)
             .map_err(|_| Error::InvalidPayload)?;
-        let len = serializer.into_inner().bytes_written();
+
+        let len = serializer.into_encoder().writer().len();
 
         if len > S::MAX_PAYLOAD_SIZE {
             return Err(Error::Overflow);
