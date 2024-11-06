@@ -76,9 +76,10 @@ pub fn to_slice<T>(value: &T, slice: &mut [u8]) -> Result<usize, ()>
 where
     T: serde::ser::Serialize,
 {
-    let mut serializer = minicbor_serde::Serializer::new(slice);
+    let mut serializer =
+        minicbor_serde::Serializer::new(minicbor::encode::write::Cursor::new(slice));
     value.serialize(&mut serializer).map_err(|_| ())?;
-    Ok(serializer.into_encoder().writer().len())
+    Ok(serializer.into_encoder().writer().position())
 }
 
 impl<'a> From<GetStreamResponse<'a>> for FileBlock<'a> {
