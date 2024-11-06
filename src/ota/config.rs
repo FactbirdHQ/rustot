@@ -11,10 +11,10 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            block_size: 1024,
+            block_size: 256,
             max_request_momentum: 3,
             request_wait: Duration::from_secs(5),
-            status_update_frequency: 24,
+            status_update_frequency: 96,
             self_test_timeout: None,
         }
     }

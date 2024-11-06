@@ -174,6 +174,7 @@ impl Updater {
                             }
                             Err(e) if e.is_retryable() => {
                                 // ... (Handle retryable errors) ...
+                                error!("Failed block validation: {:?}! Retrying", e);
                             }
                             Err(e) => {
                                 // ... (Handle fatal errors) ...
