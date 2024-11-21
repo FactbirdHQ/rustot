@@ -9,11 +9,11 @@ pub trait ShadowDAO<S: Serialize + DeserializeOwned> {
 
 impl<S: Serialize + DeserializeOwned> ShadowDAO<S> for () {
     fn read(&mut self) -> Result<S, Error> {
-        Err(Error::NoPersistance)
+        Err(Error::NoPersistence)
     }
 
     fn write(&mut self, _state: &S) -> Result<(), Error> {
-        Err(Error::NoPersistance)
+        Err(Error::NoPersistence)
     }
 }
 
@@ -58,10 +58,8 @@ where
                 }
 
                 Ok(
-                    serde_cbor::de::from_mut_slice::<S>(
-                        &mut buf[U32_SIZE..len as usize + U32_SIZE],
-                    )
-                    .map_err(|_| Error::InvalidPayload)?,
+                    minicbor_serde::from_slice::<S>(&mut buf[U32_SIZE..len as usize + U32_SIZE])
+                        .map_err(|_| Error::InvalidPayload)?,
                 )
             }
             _ => Err(Error::InvalidPayload),
@@ -73,14 +71,14 @@ where
 
         let buf = &mut [0u8; S::MAX_PAYLOAD_SIZE + U32_SIZE];
 
-        let mut serializer = serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(
+        let mut serializer = minicbor_serde::Serializer::new(minicbor::encode::write::Cursor::new(
             &mut buf[U32_SIZE..],
-        ))
-        .packed_format();
+        ));
+
         state
             .serialize(&mut serializer)
             .map_err(|_| Error::InvalidPayload)?;
-        let len = serializer.into_inner().bytes_written();
+        let len = serializer.into_encoder().writer().position();
 
         if len > S::MAX_PAYLOAD_SIZE {
             return Err(Error::Overflow);

@@ -194,7 +194,7 @@ where
         self.handler.should_handle_topic(topic)
     }
 
-    /// Handle incomming publish messages from the cloud on any topics relevant
+    /// Handle incoming publish messages from the cloud on any topics relevant
     /// for this particular shadow.
     ///
     /// This function needs to be fed all relevant incoming MQTT payloads in
@@ -343,10 +343,10 @@ where
     /// and depending on whether the state update is rejected or accepted, it
     /// will automatically update the local version after response
     ///
-    /// The returned `bool` from the update closure will determine wether the
+    /// The returned `bool` from the update closure will determine whether the
     /// update is persisted using the `DAO`, or just updated in the cloud. This
     /// can be handy for activity or status field updates that are not relevant
-    /// to store persistant on the device, but are required to be part of the
+    /// to store persistent on the device, but are required to be part of the
     /// same cloud shadow.
     pub fn update<F: FnOnce(&S, &mut S::PatchState) -> bool>(&mut self, f: F) -> Result<(), Error> {
         let mut desired = S::PatchState::default();
@@ -404,7 +404,7 @@ where
         self.handler.unsubscribe()
     }
 
-    /// Handle incomming publish messages from the cloud on any topics relevant
+    /// Handle incoming publish messages from the cloud on any topics relevant
     /// for this particular shadow.
     ///
     /// This function needs to be fed all relevant incoming MQTT payloads in

@@ -111,17 +111,18 @@ where
             parameters,
         };
 
-        let payload = &mut [0u8; 1024];
+        let mut payload = [0u8; 1024];
 
         let payload_len = match self.payload_format {
             #[cfg(feature = "provision_cbor")]
             PayloadFormat::Cbor => {
-                let mut serializer =
-                    serde_cbor::ser::Serializer::new(serde_cbor::ser::SliceWrite::new(payload));
+                let mut serializer = minicbor_serde::Serializer::new(
+                    minicbor::encode::write::Cursor::new(&mut payload[..]),
+                );
                 register_request.serialize(&mut serializer)?;
-                serializer.into_inner().bytes_written()
+                serializer.into_encoder().writer().position()
             }
-            PayloadFormat::Json => serde_json_core::to_slice(&register_request, payload)?,
+            PayloadFormat::Json => serde_json_core::to_slice(&register_request, &mut payload)?,
         };
 
         self.mqtt.publish(
@@ -151,7 +152,7 @@ where
                 let response = match format {
                     #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
-                        serde_cbor::de::from_mut_slice::<CreateKeysAndCertificateResponse>(payload)?
+                        minicbor_serde::from_slice::<CreateKeysAndCertificateResponse>(payload)?
                     }
                     PayloadFormat::Json => {
                         serde_json_core::from_slice::<CreateKeysAndCertificateResponse>(payload)?.0
@@ -173,7 +174,7 @@ where
                 let response = match format {
                     #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
-                        serde_cbor::de::from_mut_slice::<CreateCertificateFromCsrResponse>(payload)?
+                        minicbor_serde::from_slice::<CreateCertificateFromCsrResponse>(payload)?
                     }
                     PayloadFormat::Json => {
                         serde_json_core::from_slice::<CreateCertificateFromCsrResponse>(payload)?.0
@@ -195,7 +196,7 @@ where
                 let response = match format {
                     #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
-                        serde_cbor::de::from_mut_slice::<RegisterThingResponse<'_, P>>(payload)?
+                        minicbor_serde::from_slice::<RegisterThingResponse<'_, P>>(payload)?
                     }
                     PayloadFormat::Json => {
                         serde_json_core::from_slice::<RegisterThingResponse<'_, P>>(payload)?.0
@@ -217,9 +218,7 @@ where
             ) => {
                 let response = match format {
                     #[cfg(feature = "provision_cbor")]
-                    PayloadFormat::Cbor => {
-                        serde_cbor::de::from_mut_slice::<ErrorResponse>(payload)?
-                    }
+                    PayloadFormat::Cbor => minicbor_serde::from_slice::<ErrorResponse>(payload)?,
                     PayloadFormat::Json => serde_json_core::from_slice::<ErrorResponse>(payload)?.0,
                 };
 
