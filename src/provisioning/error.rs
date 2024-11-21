@@ -27,8 +27,14 @@ impl From<serde_json_core::de::Error> for Error {
     }
 }
 
-impl From<serde_cbor::Error> for Error {
-    fn from(_e: serde_cbor::Error) -> Self {
+impl From<minicbor_serde::error::DecodeError> for Error {
+    fn from(_e: minicbor_serde::error::DecodeError) -> Self {
         Self::DeserializeCbor
+    }
+}
+
+impl<E> From<minicbor_serde::error::EncodeError<E>> for Error {
+    fn from(_: minicbor_serde::error::EncodeError<E>) -> Self {
+        Self::Overflow
     }
 }

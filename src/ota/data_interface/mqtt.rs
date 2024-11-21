@@ -181,7 +181,7 @@ where
         payload: &'c mut [u8],
     ) -> Result<FileBlock<'c>, OtaError> {
         Ok(
-            serde_cbor::de::from_mut_slice::<cbor::GetStreamResponse>(payload)
+            minicbor_serde::from_slice::<cbor::GetStreamResponse>(payload)
                 .map_err(|_| OtaError::Encoding)?
                 .into(),
         )
