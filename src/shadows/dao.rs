@@ -41,13 +41,15 @@ where
 
         let buf = &mut [0u8; S::MAX_PAYLOAD_SIZE + U32_SIZE];
 
-        let mut serializer = minicbor_serde::Serializer::new(&mut buf[U32_SIZE..]);
+        let mut serializer = minicbor_serde::Serializer::new(minicbor::encode::write::Cursor::new(
+            &mut buf[U32_SIZE..],
+        ));
 
         state
             .serialize(&mut serializer)
             .map_err(|_| Error::InvalidPayload)?;
 
-        let len = serializer.into_encoder().writer().len();
+        let len = serializer.into_encoder().writer().position();
 
         if len > S::MAX_PAYLOAD_SIZE {
             return Err(Error::Overflow);

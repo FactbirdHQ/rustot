@@ -206,11 +206,13 @@ impl FleetProvisioner {
                 Ok(match payload_format {
                     #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
-                        let mut serializer = minicbor_serde::Serializer::new(buf);
+                        let mut serializer = minicbor_serde::Serializer::new(
+                            minicbor::encode::write::Cursor::new(buf),
+                        );
                         register_request
                             .serialize(&mut serializer)
                             .map_err(|_| EncodingError::BufferSize)?;
-                        serializer.into_encoder().writer().len()
+                        serializer.into_encoder().writer().position()
                     }
                     PayloadFormat::Json => serde_json_core::to_slice(&register_request, buf)
                         .map_err(|_| EncodingError::BufferSize)?,
@@ -317,11 +319,13 @@ impl FleetProvisioner {
                     Ok(match payload_format {
                         #[cfg(feature = "provision_cbor")]
                         PayloadFormat::Cbor => {
-                            let mut serializer = minicbor_serde::Serializer::new(buf);
+                            let mut serializer = minicbor_serde::Serializer::new(
+                                minicbor::encode::write::Cursor::new(buf),
+                            );
                             request
                                 .serialize(&mut serializer)
                                 .map_err(|_| EncodingError::BufferSize)?;
-                            serializer.into_encoder().writer().len()
+                            serializer.into_encoder().writer().position()
                         }
                         PayloadFormat::Json => serde_json_core::to_slice(&request, buf)
                             .map_err(|_| EncodingError::BufferSize)?,
