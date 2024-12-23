@@ -1,6 +1,6 @@
 pub mod dao;
 pub mod data_types;
-mod error;
+pub mod error;
 mod shadow_diff;
 pub mod topics;
 
