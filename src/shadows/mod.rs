@@ -123,7 +123,7 @@ where
         };
 
         let payload = DeferredPayload::new(
-            |buf| {
+            |buf: &mut [u8]| {
                 serde_json_core::to_slice(&request, buf)
                     .map_err(|_| embedded_mqtt::EncodingError::BufferSize)
             },
