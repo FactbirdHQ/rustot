@@ -1,7 +1,7 @@
 use core::str::FromStr;
 
-use heapless::{LinearMap, String, Vec};
-use serde::{Deserialize, Serialize};
+use heapless::{String, Vec};
+use serde::Serialize;
 
 // Constants for heapless container sizes
 pub const HEADER_VERSION_SIZE: usize = 6;
@@ -18,24 +18,17 @@ pub enum MetricError {
     Other,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Metric {
+#[derive(Debug, Serialize)]
+pub struct Metric<C: Serialize> {
     #[serde(rename = "hed")]
     pub header: Header,
 
     #[serde(rename = "cmet")]
-    pub custom_metrics: Option<
-        LinearMap<String<MAX_CUSTOM_METRICS_NAME>, Vec<CustomMetric, 1>, MAX_CUSTOM_METRICS>,
-    >,
+    pub custom_metrics: C,
 }
 
-impl Metric {
-    pub fn new(
-        custom_metrics: Option<
-            LinearMap<String<MAX_CUSTOM_METRICS_NAME>, Vec<CustomMetric, 1>, MAX_CUSTOM_METRICS>,
-        >,
-        timestamp: i64,
-    ) -> Self {
+impl<C: Serialize> Metric<C> {
+    pub fn new(custom_metrics: C, timestamp: i64) -> Self {
         let header = Header {
             report_id: timestamp,
             version: String::<HEADER_VERSION_SIZE>::from_str("1.0").unwrap(), //FIXME: Don't
@@ -48,7 +41,7 @@ impl Metric {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct Header {
     /// Monotonically increasing value. Epoch timestamp recommended.
     #[serde(rename = "rid")]
@@ -59,17 +52,17 @@ pub struct Header {
     pub version: String<HEADER_VERSION_SIZE>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CustomMetric {
-    Number(u64),
+    Number(i64),
     NumberList(Vec<u64, MAX_METRICS>),
     StringList(Vec<String<LOCAL_INTERFACE_SIZE>, MAX_METRICS>),
     IpList(Vec<String<REMOTE_ADDR_SIZE>, MAX_METRICS>),
 }
 
 impl CustomMetric {
-    pub fn new_number(value: u64) -> heapless::Vec<Self, 1> {
+    pub fn new_number(value: i64) -> heapless::Vec<Self, 1> {
         let mut custom_metric_map = Vec::new();
 
         custom_metric_map.push(CustomMetric::Number(value)).unwrap();

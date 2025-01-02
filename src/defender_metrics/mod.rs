@@ -1,11 +1,8 @@
-use data_types::{
-    CustomMetric, Metric, MetricError, HEADER_VERSION_SIZE, MAX_CUSTOM_METRICS,
-    MAX_CUSTOM_METRICS_NAME,
-};
+use data_types::{Metric, MetricError};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use futures::StreamExt;
-use heapless::LinearMap;
+use serde::Serialize;
 use topics::Topic;
 
 use crate::shadows::Error;
@@ -23,14 +20,9 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
         Self { mqtt }
     }
 
-    pub async fn publish_metric(
+    pub async fn publish_metric<C: Serialize>(
         &self,
-        custom_metric: LinearMap<
-            heapless::String<{ MAX_CUSTOM_METRICS_NAME }>,
-            heapless::Vec<CustomMetric, 1>,
-            { MAX_CUSTOM_METRICS },
-        >,
-        metric_name: &str,
+        custom_metric: C,
         timestamp: i64,
     ) -> Result<(), MetricError> {
         let metric = Metric::new(Some(custom_metric), timestamp);
@@ -43,8 +35,11 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
             4000,
         );
 
+        //Wait for mqtt to connect
+        self.mqtt.wait_connected().await;
+
         let mut subsctiption = self
-            .publish_and_subscribe(payload, metric_name)
+            .publish_and_subscribe(payload)
             .await
             .map_err(|_| MetricError::Other)?;
 
@@ -61,7 +56,6 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
     async fn publish_and_subscribe(
         &self,
         payload: impl ToPayload,
-        metric_name: &str,
     ) -> Result<embedded_mqtt::Subscription<'a, '_, M, 2>, Error> {
         let sub = self
             .mqtt
@@ -71,14 +65,14 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
                         SubscribeTopic::builder()
                             .topic_path(
                                 Topic::Accepted
-                                    .format::<64>(self.mqtt.client_id(), metric_name)?
+                                    .format::<64>(self.mqtt.client_id())?
                                     .as_str(),
                             )
                             .build(),
                         SubscribeTopic::builder()
                             .topic_path(
                                 Topic::Rejected
-                                    .format::<64>(self.mqtt.client_id(), metric_name)?
+                                    .format::<64>(self.mqtt.client_id())?
                                     .as_str(),
                             )
                             .build(),
@@ -89,8 +83,10 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
             .map_err(Error::MqttError)?;
 
         //*** PUBLISH REQUEST ***/
-        let topic_name = Topic::Publish.format::<64>(self.mqtt.client_id(), metric_name)?;
-        self.mqtt
+        let topic_name = Topic::Publish.format::<64>(self.mqtt.client_id())?;
+
+        match self
+            .mqtt
             .publish(
                 Publish::builder()
                     .topic_name(topic_name.as_str())
@@ -98,7 +94,14 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
                     .build(),
             )
             .await
-            .map_err(Error::MqttError)?;
+            .map_err(Error::MqttError)
+        {
+            Ok(_) => {}
+            Err(_) => {
+                error!("ERROR PUBLISHING PAYLOAD");
+                return Err(Error::MqttError(embedded_mqtt::Error::BadTopicFilter));
+            }
+        };
 
         Ok(sub)
     }
@@ -111,10 +114,55 @@ mod tests {
     use super::data_types::*;
 
     use heapless::{LinearMap, String};
+    use serde::{ser::SerializeStruct, Serialize};
+
+    #[test]
+    fn custom_serialization() {
+        #[derive(Debug)]
+        struct WifiMetric {
+            signal_strength: u8,
+        }
+
+        impl Serialize for WifiMetric {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                let mut outer = serializer.serialize_struct("WifiMetricWrapper", 1)?;
+
+                // Define the type we want to wrap our signal_strength field in
+                #[derive(Serialize)]
+                struct Number {
+                    number: u8,
+                }
+
+                let number = Number {
+                    number: self.signal_strength,
+                };
+
+                // Serialize number and wrap in array
+                outer.serialize_field("MyMetricOfType_Number", &[number])?;
+                outer.end()
+            }
+        }
+
+        let custom_metrics: WifiMetric = WifiMetric {
+            signal_strength: 23,
+        };
+
+        let metric = Metric::new(custom_metrics, 123123123123);
+
+        let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
+
+        println!("buffer = {}", payload);
+
+        assert!(true)
+    }
 
     #[test]
     fn number() {
-        let mut custom_metrics = LinearMap::new();
+        let mut custom_metrics: LinearMap<String<24>, heapless::Vec<CustomMetric, 1>, 16> =
+            LinearMap::new();
 
         let name_of_metric = String::from_str("myMetric").unwrap();
 
@@ -133,7 +181,8 @@ mod tests {
 
     #[test]
     fn number_list() {
-        let mut custom_metrics = LinearMap::new();
+        let mut custom_metrics: LinearMap<String<24>, heapless::Vec<CustomMetric, 1>, 16> =
+            LinearMap::new();
 
         // NUMBER LIST
         let my_number_list = String::from_str("my_number_list").unwrap();
@@ -156,7 +205,8 @@ mod tests {
 
     #[test]
     fn string_list() {
-        let mut custom_metrics = LinearMap::new();
+        let mut custom_metrics: LinearMap<String<24>, heapless::Vec<CustomMetric, 1>, 16> =
+            LinearMap::new();
 
         // STRING LIST
         let my_string_list = String::from_str("my_string_list").unwrap();
@@ -179,7 +229,8 @@ mod tests {
 
     #[test]
     fn all_types() {
-        let mut custom_metrics = LinearMap::new();
+        let mut custom_metrics: LinearMap<String<24>, heapless::Vec<CustomMetric, 1>, 16> =
+            LinearMap::new();
 
         let my_number = String::from_str("MyMetricOfType_Number").unwrap();
         custom_metrics

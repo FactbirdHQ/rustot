@@ -19,29 +19,23 @@ impl Topic {
     //TODO: Feature gate json or cbor
     const PAYLOAD_FORMAT: &'static str = "json";
 
-    pub fn format<const L: usize>(
-        &self,
-        thing_name: &str,
-        metric_name: &str,
-    ) -> Result<String<L>, Error> {
+    pub fn format<const L: usize>(&self, thing_name: &str) -> Result<String<L>, Error> {
         let mut topic_path = String::new();
 
         match self {
             Self::Accepted => topic_path.write_fmt(format_args!(
-                "{}/{}/{}/{}/{}",
+                "{}/{}/{}/{}/accepted",
                 Self::PREFIX,
                 thing_name,
                 Self::NAME,
                 Self::PAYLOAD_FORMAT,
-                metric_name
             )),
             Self::Rejected => topic_path.write_fmt(format_args!(
-                "{}/{}/{}/{}/{}",
+                "{}/{}/{}/{}/rejected",
                 Self::PREFIX,
                 thing_name,
                 Self::NAME,
                 Self::PAYLOAD_FORMAT,
-                metric_name
             )),
             Self::Publish => topic_path.write_fmt(format_args!(
                 "{}/{}/{}/{}",
@@ -73,71 +67,70 @@ impl Topic {
     }
 }
 
-#[derive(Default)]
-pub struct Subscribe<const N: usize> {
-    topics: heapless::Vec<(Topic, QoS), N>,
-}
+// #[derive(Default)]
+// pub struct Subscribe<const : usize> {
+//     topics: heapless::Vec<(Topic, QoS), N>,
+// }
 
-impl<const N: usize> Subscribe<N> {
-    pub fn new() -> Self {
-        Self::default()
-    }
+// impl<const N: usize> Subscribe<N> {
+//     pub fn new() -> Self {
+//         Self::default()
+//     }
 
-    pub fn add_topic(self, topic: Topic, qos: QoS) -> Self {
-        if self.topics.iter().any(|(t, _)| t == &topic) {
-            return self;
-        }
+//     pub fn add_topic(self, topic: Topic, qos: QoS) -> Self {
+//         if self.topics.iter().any(|(t, _)| t == &topic) {
+//             return self;
+//         }
 
-        let mut topics = self.topics;
-        topics.push((topic, qos)).ok();
+//         let mut topics = self.topics;
+//         topics.push((topic, qos)).ok();
 
-        Self { topics }
-    }
+//         Self { topics }
+//     }
 
-    pub fn topics(
-        self,
-        thing_name: &str,
-        metric_name: &str,
-    ) -> Result<heapless::Vec<(heapless::String<N>, QoS), N>, Error> {
-        assert!(thing_name.len() <= MAX_THING_NAME_LEN);
+//     pub fn topics(
+//         self,
+//         thing_name: &str,
+//     ) -> Result<heapless::Vec<(heapless::String<N>, QoS), N>, Error> {
+//         assert!(thing_name.len() <= MAX_THING_NAME_LEN);
 
-        self.topics
-            .iter()
-            .map(|(topic, qos)| Ok(((*topic).format(thing_name, metric_name)?, *qos)))
-            .collect()
-    }
-}
+//         self.topics
+//             .iter()
+//             .map(|(topic, qos)| Ok(((*topic).format(thing_name)?, *qos)))
+//             .collect()
+//     }
+// }
 
-#[derive(Default)]
-pub struct Unsubscribe<const N: usize> {
-    topics: heapless::Vec<Topic, N>,
-}
+// #[derive(Default)]
+// pub struct Unsubscribe<const N: usize> {
+//     topics: heapless::Vec<Topic, N>,
+// }
 
-impl<const N: usize> Unsubscribe<N> {
-    pub fn new() -> Self {
-        Self::default()
-    }
+// impl<const N: usize> Unsubscribe<N> {
+//     pub fn new() -> Self {
+//         Self::default()
+//     }
 
-    pub fn topic(self, topic: Topic) -> Self {
-        if self.topics.iter().any(|t| t == &topic) {
-            return self;
-        }
+//     pub fn topic(self, topic: Topic) -> Self {
+//         if self.topics.iter().any(|t| t == &topic) {
+//             return self;
+//         }
 
-        let mut topics = self.topics;
-        topics.push(topic).ok();
-        Self { topics }
-    }
+//         let mut topics = self.topics;
+//         topics.push(topic).ok();
+//         Self { topics }
+//     }
 
-    pub fn topics(
-        self,
-        thing_name: &str,
-        metric_name: &str,
-    ) -> Result<heapless::Vec<heapless::String<256>, N>, Error> {
-        assert!(thing_name.len() <= MAX_THING_NAME_LEN);
+//     pub fn topics(
+//         self,
+//         thing_name: &str,
+//         metric_name: &str,
+//     ) -> Result<heapless::Vec<heapless::String<256>, N>, Error> {
+//         assert!(thing_name.len() <= MAX_THING_NAME_LEN);
 
-        self.topics
-            .iter()
-            .map(|topic| (*topic).format(thing_name, metric_name))
-            .collect()
-    }
-}
+//         self.topics
+//             .iter()
+//             .map(|topic| (*topic).format(thing_name, metric_name))
+//             .collect()
+//     }
+// }
