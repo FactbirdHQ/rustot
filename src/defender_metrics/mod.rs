@@ -8,6 +8,7 @@ use topics::Topic;
 use crate::shadows::Error;
 
 // pub mod aws_types;
+pub mod aws_types;
 pub mod data_types;
 pub mod topics;
 

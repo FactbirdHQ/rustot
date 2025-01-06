@@ -1,27 +1,24 @@
-use core::str::FromStr;
+use serde::Serialize;
 
-use heapless::{LinearMap, String, Vec};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TcpConnections {
+#[derive(Debug, Serialize)]
+pub struct TcpConnections<'a> {
     #[serde(rename = "ec")]
-    pub established_connections: Option<EstablishedConnections>,
+    pub established_connections: Option<&'a EstablishedConnections<'a>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EstablishedConnections {
+#[derive(Debug, Serialize)]
+pub struct EstablishedConnections<'a> {
     #[serde(rename = "cs")]
-    pub connections: Option<Vec<Connection, { MAX_CONNECTIONS }>>,
+    pub connections: Option<&'a [&'a Connection<'a>]>,
 
     #[serde(rename = "t")]
     pub total: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Connection {
+#[derive(Debug, Serialize)]
+pub struct Connection<'a> {
     #[serde(rename = "rad")]
-    pub remote_addr: String<REMOTE_ADDR_SIZE>,
+    pub remote_addr: &'a str,
 
     /// Port number, must be >= 0
     #[serde(rename = "lp")]
@@ -29,46 +26,46 @@ pub struct Connection {
 
     /// Interface name
     #[serde(rename = "li")]
-    pub local_interface: Option<String<LOCAL_INTERFACE_SIZE>>,
+    pub local_interface: Option<&'a str>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ListeningTcpPorts {
+#[derive(Debug, Serialize)]
+pub struct ListeningTcpPorts<'a> {
     #[serde(rename = "pts")]
-    pub ports: Option<Vec<TcpPort, MAX_PORTS>>,
+    pub ports: Option<&'a [&'a TcpPort<'a>]>,
 
     #[serde(rename = "t")]
     pub total: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TcpPort {
+#[derive(Debug, Serialize)]
+pub struct TcpPort<'a> {
     #[serde(rename = "pt")]
     pub port: u16,
 
     #[serde(rename = "if")]
-    pub interface: Option<String<LOCAL_INTERFACE_SIZE>>,
+    pub interface: Option<&'a str>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ListeningUdpPorts {
+#[derive(Debug, Serialize)]
+pub struct ListeningUdpPorts<'a> {
     #[serde(rename = "pts")]
-    pub ports: Option<Vec<UdpPort, MAX_PORTS>>,
+    pub ports: Option<&'a [&'a UdpPort<'a>]>,
 
     #[serde(rename = "t")]
     pub total: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UdpPort {
+#[derive(Debug, Serialize)]
+pub struct UdpPort<'a> {
     #[serde(rename = "pt")]
     pub port: u16,
 
     #[serde(rename = "if")]
-    pub interface: Option<String<LOCAL_INTERFACE_SIZE>>,
+    pub interface: Option<&'a str>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct NetworkStats {
     #[serde(rename = "bi")]
     pub bytes_in: Option<u64>,
