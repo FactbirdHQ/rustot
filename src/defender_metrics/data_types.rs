@@ -54,60 +54,9 @@ pub struct Header {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CustomMetric {
+pub enum CustomMetric<'a> {
     Number(i64),
-    NumberList(Vec<u64, MAX_METRICS>),
-    StringList(Vec<String<LOCAL_INTERFACE_SIZE>, MAX_METRICS>),
-    IpList(Vec<String<REMOTE_ADDR_SIZE>, MAX_METRICS>),
-}
-
-impl CustomMetric {
-    pub fn new_number(value: i64) -> heapless::Vec<Self, 1> {
-        let mut custom_metric_map = Vec::new();
-
-        custom_metric_map.push(CustomMetric::Number(value)).unwrap();
-
-        custom_metric_map
-    }
-
-    pub fn new_number_list(values: &[u64]) -> heapless::Vec<Self, 1> {
-        let mut custom_metric_map = Vec::new();
-
-        let mut vec = Vec::new();
-        for &v in values {
-            vec.push(v).unwrap();
-        }
-
-        custom_metric_map
-            .push(CustomMetric::NumberList(vec))
-            .unwrap();
-
-        custom_metric_map
-    }
-
-    pub fn new_string_list(values: &[&str]) -> heapless::Vec<Self, 1> {
-        let mut custom_metric_map = Vec::new();
-
-        let mut vec = Vec::new();
-        for &v in values {
-            vec.push(String::from_str(v).unwrap()).unwrap();
-        }
-        custom_metric_map
-            .push(CustomMetric::StringList(vec))
-            .unwrap();
-
-        custom_metric_map
-    }
-
-    pub fn new_ip_list(values: &[&str]) -> heapless::Vec<Self, 1> {
-        let mut custom_metric_map = Vec::new();
-
-        let mut vec = Vec::new();
-        for &v in values {
-            vec.push(String::from_str(v).unwrap()).unwrap();
-        }
-        custom_metric_map.push(CustomMetric::IpList(vec)).unwrap();
-
-        custom_metric_map
-    }
+    NumberList(&'a [u64]),
+    StringList(&'a [&'a str]),
+    IpList(&'a [&'a str]),
 }

@@ -161,13 +161,12 @@ mod tests {
 
     #[test]
     fn number() {
-        let mut custom_metrics: LinearMap<String<24>, heapless::Vec<CustomMetric, 1>, 16> =
-            LinearMap::new();
+        let mut custom_metrics: LinearMap<String<24>, [CustomMetric; 1], 16> = LinearMap::new();
 
         let name_of_metric = String::from_str("myMetric").unwrap();
 
         custom_metrics
-            .insert(name_of_metric, CustomMetric::new_number(123))
+            .insert(name_of_metric, [CustomMetric::Number(23)])
             .unwrap();
 
         let metric = Metric::new(Some(custom_metrics), 123123123123);
@@ -181,17 +180,13 @@ mod tests {
 
     #[test]
     fn number_list() {
-        let mut custom_metrics: LinearMap<String<24>, heapless::Vec<CustomMetric, 1>, 16> =
-            LinearMap::new();
+        let mut custom_metrics: LinearMap<String<24>, [CustomMetric; 1], 16> = LinearMap::new();
 
         // NUMBER LIST
         let my_number_list = String::from_str("my_number_list").unwrap();
 
         custom_metrics
-            .insert(
-                my_number_list,
-                CustomMetric::new_number_list(&[123, 456, 789]),
-            )
+            .insert(my_number_list, [CustomMetric::NumberList(&[123, 456, 789])])
             .unwrap();
 
         let metric = Metric::new(Some(custom_metrics), 123123123123);
@@ -205,8 +200,7 @@ mod tests {
 
     #[test]
     fn string_list() {
-        let mut custom_metrics: LinearMap<String<24>, heapless::Vec<CustomMetric, 1>, 16> =
-            LinearMap::new();
+        let mut custom_metrics: LinearMap<String<24>, [CustomMetric; 1], 16> = LinearMap::new();
 
         // STRING LIST
         let my_string_list = String::from_str("my_string_list").unwrap();
@@ -214,7 +208,7 @@ mod tests {
         custom_metrics
             .insert(
                 my_string_list,
-                CustomMetric::new_string_list(&["value_1", "value_2"]),
+                [CustomMetric::StringList(&["value_1", "value_2"])],
             )
             .unwrap();
 
@@ -229,24 +223,23 @@ mod tests {
 
     #[test]
     fn all_types() {
-        let mut custom_metrics: LinearMap<String<24>, heapless::Vec<CustomMetric, 1>, 16> =
-            LinearMap::new();
+        let mut custom_metrics: LinearMap<String<32>, [CustomMetric; 1], 4> = LinearMap::new();
 
         let my_number = String::from_str("MyMetricOfType_Number").unwrap();
         custom_metrics
-            .insert(my_number, CustomMetric::new_number(1))
+            .insert(my_number, [CustomMetric::Number(1)])
             .unwrap();
 
         let my_number_list = String::from_str("MyMetricOfType_NumberList").unwrap();
         custom_metrics
-            .insert(my_number_list, CustomMetric::new_number_list(&[1, 2, 3]))
+            .insert(my_number_list, [CustomMetric::NumberList(&[1, 2, 3])])
             .unwrap();
 
         let my_string_list = String::from_str("MyMetricOfType_StringList").unwrap();
         custom_metrics
             .insert(
                 my_string_list,
-                CustomMetric::new_string_list(&["value_1", "value_2"]),
+                [CustomMetric::StringList(&["value_1", "value_2"])],
             )
             .unwrap();
 
@@ -254,7 +247,7 @@ mod tests {
         custom_metrics
             .insert(
                 my_ip_list,
-                CustomMetric::new_ip_list(&["172.0.0.0", "172.0.0.10"]),
+                [CustomMetric::IpList(&["172.0.0.0", "172.0.0.10"])],
             )
             .unwrap();
 
