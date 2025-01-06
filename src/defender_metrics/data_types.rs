@@ -1,15 +1,6 @@
-use core::str::FromStr;
+use core::fmt::Display;
 
-use heapless::{String, Vec};
 use serde::Serialize;
-
-// Constants for heapless container sizes
-pub const HEADER_VERSION_SIZE: usize = 6;
-pub const REMOTE_ADDR_SIZE: usize = 64;
-pub const LOCAL_INTERFACE_SIZE: usize = 32;
-pub const MAX_METRICS: usize = 8;
-pub const MAX_CUSTOM_METRICS: usize = 16;
-pub const MAX_CUSTOM_METRICS_NAME: usize = 32;
 
 pub enum MetricError {
     Malformed,
@@ -31,7 +22,7 @@ impl<C: Serialize> Metric<C> {
     pub fn new(custom_metrics: C, timestamp: i64) -> Self {
         let header = Header {
             report_id: timestamp,
-            version: String::<HEADER_VERSION_SIZE>::from_str("1.0").unwrap(), //FIXME: Don't
+            version: Version(1, 0),
         };
 
         Self {
@@ -49,7 +40,7 @@ pub struct Header {
 
     /// Version in Major.Minor format.
     #[serde(rename = "v")]
-    pub version: String<HEADER_VERSION_SIZE>,
+    pub version: Version,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,4 +50,23 @@ pub enum CustomMetric<'a> {
     NumberList(&'a [u64]),
     StringList(&'a [&'a str]),
     IpList(&'a [&'a str]),
+}
+
+/// Format is `Version(Majo, Minor)`
+#[derive(Debug)]
+pub struct Version(u8, u8);
+
+impl Serialize for Version {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(&self)
+    }
+}
+
+impl Display for Version {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}.{}", self.0, self.1,)
+    }
 }
