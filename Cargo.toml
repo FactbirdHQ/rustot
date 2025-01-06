@@ -43,6 +43,7 @@ embassy-futures = "0.1"
 
 log = { version = "0.4", default-features = false, optional = true }
 defmt = { version = "0.3", optional = true }
+bon = { version = "3.3.2", default-features = false }
 
 [dev-dependencies]
 native-tls = { version = "0.2" }
@@ -70,6 +71,7 @@ p256 = "0.13"
 pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 hex = { version = "0.4.3", features = ["alloc"] }
 
+
 [features]
 default = ["ota_mqtt_data", "provision_cbor"]
 
@@ -88,6 +90,7 @@ defmt = [
     "embassy-time/defmt",
 ]
 log = ["dep:log", "embedded-mqtt/log"]
+
 
 # [patch."ssh://git@github.com/FactbirdHQ/embedded-mqtt"]
 # embedded-mqtt = { path = "../embedded-mqtt" }

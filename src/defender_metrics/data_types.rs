@@ -1,7 +1,10 @@
 use core::fmt::Display;
 
+use bon::Builder;
 use embassy_time::Instant;
 use serde::Serialize;
+
+use super::aws_types::{ListeningTcpPorts, ListeningUdpPorts, NetworkStats, TcpConnections};
 
 pub enum MetricError {
     Malformed,
@@ -10,27 +13,24 @@ pub enum MetricError {
     Other,
 }
 
-#[derive(Debug, Serialize)]
-pub struct Metric<C: Serialize> {
+#[derive(Debug, Serialize, Builder)]
+pub struct Metric<'a, C: Serialize> {
     #[serde(rename = "hed")]
     pub header: Header,
 
+    #[serde(rename = "met")]
+    pub metrics: Option<Metrics<'a>>,
+
     #[serde(rename = "cmet")]
-    pub custom_metrics: C,
+    pub custom_metrics: Option<C>,
 }
 
-impl<C: Serialize> Metric<C> {
-    pub fn new(custom_metrics: C) -> Self {
-        let header = Header {
-            report_id: Instant::now().as_millis() as i64,
-            version: Version(1, 0),
-        };
-
-        Self {
-            header,
-            custom_metrics,
-        }
-    }
+#[derive(Debug, Serialize)]
+pub struct Metrics<'a> {
+    listening_tcp_ports: Option<ListeningTcpPorts<'a>>,
+    listening_udp_ports: Option<ListeningUdpPorts<'a>>,
+    network_stats: Option<NetworkStats>,
+    tcp_connections: Option<TcpConnections<'a>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +42,15 @@ pub struct Header {
     /// Version in Major.Minor format.
     #[serde(rename = "v")]
     pub version: Version,
+}
+
+impl Default for Header {
+    fn default() -> Self {
+        Self {
+            report_id: Instant::now().as_millis() as i64,
+            version: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -69,5 +78,11 @@ impl Serialize for Version {
 impl Display for Version {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}.{}", self.0, self.1,)
+    }
+}
+
+impl Default for Version {
+    fn default() -> Self {
+        Self(1, 0)
     }
 }
