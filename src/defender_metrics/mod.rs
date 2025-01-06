@@ -21,12 +21,8 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
         Self { mqtt }
     }
 
-    pub async fn publish_metric<C: Serialize>(
-        &self,
-        custom_metric: C,
-        timestamp: i64,
-    ) -> Result<(), MetricError> {
-        let metric = Metric::new(Some(custom_metric), timestamp);
+    pub async fn publish_metric<C: Serialize>(&self, custom_metric: C) -> Result<(), MetricError> {
+        let metric = Metric::new(Some(custom_metric));
 
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
@@ -39,13 +35,13 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
         //Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
-        let mut subsctiption = self
+        let mut subscription = self
             .publish_and_subscribe(payload)
             .await
             .map_err(|_| MetricError::Other)?;
 
         loop {
-            let message = subsctiption.next().await.ok_or(MetricError::Malformed)?;
+            let message = subscription.next().await.ok_or(MetricError::Malformed)?;
 
             match Topic::from_str(message.topic_name()) {
                 Some(Topic::Accepted) => return Ok(()),
@@ -151,7 +147,7 @@ mod tests {
             signal_strength: 23,
         };
 
-        let metric = Metric::new(custom_metrics, 123123123123);
+        let metric = Metric::new(custom_metrics);
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
@@ -170,7 +166,7 @@ mod tests {
             .insert(name_of_metric, [CustomMetric::Number(23)])
             .unwrap();
 
-        let metric = Metric::new(Some(custom_metrics), 123123123123);
+        let metric = Metric::new(Some(custom_metrics));
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
@@ -190,7 +186,7 @@ mod tests {
             .insert(my_number_list, [CustomMetric::NumberList(&[123, 456, 789])])
             .unwrap();
 
-        let metric = Metric::new(Some(custom_metrics), 123123123123);
+        let metric = Metric::new(Some(custom_metrics));
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
@@ -213,7 +209,7 @@ mod tests {
             )
             .unwrap();
 
-        let metric = Metric::new(Some(custom_metrics), 123123123123);
+        let metric = Metric::new(Some(custom_metrics));
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
@@ -252,7 +248,7 @@ mod tests {
             )
             .unwrap();
 
-        let metric = Metric::new(Some(custom_metrics), 123123123123);
+        let metric = Metric::new(Some(custom_metrics));
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 

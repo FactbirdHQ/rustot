@@ -1,5 +1,6 @@
 use core::fmt::Display;
 
+use embassy_time::Instant;
 use serde::Serialize;
 
 pub enum MetricError {
@@ -19,9 +20,9 @@ pub struct Metric<C: Serialize> {
 }
 
 impl<C: Serialize> Metric<C> {
-    pub fn new(custom_metrics: C, timestamp: i64) -> Self {
+    pub fn new(custom_metrics: C) -> Self {
         let header = Header {
-            report_id: timestamp,
+            report_id: Instant::now().as_millis() as i64,
             version: Version(1, 0),
         };
 
