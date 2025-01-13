@@ -136,8 +136,6 @@ impl FleetProvisioner {
     where
         C: DeserializeOwned,
     {
-        use embedded_mqtt::SliceBufferProvider;
-
         let mut create_subscription = Self::begin(mqtt, csr, payload_format).await?;
         let mut message = create_subscription
             .next()
@@ -146,11 +144,8 @@ impl FleetProvisioner {
 
         let ownership_token = match Topic::from_str(message.topic_name()) {
             Some(Topic::CreateKeysAndCertificateAccepted(format)) => {
-                let response = Self::deserialize::<
-                    CreateKeysAndCertificateResponse,
-                    M,
-                    SliceBufferProvider<'a>,
-                >(format, &mut message)?;
+                let response =
+                    Self::deserialize::<CreateKeysAndCertificateResponse>(format, &mut message)?;
 
                 credential_handler
                     .store_credentials(Credentials {
@@ -164,11 +159,10 @@ impl FleetProvisioner {
             }
 
             Some(Topic::CreateCertificateFromCsrAccepted(format)) => {
-                let response = Self::deserialize::<
-                    CreateCertificateFromCsrResponse,
-                    M,
-                    SliceBufferProvider<'a>,
-                >(format, &mut message)?;
+                let response = Self::deserialize::<CreateCertificateFromCsrResponse>(
+                    format,
+                    message.payload_mut(),
+                )?;
 
                 credential_handler
                     .store_credentials(Credentials {
@@ -186,7 +180,7 @@ impl FleetProvisioner {
                 Topic::CreateKeysAndCertificateRejected(format)
                 | Topic::CreateCertificateFromCsrRejected(format),
             ) => {
-                return Err(Self::handle_error(format, message).unwrap_err());
+                return Err(Self::handle_error(format, message.payload_mut()).unwrap_err());
             }
 
             t => {
@@ -259,18 +253,17 @@ impl FleetProvisioner {
 
         match Topic::from_str(message.topic_name()) {
             Some(Topic::RegisterThingAccepted(_, format)) => {
-                let response = Self::deserialize::<
-                    RegisterThingResponse<'_, C>,
-                    M,
-                    SliceBufferProvider<'a>,
-                >(format, &mut message)?;
+                let response = Self::deserialize::<RegisterThingResponse<'_, C>>(
+                    format,
+                    message.payload_mut(),
+                )?;
 
                 Ok(response.device_configuration)
             }
 
             // Error happened!
             Some(Topic::RegisterThingRejected(_, format)) => {
-                Err(Self::handle_error(format, message).unwrap_err())
+                Err(Self::handle_error(format, message.payload_mut()).unwrap_err())
             }
 
             t => {
@@ -387,37 +380,22 @@ impl FleetProvisioner {
         }
     }
 
-    fn deserialize<'a, R: Deserialize<'a>, M: RawMutex, B: BufferProvider>(
+    fn deserialize<'a, R: Deserialize<'a>>(
         payload_format: PayloadFormat,
-        message: &'a mut Message<'_, M, B>,
+        payload: &'a mut [u8],
     ) -> Result<R, Error> {
-        trace!(
-            "Accepted Topic {:?}. Payload len: {:?}",
-            payload_format,
-            message.payload().len()
-        );
-
         Ok(match payload_format {
             #[cfg(feature = "provision_cbor")]
-            PayloadFormat::Cbor => minicbor_serde::from_slice::<R>(message.payload_mut())?,
-            PayloadFormat::Json => serde_json_core::from_slice::<R>(message.payload())?.0,
+            PayloadFormat::Cbor => minicbor_serde::from_slice::<R>(payload)?,
+            PayloadFormat::Json => serde_json_core::from_slice::<R>(payload)?.0,
         })
     }
 
-    fn handle_error<M: RawMutex, B: BufferProvider>(
-        format: PayloadFormat,
-        mut message: Message<'_, M, B>,
-    ) -> Result<(), Error> {
-        error!(">> {:?}", message.topic_name());
-
+    fn handle_error(format: PayloadFormat, payload: &mut [u8]) -> Result<(), Error> {
         let response = match format {
             #[cfg(feature = "provision_cbor")]
-            PayloadFormat::Cbor => {
-                minicbor_serde::from_slice::<ErrorResponse>(message.payload_mut())?
-            }
-            PayloadFormat::Json => {
-                serde_json_core::from_slice::<ErrorResponse>(message.payload())?.0
-            }
+            PayloadFormat::Cbor => minicbor_serde::from_slice::<ErrorResponse>(payload)?,
+            PayloadFormat::Json => serde_json_core::from_slice::<ErrorResponse>(payload)?.0,
         };
 
         error!("{:?}", response);
