@@ -6,13 +6,6 @@ use serde::Serialize;
 
 use super::aws_types::{ListeningTcpPorts, ListeningUdpPorts, NetworkStats, TcpConnections};
 
-pub enum MetricError {
-    Malformed,
-    Throttled,
-    MissingHeader,
-    Other,
-}
-
 #[derive(Debug, Serialize, Builder)]
 pub struct Metric<'a, C: Serialize> {
     #[serde(rename = "hed")]

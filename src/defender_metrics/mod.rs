@@ -1,15 +1,16 @@
-use data_types::{Metric, MetricError};
+use crate::shadows::Error;
+use data_types::Metric;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
+use errors::MetricError;
 use futures::StreamExt;
 use serde::Serialize;
 use topics::Topic;
 
-use crate::shadows::Error;
-
 // pub mod aws_types;
 pub mod aws_types;
 pub mod data_types;
+pub mod errors;
 pub mod topics;
 
 pub struct MetricHandler<'a, 'm, M: RawMutex> {
