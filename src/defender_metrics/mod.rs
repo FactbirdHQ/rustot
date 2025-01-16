@@ -2,7 +2,7 @@ use crate::shadows::Error;
 use data_types::Metric;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
-use errors::MetricError;
+use errors::{ErrorResponse, MetricError};
 use futures::StreamExt;
 use serde::Serialize;
 use topics::Topic;
@@ -47,7 +47,19 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
 
             match Topic::from_str(message.topic_name()) {
                 Some(Topic::Accepted) => return Ok(()),
-                Some(Topic::Rejected) => return Err(MetricError::Other),
+                Some(Topic::Rejected) => {
+                    error!(
+                        "Metric was rejected for this reason: {=[u8]:a}",
+                        message.payload()
+                    );
+
+                    let error_response =
+                        serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                            .map_err(|_| MetricError::InvalidPayload)?;
+
+                    return Err(error_response.0.status_details.error_code);
+                }
+
                 _ => (),
             };
         }
