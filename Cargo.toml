@@ -39,6 +39,7 @@ embedded-storage = "0.3.0"
 
 log = { version = "^0.4", default-features = false, optional = true }
 defmt = { version = "^0.3", optional = true }
+bon = { version = "3.3.2", default-features = false }
 
 [dev-dependencies]
 native-tls = { version = "^0.2" }
