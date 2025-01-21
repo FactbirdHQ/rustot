@@ -48,11 +48,6 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
             match Topic::from_str(message.topic_name()) {
                 Some(Topic::Accepted) => return Ok(()),
                 Some(Topic::Rejected) => {
-                    error!(
-                        "Metric was rejected for this reason: {=[u8]:a}",
-                        message.payload()
-                    );
-
                     let error_response =
                         serde_json_core::from_slice::<ErrorResponse>(message.payload())
                             .map_err(|_| MetricError::InvalidPayload)?;

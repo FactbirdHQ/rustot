@@ -17,7 +17,8 @@ pub struct StatusDetails<'a> {
     #[serde(rename = "ErrorMessage")]
     pub error_message: Option<&'a str>,
 }
-#[derive(defmt::Format, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MetricError {
     Malformed,
     InvalidPayload,
