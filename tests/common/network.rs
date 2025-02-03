@@ -1,8 +1,8 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ::native_tls::Identity;
 use embedded_io_adapters::tokio_1::FromTokio;
-use embedded_nal_async::{AddrType, Dns, IpAddr, Ipv4Addr, Ipv6Addr, TcpConnect};
+use embedded_nal_async::{AddrType, Dns, TcpConnect};
 use tokio_native_tls::native_tls;
 
 use super::credentials;
@@ -25,7 +25,7 @@ impl TcpConnect for Network {
 
     async fn connect<'a>(
         &'a self,
-        remote: embedded_nal_async::SocketAddr,
+        remote: SocketAddr,
     ) -> Result<Self::Connection<'a>, Self::Error> {
         let stream = tokio::net::TcpStream::connect(format!("{}", remote)).await?;
         Ok(FromTokio::new(stream))
@@ -86,7 +86,7 @@ impl TcpConnect for TlsNetwork {
 
     async fn connect<'a>(
         &'a self,
-        remote: embedded_nal_async::SocketAddr,
+        remote: SocketAddr,
     ) -> Result<Self::Connection<'a>, Self::Error> {
         log::info!("Connecting to {:?}", remote);
         let connector = tokio_native_tls::TlsConnector::from(

@@ -2,7 +2,7 @@ use core::fmt::Display;
 
 use bon::Builder;
 use embassy_time::Instant;
-use serde::Serialize;
+use serde::{ser::SerializeStruct, Serialize};
 
 use super::aws_types::{ListeningTcpPorts, ListeningUdpPorts, NetworkStats, TcpConnections};
 
@@ -26,15 +26,27 @@ pub struct Metrics<'a> {
     tcp_connections: Option<TcpConnections<'a>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Header {
     /// Monotonically increasing value. Epoch timestamp recommended.
-    #[serde(rename = "rid")]
     pub report_id: i64,
 
     /// Version in Major.Minor format.
-    #[serde(rename = "v")]
     pub version: Version,
+}
+
+impl Serialize for Header {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut serializer = serializer.serialize_struct("Header", 2)?;
+
+        serializer.serialize_field("rid", &self.report_id)?;
+        serializer.serialize_field("version", "1.0")?;
+
+        serializer.end()
+    }
 }
 
 impl Default for Header {

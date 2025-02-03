@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ErrorResponse<'a> {
     #[serde(rename = "thingName")]
     pub thing_name: &'a str,
@@ -10,7 +11,7 @@ pub struct ErrorResponse<'a> {
     pub timestamp: i64,
 }
 #[derive(Debug, Deserialize)]
-
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct StatusDetails<'a> {
     #[serde(rename = "ErrorCode")]
     pub error_code: MetricError,

@@ -1,11 +1,11 @@
 use crate::shadows::Error;
-use data_types::Metric;
+use data_types::{Header, Metric};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use errors::{ErrorResponse, MetricError};
 use futures::StreamExt;
 use serde::Serialize;
-use topics::Topic;
+use topics::{PayloadFormat, Topic};
 
 // pub mod aws_types;
 pub mod aws_types;
@@ -25,13 +25,33 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
     pub async fn publish_metric<'c, C: Serialize>(
         &self,
         metric: Metric<'c, C>,
+        max_payload_size: usize,
     ) -> Result<(), MetricError> {
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
-                serde_json_core::to_slice(&metric, buf)
-                    .map_err(|_| embedded_mqtt::EncodingError::BufferSize)
+                #[cfg(feature = "metric_cbor")]
+                {
+                    let mut serializer = minicbor_serde::Serializer::new(
+                        minicbor::encode::write::Cursor::new(&mut *buf),
+                    );
+
+                    match metric.serialize(&mut serializer) {
+                        Ok(_) => {}
+                        Err(_) => {
+                            error!("An error happened when serializing metric with cbor");
+                        }
+                    };
+
+                    Ok(serializer.into_encoder().writer().position())
+                }
+
+                #[cfg(not(feature = "metric_cbor"))]
+                {
+                    serde_json_core::to_slice(&metric, buf)
+                        .map_err(|_| embedded_mqtt::EncodingError::BufferSize)
+                }
             },
-            4000,
+            max_payload_size,
         );
 
         //Wait for mqtt to connect
@@ -119,8 +139,64 @@ mod tests {
 
     use super::data_types::*;
 
+    use embedded_mqtt::DeferredPayload;
     use heapless::{LinearMap, String};
     use serde::{ser::SerializeStruct, Serialize};
+
+    #[test]
+    fn custom_serialization_cbor() {
+        #[derive(Debug)]
+        struct WifiMetric {
+            signal_strength: u8,
+        }
+
+        impl Serialize for WifiMetric {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                let mut outer = serializer.serialize_struct("WifiMetricWrapper", 1)?;
+
+                // Define the type we want to wrap our signal_strength field in
+                #[derive(Serialize)]
+                struct Number {
+                    number: u8,
+                }
+
+                let number = Number {
+                    number: self.signal_strength,
+                };
+
+                // Serialize number and wrap in array
+                outer.serialize_field("MyMetricOfType_Number", &[number])?;
+                outer.end()
+            }
+        }
+
+        let custom_metrics: WifiMetric = WifiMetric {
+            signal_strength: 23,
+        };
+
+        let metric = Metric::builder()
+            .header(Default::default())
+            .custom_metrics(custom_metrics)
+            .build();
+
+        let mut buf = [0u8; 4000];
+
+        let mut cbor = minicbor_serde::Serializer::new(&mut buf[..]);
+
+        match metric.serialize(&mut cbor) {
+            Ok(_) => {
+                error!("SERIALIZE WAS OK");
+            }
+            Err(e) => {
+                error!("SERIALIZE WAS NOT OK!!!!!!!!");
+            }
+        };
+
+        assert!(true)
+    }
 
     #[test]
     fn custom_serialization() {
