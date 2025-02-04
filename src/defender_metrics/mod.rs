@@ -1,11 +1,11 @@
 use crate::shadows::Error;
-use data_types::{Header, Metric};
+use data_types::Metric;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use errors::{ErrorResponse, MetricError};
 use futures::StreamExt;
 use serde::Serialize;
-use topics::{PayloadFormat, Topic};
+use topics::Topic;
 
 // pub mod aws_types;
 pub mod aws_types;
@@ -139,7 +139,6 @@ mod tests {
 
     use super::data_types::*;
 
-    use embedded_mqtt::DeferredPayload;
     use heapless::{LinearMap, String};
     use serde::{ser::SerializeStruct, Serialize};
 
@@ -182,7 +181,7 @@ mod tests {
             .custom_metrics(custom_metrics)
             .build();
 
-        let mut buf = [0u8; 4000];
+        let mut buf = [255u8; 1000];
 
         let mut cbor = minicbor_serde::Serializer::new(&mut buf[..]);
 
@@ -194,6 +193,8 @@ mod tests {
                 error!("SERIALIZE WAS NOT OK!!!!!!!!");
             }
         };
+
+        print!("CBOR: {:x?}", buf);
 
         assert!(true)
     }

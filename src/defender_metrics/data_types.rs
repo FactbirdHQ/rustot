@@ -29,9 +29,11 @@ pub struct Metrics<'a> {
 #[derive(Debug)]
 pub struct Header {
     /// Monotonically increasing value. Epoch timestamp recommended.
+    // #[serde(rename = "rid")]
     pub report_id: i64,
 
     /// Version in Major.Minor format.
+    // #[serde(rename = "v")]
     pub version: Version,
 }
 
