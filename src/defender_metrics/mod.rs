@@ -244,7 +244,51 @@ mod tests {
 
         assert!(true)
     }
+    #[test]
+    fn custom_serialization_string_list() {
+        #[derive(Debug)]
+        struct CellType<const N: usize> {
+            cell_type: String<N>,
+        }
 
+        impl<const N: usize> Serialize for CellType<N> {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                let mut outer = serializer.serialize_struct("CellType", 1)?;
+
+                // Define the type we want to wrap our signal_strength field in
+                #[derive(Serialize)]
+                struct StringList<'a> {
+                    string_list: &'a [&'a str],
+                }
+
+                let list = StringList {
+                    string_list: &[&self.cell_type.as_str()],
+                };
+
+                // Serialize number and wrap in array
+                outer.serialize_field("cell_type", &[list])?;
+                outer.end()
+            }
+        }
+
+        let custom_metrics: CellType<4> = CellType {
+            cell_type: String::from_str("gsm").unwrap(),
+        };
+
+        let metric = Metric::builder()
+            .header(Default::default())
+            .custom_metrics(custom_metrics)
+            .build();
+
+        let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
+
+        println!("buffer = {}", payload);
+
+        assert!(true)
+    }
     #[test]
     fn number() {
         let mut custom_metrics: LinearMap<String<24>, [CustomMetric; 1], 16> = LinearMap::new();
