@@ -1,10 +1,10 @@
 pub mod dao;
 pub mod data_types;
-mod error;
+pub mod error;
 mod shadow_diff;
 pub mod topics;
 
-use core::{marker::PhantomData, ops::DerefMut, sync::atomic};
+use core::{marker::PhantomData, ops::DerefMut};
 
 pub use data_types::Patch;
 use embassy_sync::{
@@ -118,7 +118,7 @@ where
         };
 
         let payload = DeferredPayload::new(
-            |buf| {
+            |buf: &mut [u8]| {
                 serde_json_core::to_slice(&request, buf)
                     .map_err(|_| embedded_mqtt::EncodingError::BufferSize)
             },

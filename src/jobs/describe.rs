@@ -89,7 +89,7 @@ impl<'a> Describe<'a> {
         let payload_len = serde_json_core::to_slice(
             &DescribeJobExecutionRequest {
                 execution_number: self.execution_number,
-                include_job_document: self.include_job_document.then(|| true),
+                include_job_document: self.include_job_document.then_some(true),
                 client_token: self.client_token,
             },
             buf,

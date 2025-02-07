@@ -96,7 +96,7 @@ impl<'a> Topic<'a> {
 
     pub fn from_str(s: &'a str) -> Option<Self> {
         let tt = s.splitn(6, '/').collect::<heapless::Vec<&str, 6>>();
-        match (tt.get(0), tt.get(1)) {
+        match (tt.first(), tt.get(1)) {
             (Some(&"$aws"), Some(&"provisioning-templates")) => {
                 // This is a register thing topic, now figure out which one.
 
@@ -107,7 +107,7 @@ impl<'a> Topic<'a> {
                         Some(payload_format),
                         Some(&"accepted"),
                     ) => Some(Topic::RegisterThingAccepted(
-                        *template_name,
+                        template_name,
                         PayloadFormat::from_str(payload_format).ok()?,
                     )),
                     (
@@ -116,7 +116,7 @@ impl<'a> Topic<'a> {
                         Some(payload_format),
                         Some(&"rejected"),
                     ) => Some(Topic::RegisterThingRejected(
-                        *template_name,
+                        template_name,
                         PayloadFormat::from_str(payload_format).ok()?,
                     )),
                     _ => None,

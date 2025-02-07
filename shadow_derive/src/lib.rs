@@ -118,8 +118,7 @@ fn create_assigners(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
             if field
                 .attrs
                 .iter()
-                .find(|a| a.path.is_ident("static_shadow_field"))
-                .is_some()
+                .any(|a| a.path.is_ident("static_shadow_field"))
             {
                 None
             } else {
@@ -133,7 +132,7 @@ fn create_assigners(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
         .collect::<Vec<_>>()
 }
 
-fn create_optional_fields(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> {
+fn create_optional_fields(fields: &[Field]) -> Vec<proc_macro2::TokenStream> {
     fields
         .iter()
         .filter_map(|field| {
@@ -153,8 +152,7 @@ fn create_optional_fields(fields: &Vec<Field>) -> Vec<proc_macro2::TokenStream> 
             if field
                 .attrs
                 .iter()
-                .find(|a| a.path.is_ident("static_shadow_field"))
-                .is_some()
+                .any(|a| a.path.is_ident("static_shadow_field"))
             {
                 None
             } else {
@@ -183,13 +181,13 @@ fn generate_shadow_state(input: &StructParseInput) -> proc_macro2::TokenStream {
         None => quote! { None },
     };
 
-    return quote! {
+    quote! {
         #[automatically_derived]
         impl #impl_generics rustot::shadows::ShadowState for #ident #ty_generics #where_clause {
             const NAME: Option<&'static str> = #name;
             // const MAX_PAYLOAD_SIZE: usize = 512;
         }
-    };
+    }
 }
 
 fn generate_shadow_patch_struct(input: &StructParseInput) -> proc_macro2::TokenStream {
@@ -205,10 +203,10 @@ fn generate_shadow_patch_struct(input: &StructParseInput) -> proc_macro2::TokenS
 
     let optional_ident = format_ident!("Patch{}", ident);
 
-    let assigners = create_assigners(&shadow_fields);
-    let optional_fields = create_optional_fields(&shadow_fields);
+    let assigners = create_assigners(shadow_fields);
+    let optional_fields = create_optional_fields(shadow_fields);
 
-    return quote! {
+    quote! {
         #[automatically_derived]
         #[derive(Default, Clone, ::serde::Deserialize, ::serde::Serialize)]
         #(#copy_attrs)*
@@ -228,7 +226,7 @@ fn generate_shadow_patch_struct(input: &StructParseInput) -> proc_macro2::TokenS
                 )*
             }
         }
-    };
+    }
 }
 
 fn generate_shadow_patch_enum(input: &EnumParseInput) -> proc_macro2::TokenStream {
@@ -238,7 +236,7 @@ fn generate_shadow_patch_enum(input: &EnumParseInput) -> proc_macro2::TokenStrea
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    return quote! {
+    quote! {
         #[automatically_derived]
         impl #impl_generics rustot::shadows::ShadowPatch for #ident #ty_generics #where_clause {
             type PatchState = #ident #ty_generics;
@@ -247,5 +245,5 @@ fn generate_shadow_patch_enum(input: &EnumParseInput) -> proc_macro2::TokenStrea
                 *self = opt;
             }
         }
-    };
+    }
 }

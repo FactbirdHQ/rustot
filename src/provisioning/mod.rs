@@ -6,7 +6,7 @@ use core::future::Future;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
-    BufferProvider, DeferredPayload, EncodingError, Message, Publish, Subscribe, SubscribeTopic,
+    DeferredPayload, EncodingError, Publish, Subscribe, SubscribeTopic,
     Subscription,
 };
 use futures::StreamExt;
@@ -191,7 +191,7 @@ impl FleetProvisioner {
         };
 
         let register_request = RegisterThingRequest {
-            certificate_ownership_token: &ownership_token,
+            certificate_ownership_token: ownership_token,
             parameters,
         };
 

@@ -1,15 +1,13 @@
 use core::fmt::Write;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embassy_time::with_timeout;
-use embedded_mqtt::{DeferredPayload, EncodingError, Publish, QoS, Subscribe, SubscribeTopic};
+use embedded_mqtt::{DeferredPayload, EncodingError, Publish, QoS};
 
 use super::ControlInterface;
-use crate::jobs::data_types::{ErrorResponse, JobStatus, UpdateJobExecutionResponse};
-use crate::jobs::{JobError, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
-use crate::ota::config::Config;
+use crate::jobs::data_types::JobStatus;
+use crate::jobs::{JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 use crate::ota::encoding::json::JobStatusReason;
-use crate::ota::encoding::{self, FileContext};
+use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
 use crate::ota::ProgressState;
 
@@ -53,7 +51,7 @@ impl<'a, M: RawMutex> ControlInterface for embedded_mqtt::MqttClient<'a, M> {
             )
             .map_err(|_| OtaError::Overflow)?;
 
-        let mut qos = QoS::AtLeastOnce;
+        let qos = QoS::AtLeastOnce;
 
         if let JobStatus::InProgress | JobStatus::Succeeded = status {
             let received_blocks = progress_state.total_blocks - progress_state.blocks_remaining;

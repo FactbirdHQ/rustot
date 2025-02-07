@@ -134,7 +134,7 @@ impl FileContext {
                         })
                         .collect()
                 })
-                .unwrap_or_else(|| StatusDetailsOwned::new()),
+                .unwrap_or_default(),
 
             job_name: heapless::String::try_from(job_data.job_name).unwrap(),
             block_offset,

@@ -43,6 +43,7 @@ embassy-futures = "0.1"
 
 log = { version = "0.4", default-features = false, optional = true }
 defmt = { version = "0.3", optional = true }
+bon = { version = "3.3.2", default-features = false }
 
 [dev-dependencies]
 native-tls = { version = "0.2" }
@@ -62,7 +63,7 @@ tokio = { version = "1.33", default-features = false, features = [
 ] }
 tokio-native-tls = { version = "0.3.1" }
 embassy-futures = { version = "0.1.0" }
-embassy-time = { version = "0.4", features = ["log", "std", "generic-queue"] }
+embassy-time = { version = "0.4", features = ["log", "std", "generic-queue-8"] }
 embedded-io-adapters = { version = "0.6.0", features = ["tokio-1"] }
 
 ecdsa = { version = "0.16", features = ["pkcs8", "pem"] }
@@ -70,8 +71,11 @@ p256 = "0.13"
 pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 hex = { version = "0.4.3", features = ["alloc"] }
 
+
 [features]
-default = ["ota_mqtt_data", "provision_cbor"]
+default = ["ota_mqtt_data", "metric_cbor", "provision_cbor"]
+
+metric_cbor = ["dep:minicbor", "dep:minicbor-serde"]
 
 provision_cbor = ["dep:minicbor", "dep:minicbor-serde"]
 
@@ -89,5 +93,6 @@ defmt = [
 ]
 log = ["dep:log", "embedded-mqtt/log"]
 
-# [patch."ssh://git@github.com/FactbirdHQ/embedded-mqtt"]
-# embedded-mqtt = { path = "../embedded-mqtt" }
+
+[patch."ssh://git@github.com/FactbirdHQ/embedded-mqtt"]
+embedded-mqtt = { path = "../embedded-mqtt" }
