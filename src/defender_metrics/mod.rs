@@ -144,16 +144,52 @@ mod tests {
     use serde::{ser::SerializeStruct, Serialize};
 
     #[test]
-    fn serialize_version() {
-        let version = Version(2, 0);
+    fn serialize_version_json() {
+        let test_cases = [
+            (Version(2, 0), "\"2.0\""),
+            (Version(0, 0), "\"0.0\""),
+            (Version(0, 1), "\"0.1\""),
+            (Version(255, 200), "\"255.200\""),
+        ];
 
-        let mut buf = [0u8; 3];
+        for (version, expected) in test_cases.iter() {
+            let string: String<100> = serde_json_core::to_string(version).unwrap();
+            assert_eq!(
+                string, *expected,
+                "Serialization failed for Version({}, {}): expected {}, got {}",
+                version.0, version.1, expected, string
+            );
+        }
+    }
+    #[test]
+    fn serialize_version_cbor() {
+        let test_cases: [(Version, [u8; 8]); 4] = [
+            (Version(2, 0), [99, 50, 46, 48, 0, 0, 0, 0]),
+            (Version(0, 0), [99, 48, 46, 48, 0, 0, 0, 0]),
+            (Version(0, 1), [99, 48, 46, 49, 0, 0, 0, 0]),
+            (Version(255, 200), [103, 50, 53, 53, 46, 50, 48, 48]),
+        ];
 
-        let len = serde_json_core::to_slice(&version, &mut buf).unwrap();
+        for (version, expected) in test_cases.iter() {
+            let mut buf = [0u8; 200];
 
-        assert_eq!(len, 3);
+            let mut serializer =
+                minicbor_serde::Serializer::new(minicbor::encode::write::Cursor::new(&mut buf[..]));
 
-        println!("buf = {}", buf);
+            version.serialize(&mut serializer).unwrap();
+
+            let len = serializer.into_encoder().writer().position();
+
+            assert_eq!(
+                &buf[..len],
+                &expected[..len],
+                "Serialization failed for Version({}, {}): expected {:?}, got {:?}",
+                version.0,
+                version.1,
+                expected,
+                &buf[..len],
+            );
+        }
     }
 
     #[test]
@@ -197,20 +233,22 @@ mod tests {
 
         let mut buf = [255u8; 1000];
 
-        let mut cbor = minicbor_serde::Serializer::new(&mut buf[..]);
+        let mut serializer =
+            minicbor_serde::Serializer::new(minicbor::encode::write::Cursor::new(&mut buf[..]));
 
-        match metric.serialize(&mut cbor) {
-            Ok(_) => {
-                error!("SERIALIZE WAS OK");
-            }
-            Err(e) => {
-                error!("SERIALIZE WAS NOT OK!!!!!!!!");
-            }
-        };
+        metric.serialize(&mut serializer).unwrap();
 
-        print!("CBOR: {:x?}", buf);
+        let len = serializer.into_encoder().writer().position();
 
-        assert!(true)
+        assert_eq!(
+            &buf[..len],
+            [
+                163, 99, 104, 101, 100, 162, 99, 114, 105, 100, 0, 97, 118, 99, 49, 46, 48, 99,
+                109, 101, 116, 246, 100, 99, 109, 101, 116, 161, 117, 77, 121, 77, 101, 116, 114,
+                105, 99, 79, 102, 84, 121, 112, 101, 95, 78, 117, 109, 98, 101, 114, 129, 161, 102,
+                110, 117, 109, 98, 101, 114, 23
+            ]
+        )
     }
 
     #[test]
@@ -254,9 +292,7 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        println!("buffer = {}", payload);
-
-        assert!(true)
+        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"MyMetricOfType_Number\":[{\"number\":23}]}}", payload.as_str())
     }
     #[test]
     fn custom_serialization_string_list() {
@@ -299,9 +335,7 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        println!("buffer = {}", payload);
-
-        assert!(true)
+        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"cell_type\":[{\"string_list\":[\"gsm\"]}]}}", payload.as_str())
     }
     #[test]
     fn number() {
@@ -320,9 +354,7 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        println!("buffer = {}", payload);
-
-        assert!(true)
+        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"myMetric\":[{\"number\":23}]}}", payload.as_str())
     }
 
     #[test]
@@ -343,9 +375,7 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        println!("buffer = {}", payload);
-
-        assert!(true)
+        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"my_number_list\":[{\"number_list\":[123,456,789]}]}}", payload.as_str())
     }
 
     #[test]
@@ -369,9 +399,7 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        println!("buffer = {}", payload);
-
-        assert!(true)
+        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"my_string_list\":[{\"string_list\":[\"value_1\",\"value_2\"]}]}}", payload.as_str())
     }
 
     #[test]
@@ -411,8 +439,6 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        println!("buffer = {}", payload);
-
-        assert!(true)
+        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"MyMetricOfType_Number\":[{\"number\":1}],\"MyMetricOfType_NumberList\":[{\"number_list\":[1,2,3]}],\"MyMetricOfType_StringList\":[{\"string_list\":[\"value_1\",\"value_2\"]}],\"MyMetricOfType_IpList\":[{\"ip_list\":[\"172.0.0.0\",\"172.0.0.10\"]}]}}", payload.as_str())
     }
 }

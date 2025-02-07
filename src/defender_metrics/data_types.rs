@@ -1,8 +1,8 @@
-use core::fmt::Display;
+use core::fmt::{Display, Write};
 
 use bon::Builder;
 use embassy_time::Instant;
-use serde::{ser::SerializeStruct, Serialize};
+use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
 use super::aws_types::{ListeningTcpPorts, ListeningUdpPorts, NetworkStats, TcpConnections};
 
@@ -26,29 +26,15 @@ pub struct Metrics<'a> {
     tcp_connections: Option<TcpConnections<'a>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Header {
     /// Monotonically increasing value. Epoch timestamp recommended.
-    // #[serde(rename = "rid")]
+    #[serde(rename = "rid")]
     pub report_id: i64,
 
     /// Version in Major.Minor format.
-    // #[serde(rename = "v")]
+    #[serde(rename = "v")]
     pub version: Version,
-}
-
-impl Serialize for Header {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut serializer = serializer.serialize_struct("Header", 2)?;
-
-        serializer.serialize_field("rid", &self.report_id)?;
-        serializer.serialize_field("version", "1.0")?;
-
-        serializer.end()
-    }
 }
 
 impl Default for Header {
@@ -70,15 +56,18 @@ pub enum CustomMetric<'a> {
 }
 
 /// Format is `Version(Major, Minor)`
-#[derive(Debug)]
-pub struct Version(u8, u8);
+#[derive(Debug, PartialEq, Deserialize)]
+pub struct Version(pub u8, pub u8);
 
 impl Serialize for Version {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serializer.collect_str(&self)
+        let mut st: heapless::String<7> = heapless::String::new();
+        st.write_fmt(format_args!("{}.{}", self.0, self.1)).ok();
+
+        serializer.serialize_str(&st)
     }
 }
 
