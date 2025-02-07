@@ -58,7 +58,7 @@ pub enum Topic<'a> {
 impl<'a> Topic<'a> {
     pub fn from_str(s: &'a str) -> Option<Self> {
         let tt = s.splitn(8, '/').collect::<heapless::Vec<&str, 8>>();
-        Some(match (tt.get(0), tt.get(1), tt.get(2), tt.get(3)) {
+        Some(match (tt.first(), tt.get(1), tt.get(2), tt.get(3)) {
             (Some(&"$aws"), Some(&"things"), _, Some(&"streams")) => {
                 // This is a stream topic! Figure out which
                 match (tt.get(4), tt.get(5), tt.get(6), tt.get(7)) {

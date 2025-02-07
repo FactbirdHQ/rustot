@@ -146,9 +146,9 @@ impl<'a> Update<'a> {
         let payload_len = serde_json_core::to_slice(
             &UpdateJobExecutionRequest {
                 execution_number: self.execution_number,
-                include_job_document: self.include_job_document.then(|| true),
+                include_job_document: self.include_job_document.then_some(true),
                 expected_version: self.expected_version,
-                include_job_execution_state: self.include_job_execution_state.then(|| true),
+                include_job_execution_state: self.include_job_execution_state.then_some(true),
                 status: self.status,
                 status_details: self.status_details,
                 step_timeout_in_minutes: self.step_timeout_in_minutes,

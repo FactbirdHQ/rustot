@@ -42,11 +42,11 @@ impl Topic {
 
     pub fn from_str(s: &str) -> Option<(Self, &str, Option<&str>)> {
         let tt = s.splitn(9, '/').collect::<heapless::Vec<&str, 9>>();
-        match (tt.get(0), tt.get(1), tt.get(2), tt.get(3)) {
+        match (tt.first(), tt.get(1), tt.get(2), tt.get(3)) {
             (Some(&"$aws"), Some(&"things"), Some(thing_name), Some(&Self::SHADOW)) => {
                 // This is a shadow topic, now figure out which one.
                 let (shadow_name, next_index) = if let Some(&"name") = tt.get(4) {
-                    (tt.get(5).map(|s| *s), 6)
+                    (tt.get(5).copied(), 6)
                 } else {
                     (None, 4)
                 };
@@ -239,7 +239,7 @@ impl<const N: usize> Subscribe<N> {
 
         self.topics
             .iter()
-            .map(|(topic, qos)| Ok((Topic::from(*topic).format(thing_name, shadow_name)?, *qos)))
+            .map(|(topic, qos)| Ok(((*topic).format(thing_name, shadow_name)?, *qos)))
             .collect()
     }
 }
@@ -278,7 +278,7 @@ impl<const N: usize> Unsubscribe<N> {
 
         self.topics
             .iter()
-            .map(|topic| Topic::from(*topic).format(thing_name, shadow_name))
+            .map(|topic| (*topic).format(thing_name, shadow_name))
             .collect()
     }
 }

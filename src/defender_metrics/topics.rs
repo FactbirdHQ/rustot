@@ -62,14 +62,14 @@ impl Topic {
 
     pub fn from_str(s: &str) -> Option<Topic> {
         let tt = s.splitn(7, '/').collect::<heapless::Vec<&str, 7>>();
-        match (tt.get(0), tt.get(1), tt.get(3), tt.get(4)) {
+        match (tt.first(), tt.get(1), tt.get(3), tt.get(4)) {
             (Some(&"$aws"), Some(&"things"), Some(&"defender"), Some(&"metrics")) => {
                 // This is a defender metric topic, now figure out which one.
 
                 match tt.get(6) {
                     Some(&"accepted") => Some(Topic::Accepted),
                     Some(&"rejected") => Some(Topic::Rejected),
-                    _ => return None,
+                    _ => None,
                 }
             }
             _ => None,

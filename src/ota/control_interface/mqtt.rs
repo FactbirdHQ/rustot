@@ -51,7 +51,7 @@ impl<'a, M: RawMutex> ControlInterface for embedded_mqtt::MqttClient<'a, M> {
             )
             .map_err(|_| OtaError::Overflow)?;
 
-        let mut qos = QoS::AtLeastOnce;
+        let qos = QoS::AtLeastOnce;
 
         if let JobStatus::InProgress | JobStatus::Succeeded = status {
             let received_blocks = progress_state.total_blocks - progress_state.blocks_remaining;

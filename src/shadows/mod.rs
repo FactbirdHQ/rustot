@@ -4,7 +4,7 @@ pub mod error;
 mod shadow_diff;
 pub mod topics;
 
-use core::{marker::PhantomData, ops::DerefMut, sync::atomic};
+use core::{marker::PhantomData, ops::DerefMut};
 
 pub use data_types::Patch;
 use embassy_sync::{

@@ -60,7 +60,7 @@ impl Updater {
         });
 
         // Create the JobUpdater
-        let mut job_updater = JobUpdater::new(&file_ctx, &progress_state, &config, control);
+        let mut job_updater = JobUpdater::new(&file_ctx, &progress_state, config, control);
 
         match job_updater.initialize::<D, _>(pal).await? {
             Some(()) => {}
@@ -70,7 +70,7 @@ impl Updater {
         info!("Job document was accepted. Attempting to begin the update");
 
         // Spawn the request momentum future
-        let momentum_fut = Self::handle_momentum(data, &config, &file_ctx, &progress_state);
+        let momentum_fut = Self::handle_momentum(data, config, &file_ctx, &progress_state);
 
         // Spawn the status update future
         let status_update_fut = job_updater.handle_status_updates();
@@ -100,7 +100,7 @@ impl Updater {
 
             {
                 let mut progress = progress_state.lock().await;
-                data.request_file_blocks(&file_ctx, &mut progress, &config)
+                data.request_file_blocks(&file_ctx, &mut progress, config)
                     .await?;
             }
 
@@ -116,7 +116,7 @@ impl Updater {
                         match Self::ingest_data_block(
                             data,
                             &mut block_writer,
-                            &config,
+                            config,
                             &mut progress,
                             payload.deref_mut(),
                         )
@@ -168,7 +168,7 @@ impl Updater {
                                 if progress.request_block_remaining > 1 {
                                     progress.request_block_remaining -= 1;
                                 } else {
-                                    data.request_file_blocks(&file_ctx, &mut progress, &config)
+                                    data.request_file_blocks(&file_ctx, &mut progress, config)
                                         .await?;
                                 }
                             }
@@ -442,7 +442,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                 let mut progress = self.progress_state.lock().await;
                 self.control
                     .update_job_status(
-                        &self.file_ctx,
+                        self.file_ctx,
                         &mut progress,
                         JobStatus::Succeeded,
                         JobStatusReason::Accepted,
@@ -542,7 +542,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                 // in self_test active
                 self.control
                     .update_job_status(
-                        &self.file_ctx,
+                        self.file_ctx,
                         &mut progress,
                         JobStatus::InProgress,
                         JobStatusReason::SelfTestActive,
@@ -554,7 +554,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                 // complete the job
                 self.control
                     .update_job_status(
-                        &self.file_ctx,
+                        self.file_ctx,
                         &mut progress,
                         JobStatus::Succeeded,
                         JobStatusReason::Accepted,
@@ -568,7 +568,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
 
                 self.control
                     .update_job_status(
-                        &self.file_ctx,
+                        self.file_ctx,
                         &mut progress,
                         JobStatus::Failed,
                         JobStatusReason::Rejected,
@@ -582,7 +582,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
 
                 self.control
                     .update_job_status(
-                        &self.file_ctx,
+                        self.file_ctx,
                         &mut progress,
                         JobStatus::Failed,
                         JobStatusReason::Aborted,
@@ -607,7 +607,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
         let mut progress = self.progress_state.lock().await;
 
         self.control
-            .update_job_status(&self.file_ctx, &mut progress, status, reason)
+            .update_job_status(self.file_ctx, &mut progress, status, reason)
             .await?;
         Ok(())
     }
