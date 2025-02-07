@@ -69,7 +69,7 @@ pub enum CustomMetric<'a> {
     IpList(&'a [&'a str]),
 }
 
-/// Format is `Version(Majo, Minor)`
+/// Format is `Version(Major, Minor)`
 #[derive(Debug)]
 pub struct Version(u8, u8);
 
