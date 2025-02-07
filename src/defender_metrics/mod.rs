@@ -27,6 +27,9 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
         metric: Metric<'c, C>,
         max_payload_size: usize,
     ) -> Result<(), MetricError> {
+        //Wait for mqtt to connect
+        self.mqtt.wait_connected().await;
+
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
                 #[cfg(feature = "metric_cbor")]
@@ -39,6 +42,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
                         Ok(_) => {}
                         Err(_) => {
                             error!("An error happened when serializing metric with cbor");
+                            return Err(embedded_mqtt::EncodingError::BufferSize);
                         }
                     };
 
@@ -53,9 +57,6 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
             },
             max_payload_size,
         );
-
-        //Wait for mqtt to connect
-        self.mqtt.wait_connected().await;
 
         let mut subscription = self
             .publish_and_subscribe(payload)
@@ -141,6 +142,19 @@ mod tests {
 
     use heapless::{LinearMap, String};
     use serde::{ser::SerializeStruct, Serialize};
+
+    #[test]
+    fn serialize_version() {
+        let version = Version(2, 0);
+
+        let mut buf = [0u8; 3];
+
+        let len = serde_json_core::to_slice(&version, &mut buf).unwrap();
+
+        assert_eq!(len, 3);
+
+        println!("buf = {}", buf);
+    }
 
     #[test]
     fn custom_serialization_cbor() {
