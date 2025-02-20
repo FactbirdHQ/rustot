@@ -73,7 +73,7 @@ where
 
                 sub_ref.insert(sub);
 
-                return Ok(Some(delta_state));
+                return Ok(delta_state.delta);
             }
         };
 
