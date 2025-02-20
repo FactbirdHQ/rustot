@@ -69,8 +69,11 @@ where
                     )
                     .await
                     .map_err(Error::MqttError)?;
+                let delta_state = self.get_shadow().await?;
 
-                sub_ref.insert(sub)
+                sub_ref.insert(sub);
+
+                return Ok(Some(delta_state));
             }
         };
 
