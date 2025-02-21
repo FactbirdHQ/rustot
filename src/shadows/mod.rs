@@ -416,14 +416,32 @@ where
     /// Wait delta will subscribe if not already to Updatedelta and wait for changes
     ///
     pub async fn wait_delta(&self) -> Result<(S, Option<S::PatchState>), Error> {
+        // We need this to check if reading state from flash fails.
+        // If it does we will write the default state to flash.
+        // We can't write default state to flash in the error block because it will cause a deadlock.
+        let mut read_fail = false;
+
         let mut state = match self.dao.lock().await.read().await {
             Ok(state) => state,
             Err(_) => {
                 error!("Could not read state from flash writing default");
-                self.dao.lock().await.write(&S::default()).await?;
+                read_fail = true;
+
                 S::default()
             }
         };
+
+        if read_fail {
+            self.dao
+                .lock()
+                .await
+                .write(&S::default())
+                .await
+                .unwrap_or_else(|_| {
+                    error!("Failed to write default state");
+                });
+            info!("Wrote default state to flash");
+        }
 
         let delta = self.handler.handle_delta().await?;
 
