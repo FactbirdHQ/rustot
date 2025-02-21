@@ -69,8 +69,11 @@ where
                     )
                     .await
                     .map_err(Error::MqttError)?;
+                let delta_state = self.get_shadow().await?;
 
-                sub_ref.insert(sub)
+                sub_ref.insert(sub);
+
+                return Ok(delta_state.delta);
             }
         };
 
@@ -413,12 +416,15 @@ where
     /// Wait delta will subscribe if not already to Updatedelta and wait for changes
     ///
     pub async fn wait_delta(&self) -> Result<(S, Option<S::PatchState>), Error> {
-        let mut state = match self.dao.lock().await.read().await {
+        let mut dao = self.dao.lock().await;
+
+        let mut state = match dao.read().await {
             Ok(state) => state,
             Err(_) => {
                 error!("Could not read state from flash writing default");
-                self.dao.lock().await.write(&S::default()).await?;
-                S::default()
+                let state = S::default();
+                dao.write(&state).await?;
+                state
             }
         };
 
