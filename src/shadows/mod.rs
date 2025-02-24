@@ -428,6 +428,9 @@ where
             }
         };
 
+        // Drop the lock to avoid deadlock
+        drop(dao);
+
         let delta = self.handler.handle_delta().await?;
 
         // Something has changed as part of handling a message. Persist it
