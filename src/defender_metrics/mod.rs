@@ -4,7 +4,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use errors::{ErrorResponse, MetricError};
 use futures::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use topics::Topic;
 
 // pub mod aws_types;
@@ -61,7 +61,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
         let mut subscription = self
             .publish_and_subscribe(payload)
             .await
-            .map_err(|_| MetricError::Other)?;
+            .map_err(|_| MetricError::PublishSubscribe)?;
 
         loop {
             let message = subscription.next().await.ok_or(MetricError::Malformed)?;
@@ -69,11 +69,23 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
             match Topic::from_str(message.topic_name()) {
                 Some(Topic::Accepted) => return Ok(()),
                 Some(Topic::Rejected) => {
-                    let error_response =
-                        serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                            .map_err(|_| MetricError::InvalidPayload)?;
+                    #[cfg(not(feature = "metric_cbor"))]
+                    {
+                        let error_response =
+                            serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                                .map_err(|_| MetricError::ErrorResponseDeserialize)?;
 
-                    return Err(error_response.0.status_details.error_code);
+                        return Err(error_response.0.status_details.error_code);
+                    }
+
+                    #[cfg(feature = "metric_cbor")]
+                    {
+                        let mut de = minicbor_serde::Deserializer::new(&message.payload());
+                        let error_response = ErrorResponse::deserialize(&mut de)
+                            .map_err(|_| MetricError::ErrorResponseDeserialize)?;
+
+                        return Err(error_response.status_details.error_code);
+                    }
                 }
 
                 _ => (),
