@@ -25,5 +25,7 @@ pub enum MetricError {
     InvalidPayload,
     Throttled,
     MissingHeader,
+    ErrorResponseDeserialize,
+    PublishSubscribe,
     Other,
 }

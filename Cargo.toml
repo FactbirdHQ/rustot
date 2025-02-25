@@ -94,5 +94,5 @@ defmt = [
 log = ["dep:log", "embedded-mqtt/log"]
 
 
-[patch."ssh://git@github.com/FactbirdHQ/embedded-mqtt"]
-embedded-mqtt = { path = "../embedded-mqtt" }
+# [patch."ssh://git@github.com/FactbirdHQ/embedded-mqtt"]
+# embedded-mqtt = { path = "../embedded-mqtt" }
