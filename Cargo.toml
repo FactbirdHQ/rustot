@@ -33,7 +33,7 @@ minicbor-serde = { version = "0.3.2", optional = true }
 serde-json-core = { version = "0.6" }
 shadow-derive = { path = "shadow_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
-embedded-mqtt = { git = "ssh://git@github.com/FactbirdHQ/embedded-mqtt", rev = "dc7c390" }
+embedded-mqtt = { git = "ssh://git@github.com/FactbirdHQ/embedded-mqtt", rev = "2c16a31" }
 
 futures = { version = "0.3.28", default-features = false }
 
