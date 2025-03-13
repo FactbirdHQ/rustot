@@ -17,23 +17,15 @@ use common::credentials;
 use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{
-    self, transport::embedded_nal::NalTransport, Config, DomainBroker, Publish, State, Subscribe,
-};
-use futures::StreamExt;
+use embedded_mqtt::{self, transport::embedded_nal::NalTransport, Config, DomainBroker, State};
 use heapless::LinearMap;
-use rustot::{
-    defender_metrics::{
-        data_types::{CustomMetric, Metric},
-        MetricHandler,
-    },
-    shadows::{derive::ShadowState, Shadow, ShadowState},
+use rustot::defender_metrics::{
+    data_types::{CustomMetric, Metric},
+    MetricHandler,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 use static_cell::StaticCell;
 
-fn assert_json_format<'a>(json: &'a str) {
+fn assert_json_format(json: &str) {
     log::debug!("{json}");
     let format = "{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"MyMetricOfType_Number\":[{\"number\":1}],\"MyMetricOfType_NumberList\":[{\"number_list\":[1,2,3]}],\"MyMetricOfType_StringList\":[{\"string_list\":[\"value_1\",\"value_2\"]}],\"MyMetricOfType_IpList\":[{\"ip_list\":[\"172.0.0.0\",\"172.0.0.10\"]}]}}";
 
@@ -95,7 +87,7 @@ async fn test_publish_metric() {
         .unwrap();
 
     // Build metric
-    let mut metric = Metric::builder()
+    let metric = Metric::builder()
         .custom_metrics(custom_metrics)
         .header(Default::default())
         .build();
@@ -105,7 +97,7 @@ async fn test_publish_metric() {
 
     assert_json_format(&json);
 
-    let mut metric_handler = MetricHandler::new(&client);
+    let metric_handler = MetricHandler::new(&client);
 
     // Publish metric with mqtt
     let mqtt_fut = async { assert!(metric_handler.publish_metric(metric, 2000).await.is_ok()) };

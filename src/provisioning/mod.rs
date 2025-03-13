@@ -6,8 +6,7 @@ use core::future::Future;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
-    DeferredPayload, EncodingError, Publish, Subscribe, SubscribeTopic,
-    Subscription,
+    DeferredPayload, EncodingError, Publish, Subscribe, SubscribeTopic, Subscription,
 };
 use futures::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};

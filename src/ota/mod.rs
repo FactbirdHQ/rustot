@@ -49,8 +49,8 @@ impl Updater {
         config: &config::Config,
     ) -> Result<(), error::OtaError> {
         let progress_state = Mutex::new(ProgressState {
-            total_blocks: (file_ctx.filesize + config.block_size - 1) / config.block_size,
-            blocks_remaining: (file_ctx.filesize + config.block_size - 1) / config.block_size,
+            total_blocks: file_ctx.filesize.div_ceil(config.block_size),
+            blocks_remaining: file_ctx.filesize.div_ceil(config.block_size),
             block_offset: file_ctx.block_offset,
             request_block_remaining: file_ctx.bitmap.len() as u32,
             bitmap: file_ctx.bitmap.clone(),
@@ -416,8 +416,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
         // the OTA operator.
         let platform_self_test = pal
             .get_platform_image_state()
-            .await
-            .map_or(false, |i| i == pal::PalImageState::PendingCommit);
+            .await.is_ok_and(|i| i == pal::PalImageState::PendingCommit);
 
         match (self.file_ctx.self_test(), platform_self_test) {
             (true, true) => {

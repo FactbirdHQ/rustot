@@ -37,13 +37,15 @@ pub enum Topic {
 }
 
 impl Topic {
-    const PREFIX: &'static str = "$aws/things";
+    const PREFIX: &'static str = "things";
     const SHADOW: &'static str = "shadow";
 
-    pub fn from_str(s: &str) -> Option<(Self, &str, Option<&str>)> {
+    pub fn from_str<'a>(prefix: &str, s: &'a str) -> Option<(Self, &'a str, Option<&'a str>)> {
         let tt = s.splitn(9, '/').collect::<heapless::Vec<&str, 9>>();
         match (tt.first(), tt.get(1), tt.get(2), tt.get(3)) {
-            (Some(&"$aws"), Some(&"things"), Some(thing_name), Some(&Self::SHADOW)) => {
+            (Some(tt_prefix), Some(tt_things), Some(thing_name), Some(&Self::SHADOW))
+                if *tt_prefix == prefix && *tt_things == Self::PREFIX =>
+            {
                 // This is a shadow topic, now figure out which one.
                 let (shadow_name, next_index) = if let Some(&"name") = tt.get(4) {
                     (tt.get(5).copied(), 6)
@@ -93,6 +95,7 @@ impl Topic {
 
     pub fn format<const L: usize>(
         &self,
+        prefix: &str,
         thing_name: &str,
         shadow_name: Option<&'static str>,
     ) -> Result<String<L>, Error> {
@@ -101,7 +104,8 @@ impl Topic {
         let mut topic_path = String::new();
         match self {
             Self::Get => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/get",
+                "{}/{}/{}/{}{}{}/get",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -109,7 +113,8 @@ impl Topic {
                 shadow_name
             )),
             Self::Update => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/update",
+                "{}/{}/{}/{}{}{}/update",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -117,7 +122,8 @@ impl Topic {
                 shadow_name
             )),
             Self::Delete => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/delete",
+                "{}/{}/{}/{}{}{}/delete",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -126,7 +132,8 @@ impl Topic {
             )),
 
             Self::GetAccepted => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/get/accepted",
+                "{}/{}/{}/{}{}{}/get/accepted",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -134,7 +141,8 @@ impl Topic {
                 shadow_name
             )),
             Self::GetRejected => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/get/rejected",
+                "{}/{}/{}/{}{}{}/get/rejected",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -142,7 +150,8 @@ impl Topic {
                 shadow_name
             )),
             Self::UpdateDelta => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/update/delta",
+                "{}/{}/{}/{}{}{}/update/delta",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -150,7 +159,8 @@ impl Topic {
                 shadow_name
             )),
             Self::UpdateAccepted => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/update/accepted",
+                "{}/{}/{}/{}{}{}/update/accepted",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -158,7 +168,8 @@ impl Topic {
                 shadow_name
             )),
             Self::UpdateDocuments => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/update/documents",
+                "{}/{}/{}/{}{}{}/update/documents",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -166,7 +177,8 @@ impl Topic {
                 shadow_name
             )),
             Self::UpdateRejected => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/update/rejected",
+                "{}/{}/{}/{}{}{}/update/rejected",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -174,7 +186,8 @@ impl Topic {
                 shadow_name
             )),
             Self::DeleteAccepted => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/delete/accepted",
+                "{}/{}/{}/{}{}{}/delete/accepted",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -182,7 +195,8 @@ impl Topic {
                 shadow_name
             )),
             Self::DeleteRejected => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/delete/rejected",
+                "{}/{}/{}/{}{}{}/delete/rejected",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -190,7 +204,8 @@ impl Topic {
                 shadow_name
             )),
             Self::Any => topic_path.write_fmt(format_args!(
-                "{}/{}/{}{}{}/#",
+                "{}/{}/{}/{}{}{}/#",
+                prefix,
                 Self::PREFIX,
                 thing_name,
                 Self::SHADOW,
@@ -232,6 +247,7 @@ impl<const N: usize> Subscribe<N> {
 
     pub fn topics(
         self,
+        prefix: &str,
         thing_name: &str,
         shadow_name: Option<&'static str>,
     ) -> Result<heapless::Vec<(heapless::String<128>, QoS), N>, Error> {
@@ -239,7 +255,7 @@ impl<const N: usize> Subscribe<N> {
 
         self.topics
             .iter()
-            .map(|(topic, qos)| Ok(((*topic).format(thing_name, shadow_name)?, *qos)))
+            .map(|(topic, qos)| Ok(((*topic).format(prefix, thing_name, shadow_name)?, *qos)))
             .collect()
     }
 }
@@ -271,6 +287,7 @@ impl<const N: usize> Unsubscribe<N> {
 
     pub fn topics(
         self,
+        prefix: &str,
         thing_name: &str,
         shadow_name: Option<&'static str>,
     ) -> Result<heapless::Vec<heapless::String<256>, N>, Error> {
@@ -278,7 +295,7 @@ impl<const N: usize> Unsubscribe<N> {
 
         self.topics
             .iter()
-            .map(|topic| (*topic).format(thing_name, shadow_name))
+            .map(|topic| (*topic).format(prefix, thing_name, shadow_name))
             .collect()
     }
 }

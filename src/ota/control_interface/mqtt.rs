@@ -11,7 +11,7 @@ use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
 use crate::ota::ProgressState;
 
-impl<'a, M: RawMutex> ControlInterface for embedded_mqtt::MqttClient<'a, M> {
+impl<M: RawMutex> ControlInterface for embedded_mqtt::MqttClient<'_, M> {
     /// Check for next available OTA job from the job service by publishing a
     /// "get next job" message to the job service.
     async fn request_job(&self) -> Result<(), OtaError> {

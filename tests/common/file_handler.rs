@@ -59,6 +59,7 @@ pub struct FileHandler {
 }
 
 impl FileHandler {
+    #[allow(dead_code)]
     pub fn new(compare_file_path: String) -> Self {
         FileHandler {
             filebuf: None,
@@ -134,7 +135,7 @@ impl OtaPal for FileHandler {
             assert_eq!(buf.filebuf.get_ref().len(), file.filesize);
 
             let mut hasher = <Sha256 as Digest>::new();
-            hasher.update(&buf.filebuf.get_ref());
+            hasher.update(buf.filebuf.get_ref());
             assert_eq!(hasher.finalize().deref(), expected_hash.deref());
 
             // Check file signature

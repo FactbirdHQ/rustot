@@ -1,6 +1,7 @@
 {
-    "rust-analyzer.checkOnSave.allTargets": true,
-    "rust-analyzer.cargo.features": ["log"],
+    "rust-analyzer.cargo.features": [
+        "log",
+        "ota_mqtt_data"
+    ],
     "rust-analyzer.cargo.target": "x86_64-unknown-linux-gnu",
-    
 }

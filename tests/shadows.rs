@@ -35,17 +35,16 @@ use embedded_mqtt::{
     State, Subscribe, SubscribeTopic,
 };
 use futures::StreamExt;
-use rustot::shadows::{derive::ShadowState, Shadow, ShadowState};
+use rustot::shadows::{Shadow, ShadowState};
+use rustot_derive::shadow;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use static_cell::StaticCell;
 
-#[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
-#[shadow("state")]
+#[shadow(name = "state")]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TestShadow {
-    foo: u32,
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // bar: Option<bool>,
+    pub foo: u32,
 }
 
 /// Helper function to mimic cloud side updates using MQTT client directly
@@ -55,7 +54,7 @@ async fn cloud_update(client: &MqttClient<'static, NoopRawMutex>, payload: &[u8]
             Publish::builder()
                 .topic_name(
                     rustot::shadows::topics::Topic::Update
-                        .format::<128>(client.client_id(), TestShadow::NAME)
+                        .format::<128>(TestShadow::PREFIX, client.client_id(), TestShadow::NAME)
                         .unwrap()
                         .as_str(),
                 )
@@ -75,7 +74,7 @@ async fn assert_shadow(client: &MqttClient<'static, NoopRawMutex>, expected: ser
                 .topics(&[SubscribeTopic::builder()
                     .topic_path(
                         rustot::shadows::topics::Topic::GetAccepted
-                            .format::<128>(client.client_id(), TestShadow::NAME)
+                            .format::<128>(TestShadow::PREFIX, client.client_id(), TestShadow::NAME)
                             .unwrap()
                             .as_str(),
                     )
@@ -90,7 +89,7 @@ async fn assert_shadow(client: &MqttClient<'static, NoopRawMutex>, expected: ser
             Publish::builder()
                 .topic_name(
                     rustot::shadows::topics::Topic::Get
-                        .format::<128>(client.client_id(), TestShadow::NAME)
+                        .format::<128>(TestShadow::PREFIX, client.client_id(), TestShadow::NAME)
                         .unwrap()
                         .as_str(),
                 )
@@ -116,12 +115,12 @@ async fn test_shadow_update_from_device() {
     env_logger::init();
 
     const DESIRED_1: &str = r#"{
-        "state": {
-            "desired": {
-                "foo": 42
+            "state": {
+                "desired": {
+                    "foo": 42
+                }
             }
-        }
-    }"#;
+        }"#;
 
     let (thing_name, identity) = credentials::identity();
     let hostname = credentials::HOSTNAME.unwrap();
@@ -143,13 +142,7 @@ async fn test_shadow_update_from_device() {
     let (mut stack, client) = embedded_mqtt::new(state, config);
 
     // Create the shadow
-    let mut shadow = Shadow::<TestShadow, _>::new(TestShadow::default(), &client);
-
-    // let delta_fut = async {
-    //     loop {
-    //         let delta = shadow.wait_delta().await.unwrap();
-    //     }
-    // };
+    let mut shadow = Shadow::new(TestShadow::default(), &client);
 
     let mqtt_fut = async {
         // 1. Setup clean starting point (`desired = null, reported = null`)
@@ -163,7 +156,7 @@ async fn test_shadow_update_from_device() {
         let _ = shadow.get_shadow().await.unwrap();
 
         // 3. Update to initial shadow state from the device
-        let _ = shadow.report().await.unwrap();
+        shadow.report().await.unwrap();
 
         // 4. Assert on the initial state
         assert_shadow(

@@ -1,5 +1,5 @@
 [workspace]
-members = ["shadow_derive"]
+members = ["rustot_derive"]
 
 [package]
 name = "rustot"
@@ -31,7 +31,7 @@ minicbor-serde = { version = "0.3.2", optional = true }
 
 
 serde-json-core = { version = "0.6" }
-shadow-derive = { path = "shadow_derive", version = "0.2.1" }
+rustot-derive = { path = "rustot_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
 embedded-mqtt = { git = "ssh://git@github.com/FactbirdHQ/embedded-mqtt", rev = "dc7c390" }
 

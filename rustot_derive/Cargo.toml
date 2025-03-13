@@ -1,0 +1,21 @@
+[package]
+name = "rustot-derive"
+version = "0.2.1"
+authors = ["Factbird team <support@factbird.com>"]
+description = "Procedual macros for rustot crate"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/FactbirdHQ/rustot"
+edition = "2021"
+readme = "../README.md"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "2"
+quote = "1"
+proc-macro2 = "1"
+
+[dev-dependencies]
+rustot = { path = ".." }
+serde = "1"

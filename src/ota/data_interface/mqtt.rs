@@ -97,7 +97,7 @@ enum OtaTopic<'a> {
     Get(Encoding, &'a str),
 }
 
-impl<'a> OtaTopic<'a> {
+impl OtaTopic<'_> {
     pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, OtaError> {
         let mut topic_path = heapless::String::new();
         match self {
@@ -124,7 +124,7 @@ impl<'a> OtaTopic<'a> {
     }
 }
 
-impl<'a, 'b, M: RawMutex> BlockTransfer for Subscription<'a, 'b, M, 1> {
+impl<M: RawMutex> BlockTransfer for Subscription<'_, '_, M, 1> {
     async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError> {
         Ok(self.next().await)
     }
@@ -133,7 +133,10 @@ impl<'a, 'b, M: RawMutex> BlockTransfer for Subscription<'a, 'b, M, 1> {
 impl<'a, M: RawMutex> DataInterface for MqttClient<'a, M> {
     const PROTOCOL: Protocol = Protocol::Mqtt;
 
-    type ActiveTransfer<'t> = Subscription<'a, 't, M, 1> where Self: 't;
+    type ActiveTransfer<'t>
+        = Subscription<'a, 't, M, 1>
+    where
+        Self: 't;
 
     /// Init file transfer by subscribing to the OTA data stream topic
     async fn init_file_transfer(
