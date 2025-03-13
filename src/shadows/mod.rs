@@ -73,9 +73,10 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
                     )
                     .await
                     .map_err(Error::MqttError)?;
-                let delta_state = self.get_shadow().await?;
 
-                *sub_ref = Some(sub);
+                let _ = sub_ref.insert(sub);
+
+                let delta_state = self.get_shadow().await?;
 
                 return Ok(delta_state.delta);
             }
