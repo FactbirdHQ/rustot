@@ -29,13 +29,13 @@ pub struct FileBlock<'a> {
     pub block_payload: &'a [u8],
 }
 
-impl<'a> FileBlock<'a> {
+impl FileBlock<'_> {
     /// Validate the block index and size. If it is NOT the last block, it MUST
     /// be equal to a full block size. If it IS the last block, it MUST be equal
     /// to the expected remainder. If the block ID is out of range, that's an
     /// error.
     pub fn validate(&self, block_size: usize, filesize: usize) -> bool {
-        let total_blocks = (filesize + block_size - 1) / block_size;
+        let total_blocks = filesize.div_ceil(block_size);
         let last_block_id = total_blocks - 1;
 
         (self.block_id < last_block_id && self.block_size == block_size)

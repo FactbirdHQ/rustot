@@ -26,13 +26,6 @@ jobs:
       - name: Build (library)
         run: cargo build --all --target thumbv7em-none-eabihf
 
-      # - name: Build (examples)
-      #   run: |
-      #     for EXAMPLE in $(ls examples);
-      #     do
-      #       (cd examples/$EXAMPLE && cargo build)
-      #     done
-
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -47,6 +40,12 @@ jobs:
         with:
           command: test
           args: --doc --features "std,log"
+
+      - name: Macro Tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: -p rustot-derive
 
       - name: Unit Tests
         uses: actions-rs/cargo@v1

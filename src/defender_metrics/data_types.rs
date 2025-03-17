@@ -2,7 +2,7 @@ use core::fmt::{Display, Write};
 
 use bon::Builder;
 use embassy_time::Instant;
-use serde::{ser::SerializeStruct, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 use super::aws_types::{ListeningTcpPorts, ListeningUdpPorts, NetworkStats, TcpConnections};
 

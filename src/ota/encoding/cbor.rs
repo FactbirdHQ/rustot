@@ -262,14 +262,14 @@ mod test {
 
         // Check the last request (All requests in between will have same bitmap as first request, with different block_offset)
         {
-            let bitmap = Bitmap::new(file_size, BLOCK_SIZE, block_offset as u32);
+            let bitmap = Bitmap::new(file_size, BLOCK_SIZE, block_offset);
 
             let req = GetStreamRequest {
                 client_token: Some("rdy"),
                 stream_version: None,
                 file_id: 0,
                 block_size: BLOCK_SIZE,
-                block_offset: Some(block_offset as u32),
+                block_offset: Some(block_offset),
                 number_of_blocks: None,
                 block_bitmap: Some(&bitmap),
             };

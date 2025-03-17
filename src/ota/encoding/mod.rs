@@ -20,7 +20,7 @@ pub struct Bitmap(bitmaps::Bitmap<32>);
 impl Bitmap {
     pub fn new(file_size: usize, block_size: usize, block_offset: u32) -> Self {
         // Total number of blocks in file, rounded up
-        let total_num_blocks = (file_size + block_size - 1) / block_size;
+        let total_num_blocks = file_size.div_ceil(block_size);
 
         Self(bitmaps::Bitmap::mask(core::cmp::min(
             32 - 1,
@@ -139,7 +139,7 @@ impl FileContext {
             job_name: heapless::String::try_from(job_data.job_name).unwrap(),
             block_offset,
             request_block_remaining: bitmap.len() as u32,
-            blocks_remaining: (file_desc.filesize + config.block_size - 1) / config.block_size,
+            blocks_remaining: file_desc.filesize.div_ceil(config.block_size),
             stream_name: heapless::String::try_from(job_data.ota_document.streamname).unwrap(),
             bitmap,
         })
@@ -166,6 +166,6 @@ mod tests {
         let bitmap = Bitmap::new(255000, 256, 0);
 
         let true_indices: Vec<usize> = bitmap.into_iter().collect();
-        assert_eq!((0..31).into_iter().collect::<Vec<usize>>(), true_indices);
+        assert_eq!((0..31).collect::<Vec<usize>>(), true_indices);
     }
 }

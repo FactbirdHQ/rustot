@@ -130,5 +130,5 @@ async fn test_provisioning() {
             software_id: heapless::String::try_from("82b3509e0e924e06ab1bdb1cf1625dcb").unwrap()
         })
     );
-    assert!(credential_handler.creds.unwrap().certificate_id.len() > 0);
+    assert!(!credential_handler.creds.unwrap().certificate_id.is_empty());
 }

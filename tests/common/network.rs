@@ -11,6 +11,7 @@ use super::credentials;
 pub struct Network;
 
 impl Network {
+    #[allow(dead_code)]
     pub const fn new() -> Self {
         Self
     }
@@ -19,9 +20,10 @@ impl Network {
 impl TcpConnect for Network {
     type Error = std::io::Error;
 
-    type Connection<'a> = FromTokio<tokio::net::TcpStream>
-	    where
-		    Self: 'a;
+    type Connection<'a>
+        = FromTokio<tokio::net::TcpStream>
+    where
+        Self: 'a;
 
     async fn connect<'a>(
         &'a self,
@@ -80,9 +82,10 @@ impl TlsNetwork {
 impl TcpConnect for TlsNetwork {
     type Error = std::io::Error;
 
-    type Connection<'a> = FromTokio<tokio_native_tls::TlsStream<tokio::net::TcpStream>>
-	    where
-		    Self: 'a;
+    type Connection<'a>
+        = FromTokio<tokio_native_tls::TlsStream<tokio::net::TcpStream>>
+    where
+        Self: 'a;
 
     async fn connect<'a>(
         &'a self,

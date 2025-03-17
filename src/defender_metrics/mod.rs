@@ -80,7 +80,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
 
                     #[cfg(feature = "metric_cbor")]
                     {
-                        let mut de = minicbor_serde::Deserializer::new(&message.payload());
+                        let mut de = minicbor_serde::Deserializer::new(message.payload());
                         let error_response = ErrorResponse::deserialize(&mut de)
                             .map_err(|_| MetricError::ErrorResponseDeserialize)?;
 
@@ -327,7 +327,7 @@ mod tests {
                 }
 
                 let list = StringList {
-                    string_list: &[&self.cell_type.as_str()],
+                    string_list: &[self.cell_type.as_str()],
                 };
 
                 // Serialize number and wrap in array

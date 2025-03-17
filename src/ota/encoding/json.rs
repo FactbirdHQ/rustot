@@ -59,7 +59,7 @@ pub struct FileDescription<'a> {
     pub file_type: Option<u32>,
 }
 
-impl<'a> FileDescription<'a> {
+impl FileDescription<'_> {
     pub fn signature(&self) -> Option<Signature> {
         if let Some(sig) = self.sha1_rsa {
             return Some(Signature::Sha1Rsa(heapless::String::try_from(sig).unwrap()));
@@ -177,6 +177,6 @@ mod tests {
             ]
         }"#;
 
-        serde_json_core::from_str::<OtaJob>(&data).unwrap();
+        serde_json_core::from_str::<OtaJob>(data).unwrap();
     }
 }

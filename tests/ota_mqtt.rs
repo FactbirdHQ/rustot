@@ -50,18 +50,25 @@ fn handle_ota<'a>(
     let job = match jobs::Topic::from_str(message.topic_name()) {
         Some(jobs::Topic::NotifyNext) => {
             let (execution_changed, _) =
-                serde_json_core::from_slice::<NextJobExecutionChanged<Jobs>>(&message.payload())
+                serde_json_core::from_slice::<NextJobExecutionChanged<Jobs>>(message.payload())
                     .ok()?;
             execution_changed.execution?
         }
         Some(jobs::Topic::DescribeAccepted(_)) => {
             let (execution_changed, _) = serde_json_core::from_slice::<
                 DescribeJobExecutionResponse<Jobs>,
-            >(&message.payload())
+            >(message.payload())
             .ok()?;
+
+            if execution_changed.execution.is_none() {
+                panic!("No OTA jobs queued?");
+            }
+
             execution_changed.execution?
         }
-        _ => return None,
+        _ => {
+            return None;
+        }
     };
 
     let ota_job = job.job_document?.ota_job()?;
