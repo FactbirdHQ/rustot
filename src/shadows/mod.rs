@@ -3,6 +3,8 @@ pub mod data_types;
 pub mod error;
 pub mod topics;
 
+pub use rustot_derive;
+
 use core::{marker::PhantomData, ops::DerefMut};
 
 pub use data_types::Patch;
@@ -33,12 +35,12 @@ pub trait ShadowState: ShadowPatch {
     const MAX_PAYLOAD_SIZE: usize = 512;
 }
 
-pub trait ShadowPatch: Serialize + DeserializeOwned + Default + Clone + Sized {
+pub trait ShadowPatch: Default + Clone + Sized {
     // Contains all fields from `Self` as optionals
     type Delta: DeserializeOwned + Clone;
 
     // Contains all fields from `Delta` + additional optional fields
-    type Reported: From<Self> + Serialize + DeserializeOwned + Default;
+    type Reported: From<Self> + Serialize + Default;
 
     fn apply_patch(&mut self, delta: Self::Delta);
 }
@@ -110,18 +112,15 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
 
     /// Internal helper function for applying a delta state to the actual shadow
     /// state, and update the cloud shadow.
-    async fn report(
-        &self,
-        reported: S::Reported,
-    ) -> Result<DeltaState<S, S::Reported, S::Delta>, Error> {
+    async fn report(&self, reported: S::Reported) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
         debug!(
             "[{:?}] Updating reported shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
 
-        let request: Request<'_, S, S::Reported> = Request {
+        let request: Request<'_, S::Reported> = Request {
             state: RequestState {
-                desired: None,
+                // desired: None,
                 reported: Some(reported),
             },
             client_token: Some(self.mqtt.client_id()),
@@ -149,7 +148,8 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
             match Topic::from_str(S::PREFIX, message.topic_name()) {
                 Some((Topic::UpdateAccepted, _, _)) => {
                     let (response, _) = serde_json_core::from_slice::<
-                        AcceptedResponse<S, S::Reported, S::Delta>,
+                        // FIXME:
+                        AcceptedResponse<S::Delta, S::Delta>,
                     >(message.payload())
                     .map_err(|_| Error::InvalidPayload)?;
 
@@ -183,7 +183,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
     }
 
     /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    async fn get_shadow(&self) -> Result<DeltaState<S, S::Reported, S::Delta>, Error> {
+    async fn get_shadow(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
         // Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
@@ -197,7 +197,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         match Topic::from_str(S::PREFIX, get_message.topic_name()) {
             Some((Topic::GetAccepted, _, _)) => {
                 let (response, _) = serde_json_core::from_slice::<
-                    AcceptedResponse<S, S::Reported, S::Delta>,
+                    AcceptedResponse<S::Delta, S::Delta>,
                 >(get_message.payload())
                 .map_err(|_| Error::InvalidPayload)?;
 
@@ -262,7 +262,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         }
     }
 
-    pub async fn create_shadow(&self) -> Result<DeltaState<S, S::Reported, S::Delta>, Error> {
+    pub async fn create_shadow(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
         debug!(
             "[{:?}] Creating initial shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
@@ -337,7 +337,7 @@ pub struct PersistedShadow<'a, 'm, S, M: RawMutex, D> {
 
 impl<'a, 'm, S, M, D> PersistedShadow<'a, 'm, S, M, D>
 where
-    S: ShadowState,
+    S: ShadowState + Serialize + DeserializeOwned,
     M: RawMutex,
     D: ShadowDAO<S>,
 {

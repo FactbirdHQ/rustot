@@ -37,17 +37,19 @@ impl VariantOrFieldVisitor for SetNewTypeVisitor {
         let newtype_ident = &self.0;
 
         let (is_primitive, inner_type, is_base_opt) = match extract_type_from_option(&old.ty) {
-            Some(inner_ty) if is_primitive(&inner_ty) => (true, &old.ty, true),
+            Some(inner_ty) if is_primitive(&inner_ty) || has_shadow_arg(&old.attrs, "leaf") => {
+                (true, &old.ty, true)
+            }
             Some(inner_ty) => (false, inner_ty, true),
             None => (is_primitive(&old.ty), &old.ty, false),
         };
 
-        let new_type = if is_primitive || has_shadow_arg(&old, "leaf") {
+        let new_type = if is_primitive || has_shadow_arg(&old.attrs, "leaf") {
             quote! {Option<#inner_type>}
         } else if is_base_opt {
-            quote! {Option<Option<<#inner_type as ::rustot::shadows::ShadowPatch>::#newtype_ident>>}
+            quote! {Option<Option<<#inner_type as rustot::shadows::ShadowPatch>::#newtype_ident>>}
         } else {
-            quote! {Option<<#inner_type as ::rustot::shadows::ShadowPatch>::#newtype_ident>}
+            quote! {Option<<#inner_type as rustot::shadows::ShadowPatch>::#newtype_ident>}
         };
 
         new.ty = syn::parse2(new_type).unwrap();
@@ -93,7 +95,7 @@ impl VariantOrFieldVisitor for RemoveShadowAttributesVisitor {
             .iter()
             .enumerate()
             .filter_map(|(i, a)| {
-                if a.path().is_ident(DEFAULT_ATTRIBUTE) {
+                if a.path().is_ident(DEFAULT_ATTRIBUTE) || a.path().is_ident(SHADOW_ATTRIBUTE) {
                     Some(i)
                 } else {
                     None
@@ -104,6 +106,10 @@ impl VariantOrFieldVisitor for RemoveShadowAttributesVisitor {
         // Don't forget to reverse so the indices are removed without being shifted!
         for i in indexes_to_remove.into_iter().rev() {
             new.attrs.swap_remove(i);
+        }
+
+        for (old_field, new_field) in old.fields.iter_mut().zip(new.fields.iter_mut()) {
+            self.visit_field(old_field, new_field);
         }
     }
 }
@@ -125,8 +131,8 @@ pub fn is_primitive(t: &Type) -> bool {
             })
             .unwrap_or(false),
         Type::Paren(type_paren) => is_primitive(&type_paren.elem),
-        Type::Array(_) | Type::Tuple(_) => false,
-        _ => unimplemented!("Unsupported"),
+        Type::Reference(_) | Type::Array(_) | Type::Tuple(_) => false,
+        t => panic!("Unsupported type: {:?}", quote! { #t }),
     }
 }
 
@@ -150,8 +156,8 @@ pub fn get_attr(attrs: &Vec<Attribute>, attr: &str) -> Option<Attribute> {
     attrs.iter().find(|a| a.path().is_ident(attr)).cloned()
 }
 
-pub fn has_shadow_arg(field: &Field, arg: &str) -> bool {
-    if let Some(a) = get_attr(&field.attrs, SHADOW_ATTRIBUTE) {
+pub fn has_shadow_arg(attrs: &Vec<Attribute>, arg: &str) -> bool {
+    if let Some(a) = get_attr(&attrs, SHADOW_ATTRIBUTE) {
         let shadow_args = a
             .parse_args_with(Punctuated::<Ident, Token![,]>::parse_terminated)
             .unwrap_or_default();

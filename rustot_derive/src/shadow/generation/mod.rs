@@ -6,7 +6,7 @@ use generator::Generator;
 use modifier::Modifier;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{punctuated::Punctuated, Data, DeriveInput, Ident, Token};
+use syn::{punctuated::Punctuated, Data, DeriveInput, Path, Token};
 use variant_or_field_visitor::{
     borrow_fields_mut, get_attr, has_shadow_arg, is_primitive, VariantOrFieldVisitor,
 };
@@ -80,12 +80,12 @@ impl ShadowGenerator {
 
 pub struct GenerateShadowPatchImplVisitor {
     field_index: usize,
-    reported_ident: Ident,
+    reported_ident: Path,
     apply_patch_impl: TokenStream,
 }
 
 impl GenerateShadowPatchImplVisitor {
-    pub fn new(reported_ident: Ident) -> Self {
+    pub fn new(reported_ident: Path) -> Self {
         Self {
             field_index: 0,
             reported_ident,
@@ -96,7 +96,7 @@ impl GenerateShadowPatchImplVisitor {
 
 impl Generator for GenerateShadowPatchImplVisitor {
     fn generate(&mut self, original: &DeriveInput, output: &DeriveInput) -> TokenStream {
-        let (impl_generics, ty_generics, _) = original.generics.split_for_impl();
+        let (impl_generics, ty_generics, where_clause) = original.generics.split_for_impl();
         let orig_name = &original.ident;
         let delta_name = &output.ident;
         let reported_name = &self.reported_ident;
@@ -117,7 +117,7 @@ impl Generator for GenerateShadowPatchImplVisitor {
         };
 
         quote! {
-            impl #impl_generics ::rustot::shadows::ShadowPatch for #orig_name #ty_generics {
+            impl #impl_generics rustot::shadows::ShadowPatch for #orig_name #ty_generics #where_clause {
                 type Delta = #delta_name #ty_generics;
                 type Reported = #reported_name #ty_generics;
 
@@ -160,37 +160,49 @@ impl PatchImpl {
                 let field_ty = &field.ty;
 
                 let (action, action_deref) =
-                    if has_shadow_arg(&field, "leaf") || is_primitive(&field.ty) {
+                    if has_shadow_arg(&field.attrs, "leaf") || is_primitive(&field.ty) {
                         (
-                            quote! {#var_ident = delta_var},
-                            quote! {*#var_ident = delta_var},
+                            quote! {
+                                #cfg_attr
+                                let #var_ident = #delta_ident.unwrap_or_default();
+                            },
+                            quote! {
+                                #cfg_attr
+                                if let Some(delta_var) = #delta_ident {
+                                    *#var_ident = delta_var;
+                                }
+                            },
                         )
                     } else {
                         (
-                            quote! {#var_ident.apply_patch(delta_var)},
-                            quote! {#var_ident.apply_patch(delta_var)},
+                            quote! {
+                                #cfg_attr
+                                let mut #var_ident = #field_ty ::default();
+
+                                #cfg_attr
+                                if let Some(delta_var) = #delta_ident {
+                                    #var_ident.apply_patch(delta_var);
+                                }
+                            },
+                            quote! {
+                                #cfg_attr
+                                if let Some(delta_var) = #delta_ident {
+                                    #var_ident.apply_patch(delta_var);
+                                }
+                            },
                         )
                     };
 
                 patch_impl.defaults = quote! {
                     #defaults
 
-                    #cfg_attr
-                    let mut #var_ident = #field_ty ::default();
-
-                    #cfg_attr
-                    if let Some(delta_var) = #delta_ident {
-                        #action;
-                    }
+                    #action
                 };
 
                 patch_impl.assigns = quote! {
                     #assigns
 
-                    #cfg_attr
-                    if let Some(delta_var) = #delta_ident {
-                        #action_deref;
-                    }
+                    #action_deref
                 };
 
                 patch_impl.variables.push(cfg_var);
@@ -222,7 +234,7 @@ impl VariantOrFieldVisitor for GenerateShadowPatchImplVisitor {
 
         let acc = &self.apply_patch_impl;
 
-        self.apply_patch_impl = if has_shadow_arg(&old, "leaf") || is_primitive(&old.ty) {
+        self.apply_patch_impl = if has_shadow_arg(&old.attrs, "leaf") || is_primitive(&old.ty) {
             quote! {
                 #acc
 

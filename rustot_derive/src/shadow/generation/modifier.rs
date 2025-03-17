@@ -18,12 +18,16 @@ impl Modifier for RenameModifier {
     }
 }
 
-pub struct WithDerivesModifier(pub &'static [&'static str]);
+pub struct WithDerivesModifier(pub bool, pub Vec<&'static str>);
 
 impl Modifier for WithDerivesModifier {
     fn modify(&mut self, _original: &DeriveInput, output: &mut DeriveInput) {
+        if !self.0 {
+            return;
+        }
+
         let mut all_derives = self
-            .0
+            .1
             .iter()
             .filter(|s| {
                 if matches!(output.data, Data::Enum(_)) {
@@ -66,7 +70,7 @@ pub struct ReportOnlyModifier;
 
 impl ReportOnlyModifier {
     fn filter_report_only(field: &Field) -> bool {
-        if has_shadow_arg(field, "report_only") {
+        if has_shadow_arg(&field.attrs, "report_only") {
             return false;
         }
 

@@ -7,6 +7,10 @@ use syn::parse::{Parse, ParseStream};
 use syn::{DeriveInput, Expr, ExprLit, Lit, LitInt, LitStr};
 
 pub const SHADOW_ATTRIBUTE: &str = "shadow_attr";
+// pub const SHADOW_ALL: &str = "shadow_attr";
+// pub const SHADOW_DELTA: &str = "shadow_delta";
+// pub const SHADOW_REPORTED: &str = "shadow_reported";
+
 pub const DEFAULT_ATTRIBUTE: &str = "default";
 pub const CFG_ATTRIBUTE: &str = "cfg";
 
@@ -84,7 +88,7 @@ pub fn shadow(attr: TokenStream, input: TokenStream) -> TokenStream {
 
     quote! {
        #[automatically_derived]
-       impl #impl_generics ::rustot::shadows::ShadowState for #ident #ty_generics #where_clause {
+       impl #impl_generics rustot::shadows::ShadowState for #ident #ty_generics #where_clause {
            const NAME: Option<&'static str> = #name;
            const PREFIX: &'static str = #topic_prefix;
            const MAX_PAYLOAD_SIZE: usize = #max_payload_size;

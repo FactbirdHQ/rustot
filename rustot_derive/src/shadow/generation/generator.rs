@@ -37,7 +37,7 @@ impl GenerateFromImpl {
                     syn::Ident::new(&format!("{}", (b'a' + i as u8) as char), field.span())
                 });
 
-                let action = if is_primitive(&field.ty) || has_shadow_arg(&field, "leaf") {
+                let action = if is_primitive(&field.ty) || has_shadow_arg(&field.attrs, "leaf") {
                     quote! {Some(#var_ident)}
                 } else {
                     quote! {Some(#var_ident.into())}
@@ -61,7 +61,7 @@ impl GenerateFromImpl {
 
 impl Generator for GenerateFromImpl {
     fn generate(&mut self, original: &DeriveInput, output: &DeriveInput) -> TokenStream {
-        let (impl_generics, ty_generics, _) = original.generics.split_for_impl();
+        let (impl_generics, ty_generics, where_clause) = original.generics.split_for_impl();
         let orig_name = &original.ident;
         let new_name = &output.ident;
 
@@ -70,17 +70,20 @@ impl Generator for GenerateFromImpl {
                 let original_fields = borrow_fields(data_struct_old);
                 let new_fields = borrow_fields(data_struct_new);
 
-                let from_fields = new_fields.iter().fold(quote! {}, |acc, field| {
-                    let is_leaf = original_fields
+                let from_fields = original_fields.iter().fold(quote! {}, |acc, field| {
+                    let is_leaf = is_primitive(&field.ty) || has_shadow_arg(&field.attrs, "leaf");
+
+                    let has_new_field = new_fields
                         .iter()
                         .find(|&f| f.ident == field.ident)
-                        .map(|f| is_primitive(&f.ty) || has_shadow_arg(&f, "leaf"))
-                        .unwrap_or_default();
+                        .is_some();
 
                     let cfg_attr = get_attr(&field.attrs, CFG_ATTRIBUTE);
 
                     let ident = &field.ident;
-                    if is_leaf {
+                    if !has_new_field {
+                        quote! { #acc #cfg_attr #ident: None, }
+                    } else if is_leaf {
                         quote! { #acc #cfg_attr #ident: Some(v.#ident), }
                     } else {
                         quote! { #acc #cfg_attr #ident: Some(v.#ident.into()), }
@@ -90,7 +93,6 @@ impl Generator for GenerateFromImpl {
                 quote! {
                     Self {
                         #from_fields
-                        ..Default::default()
                     }
                 }
             }
@@ -129,7 +131,7 @@ impl Generator for GenerateFromImpl {
         };
 
         quote! {
-            impl #impl_generics From<#orig_name #ty_generics> for #new_name #ty_generics {
+            impl #impl_generics From<#orig_name #ty_generics> for #new_name #ty_generics #where_clause {
                 fn from(v: #orig_name #ty_generics) -> Self {
                     #from_impl
                 }
@@ -138,10 +140,14 @@ impl Generator for GenerateFromImpl {
     }
 }
 
-pub struct DefaultGenerator;
+pub struct DefaultGenerator(pub bool);
 
 impl Generator for DefaultGenerator {
     fn generate(&mut self, _original: &DeriveInput, output: &DeriveInput) -> TokenStream {
+        if self.0 {
+            return quote! {};
+        }
+
         if let Data::Enum(enum_data) = &output.data {
             let default_variant = enum_data
                 .variants

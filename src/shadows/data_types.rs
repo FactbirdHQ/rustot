@@ -1,17 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Patch<T> {
-    #[serde(rename = "unset")]
+    #[default]
     Unset,
-    #[serde(rename = "set")]
     Set(T),
-}
-
-impl<T> Default for Patch<T> {
-    fn default() -> Self {
-        Self::Unset
-    }
 }
 
 impl<T> Clone for Patch<T>
@@ -33,21 +27,20 @@ impl<T> From<T> for Patch<T> {
 }
 
 #[derive(Serialize)]
-pub struct RequestState<D, R> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub desired: Option<D>,
-
+pub struct RequestState<R> {
+    // #[serde(skip_serializing_if = "Option::is_none")]
+    // pub desired: Option<D>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reported: Option<R>,
 }
 
 #[derive(Deserialize)]
-pub struct DeltaState<D, R, U> {
+pub struct DeltaState<D, R> {
     pub desired: Option<D>,
 
     pub reported: Option<R>,
 
-    pub delta: Option<U>,
+    pub delta: Option<D>,
 }
 
 /// A request state document has the following format:
@@ -63,8 +56,8 @@ pub struct DeltaState<D, R, U> {
 ///   if the specified version matches the latest version it has.
 #[derive(Serialize)]
 #[serde(default)]
-pub struct Request<'a, D, R> {
-    pub state: RequestState<D, R>,
+pub struct Request<'a, R> {
+    pub state: RequestState<R>,
 
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,8 +88,8 @@ pub struct Request<'a, D, R> {
 ///   shared in AWS IoT. It is increased by one over the previous version of the
 ///   document.
 #[derive(Deserialize)]
-pub struct AcceptedResponse<'a, D, R, U> {
-    pub state: DeltaState<D, R, U>,
+pub struct AcceptedResponse<'a, D, R> {
+    pub state: DeltaState<D, R>,
     // pub metadata: Metadata<>.
     pub timestamp: u64,
 

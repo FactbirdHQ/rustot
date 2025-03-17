@@ -186,8 +186,7 @@ mod tests {
         let register_response_none = r#"{"thingName":"my_thing"}"#;
 
         let (response, _) =
-            serde_json_core::from_str::<RegisterThingResponse<()>>(register_response_none)
-                .unwrap();
+            serde_json_core::from_str::<RegisterThingResponse<()>>(register_response_none).unwrap();
         assert_eq!(
             response,
             RegisterThingResponse {

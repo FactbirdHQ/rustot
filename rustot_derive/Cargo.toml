@@ -19,3 +19,4 @@ proc-macro2 = "1"
 [dev-dependencies]
 rustot = { path = ".." }
 serde = "1"
+heapless = "0.8"

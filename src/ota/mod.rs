@@ -416,7 +416,8 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
         // the OTA operator.
         let platform_self_test = pal
             .get_platform_image_state()
-            .await.is_ok_and(|i| i == pal::PalImageState::PendingCommit);
+            .await
+            .is_ok_and(|i| i == pal::PalImageState::PendingCommit);
 
         match (self.file_ctx.self_test(), platform_self_test) {
             (true, true) => {

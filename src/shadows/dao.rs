@@ -1,6 +1,8 @@
+use serde::{de::DeserializeOwned, Serialize};
+
 use super::{Error, ShadowState};
 
-pub trait ShadowDAO<S: ShadowState> {
+pub trait ShadowDAO<S: ShadowState + Serialize + DeserializeOwned> {
     async fn read(&mut self) -> Result<S, Error>;
     async fn write(&mut self, state: &S) -> Result<(), Error>;
 }
@@ -9,7 +11,7 @@ const U32_SIZE: usize = 4;
 
 impl<S, T> ShadowDAO<S> for T
 where
-    S: ShadowState,
+    S: ShadowState + Serialize + DeserializeOwned,
     T: embedded_storage_async::nor_flash::NorFlash,
     [(); S::MAX_PAYLOAD_SIZE + U32_SIZE]:,
 {
@@ -91,7 +93,7 @@ where
 #[cfg(any(feature = "std", test))]
 impl<S, T> ShadowDAO<S> for StdIODAO<T>
 where
-    S: ShadowState,
+    S: ShadowState + Serialize + DeserializeOwned,
     T: std::io::Write + std::io::Read,
     [(); S::MAX_PAYLOAD_SIZE]:,
 {
