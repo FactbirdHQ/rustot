@@ -14,7 +14,6 @@ use embassy_sync::{
 };
 use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 pub use error::Error;
-use futures::StreamExt;
 use serde::{de::DeserializeOwned, Serialize};
 
 use data_types::{
@@ -85,7 +84,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         };
 
         let delta_message = delta_subscription
-            .next()
+            .next_message()
             .await
             .ok_or(Error::InvalidPayload)?;
 
@@ -143,7 +142,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         //*** WAIT RESPONSE ***/
         debug!("Wait for Accepted or Rejected");
         loop {
-            let message = sub.next().await.ok_or(Error::InvalidPayload)?;
+            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
             match Topic::from_str(S::PREFIX, message.topic_name()) {
                 Some((Topic::UpdateAccepted, _, _)) => {
@@ -189,7 +188,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
 
         let mut sub = self.publish_and_subscribe(Topic::Get, b"").await?;
 
-        let get_message = sub.next().await.ok_or(Error::InvalidPayload)?;
+        let get_message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
         // Check if topic is GetAccepted
         // Deserialize message
@@ -239,7 +238,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
             .publish_and_subscribe(topics::Topic::Delete, b"")
             .await?;
 
-        let message = sub.next().await.ok_or(Error::InvalidPayload)?;
+        let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
         // Check if topic is DeleteAccepted
         match Topic::from_str(S::PREFIX, message.topic_name()) {

@@ -12,7 +12,6 @@ use embedded_mqtt::transport::embedded_nal::NalTransport;
 use embedded_mqtt::{
     Config, DomainBroker, Message, SliceBufferProvider, State, Subscribe, SubscribeTopic,
 };
-use futures::StreamExt;
 use serde::Deserialize;
 use static_cell::StaticCell;
 
@@ -140,7 +139,7 @@ async fn test_mqtt_ota() {
 
         let config = ota::config::Config::default();
 
-        let message = jobs_subscription.next().await.unwrap();
+        let message = jobs_subscription.next_message().await.unwrap();
 
         if let Some(mut file_ctx) = handle_ota(message, &config) {
             // Nested subscriptions are a problem for embedded-mqtt, so unsubscribe here
