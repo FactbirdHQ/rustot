@@ -3,7 +3,6 @@ use data_types::Metric;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use errors::{ErrorResponse, MetricError};
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use topics::Topic;
 
@@ -64,7 +63,10 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
             .map_err(|_| MetricError::PublishSubscribe)?;
 
         loop {
-            let message = subscription.next().await.ok_or(MetricError::Malformed)?;
+            let message = subscription
+                .next_message()
+                .await
+                .ok_or(MetricError::Malformed)?;
 
             match Topic::from_str(message.topic_name()) {
                 Some(Topic::Accepted) => return Ok(()),

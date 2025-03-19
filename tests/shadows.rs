@@ -34,7 +34,6 @@ use embedded_mqtt::{
     self, transport::embedded_nal::NalTransport, Config, DomainBroker, MqttClient, Publish, QoS,
     State, Subscribe, SubscribeTopic,
 };
-use futures::StreamExt;
 use rustot::shadows::{Shadow, ShadowState};
 use rustot_derive::shadow;
 use serde::{Deserialize, Serialize};
@@ -99,7 +98,7 @@ async fn assert_shadow(client: &MqttClient<'static, NoopRawMutex>, expected: ser
         .await
         .unwrap();
 
-    let current_shadow = get_shadow_sub.next().await.unwrap();
+    let current_shadow = get_shadow_sub.next_message().await.unwrap();
 
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(current_shadow.payload())

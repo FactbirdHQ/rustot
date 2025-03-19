@@ -8,7 +8,6 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
     DeferredPayload, EncodingError, Publish, Subscribe, SubscribeTopic, Subscription,
 };
-use futures::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub use error::Error;
@@ -137,7 +136,7 @@ impl FleetProvisioner {
     {
         let mut create_subscription = Self::begin(mqtt, csr, payload_format).await?;
         let mut message = create_subscription
-            .next()
+            .next_message()
             .await
             .ok_or(Error::InvalidState)?;
 
@@ -246,7 +245,7 @@ impl FleetProvisioner {
         create_subscription.unsubscribe().await?;
 
         let mut message = register_subscription
-            .next()
+            .next_message()
             .await
             .ok_or(Error::InvalidState)?;
 
