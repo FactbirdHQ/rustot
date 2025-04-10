@@ -57,6 +57,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         let delta_subscription = match sub_ref.deref_mut() {
             Some(sub) => sub,
             None => {
+                info!("Subscribing to delta topic");
                 self.mqtt.wait_connected().await;
 
                 let sub = self
@@ -83,10 +84,14 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
             }
         };
 
-        let delta_message = delta_subscription
-            .next_message()
-            .await
-            .ok_or(Error::InvalidPayload)?;
+        let delta_message = match delta_subscription.next_message().await {
+            Some(msg) => msg,
+            None => {
+                // Clear subscription if we get clean session
+                sub_ref.take();
+                return Err(Error::InvalidPayload);
+            }
+        };
 
         // Update the device's state to match the desired state in the
         // message body.
