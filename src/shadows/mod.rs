@@ -36,7 +36,7 @@ pub trait ShadowState: ShadowPatch {
 
 pub trait ShadowPatch: Default + Clone + Sized {
     // Contains all fields from `Self` as optionals
-    type Delta: DeserializeOwned + Clone;
+    type Delta: DeserializeOwned + Serialize + Clone + Default;
 
     // Contains all fields from `Delta` + additional optional fields
     type Reported: From<Self> + Serialize + Default;
@@ -104,29 +104,28 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
             serde_json_core::from_slice::<DeltaResponse<S::Delta>>(delta_message.payload())
                 .map_err(|_| Error::InvalidPayload)?;
 
-        if let Some(client) = delta.client_token {
-            if client.eq(self.mqtt.client_id()) {
-                warn!("DELTA CLIENT TOKEN WAS == TO DEVICE CLIENT ID");
-                return Ok(None);
-            }
-        }
-
         Ok(delta.state)
     }
 
     /// Internal helper function for applying a delta state to the actual shadow
     /// state, and update the cloud shadow.
-    async fn report(&self, reported: S::Reported) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
+    async fn update_shadow(
+        &self,
+        desired: Option<S::Delta>,
+        reported: Option<S::Reported>,
+    ) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
         debug!(
             "[{:?}] Updating reported shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
 
-        let request: Request<'_, S::Reported> = Request {
-            state: RequestState {
-                // desired: None,
-                reported: Some(reported),
-            },
+        if desired.is_some() && reported.is_some() {
+            // Do not edit both reported and desired at the same time
+            return Err(Error::ShadowError(error::ShadowError::Forbidden));
+        }
+
+        let request: Request<'_, S::Delta, S::Reported> = Request {
+            state: RequestState { desired, reported },
             client_token: Some(self.mqtt.client_id()),
             version: None,
         };
@@ -146,6 +145,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
 
         //*** WAIT RESPONSE ***/
         debug!("Wait for Accepted or Rejected");
+
         loop {
             let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
@@ -272,7 +272,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
 
-        self.report(S::Reported::default()).await
+        self.update_shadow(None, Some(S::Reported::default())).await
     }
 
     /// This function will subscribe to accepted and rejected topics and then do a publish.
@@ -390,7 +390,9 @@ where
 
             state.apply_patch(delta.clone());
 
-            self.handler.report(state.clone().into()).await?;
+            self.handler
+                .update_shadow(None, Some(state.clone().into()))
+                .await?;
 
             self.dao.lock().await.write(&state).await?;
         }
@@ -412,7 +414,9 @@ where
         if let Some(delta) = delta_state.delta {
             state.apply_patch(delta.clone());
             self.dao.lock().await.write(&state).await?;
-            self.handler.report(state.clone().into()).await?;
+            self.handler
+                .update_shadow(None, Some(state.clone().into()))
+                .await?;
         }
 
         Ok(state)
@@ -422,7 +426,7 @@ where
     pub async fn report(&self) -> Result<(), Error> {
         let state = self.dao.lock().await.read().await?;
 
-        self.handler.report(state.into()).await?;
+        self.handler.update_shadow(None, Some(state.into())).await?;
         Ok(())
     }
 
@@ -442,11 +446,28 @@ where
         let mut state = self.dao.lock().await.read().await?;
         f(&state, &mut update);
 
-        let response = self.handler.report(update).await?;
+        let response = self.handler.update_shadow(None, Some(update)).await?;
 
         if let Some(delta) = response.delta {
             state.apply_patch(delta.clone());
 
+            self.dao.lock().await.write(&state).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Updating desired should only be done on user requests e.g. button press or similar.
+    /// State changes within the device should only change reported state.
+    pub async fn update_desired<F: FnOnce(&mut S::Delta)>(&self, f: F) -> Result<(), Error> {
+        let mut update = S::Delta::default();
+        f(&mut update);
+
+        let response = self.handler.update_shadow(Some(update), None).await?;
+
+        if let Some(delta) = response.delta {
+            let mut state = self.dao.lock().await.read().await?;
+            state.apply_patch(delta.clone());
             self.dao.lock().await.write(&state).await?;
         }
 
@@ -498,7 +519,9 @@ where
 
             self.state.apply_patch(delta.clone());
 
-            self.handler.report(self.state.clone().into()).await?;
+            self.handler
+                .update_shadow(None, Some(self.state.clone().into()))
+                .await?;
         }
 
         Ok((&self.state, delta))
@@ -511,7 +534,9 @@ where
 
     /// Report the state of the shadow.
     pub async fn report(&mut self) -> Result<(), Error> {
-        self.handler.report(self.state.clone().into()).await?;
+        self.handler
+            .update_shadow(None, Some(self.state.clone().into()))
+            .await?;
         Ok(())
     }
 
@@ -524,7 +549,7 @@ where
         let mut update = S::Reported::default();
         f(&self.state, &mut update);
 
-        let response = self.handler.report(update).await?;
+        let response = self.handler.update_shadow(None, Some(update)).await?;
 
         if let Some(delta) = response.delta {
             self.state.apply_patch(delta.clone());
@@ -540,7 +565,9 @@ where
         debug!("Persisting new state after get shadow request");
         if let Some(delta) = delta_state.delta {
             self.state.apply_patch(delta.clone());
-            self.handler.report(self.state.clone().into()).await?;
+            self.handler
+                .update_shadow(None, Some(self.state.clone().into()))
+                .await?;
         }
 
         Ok(&self.state)
