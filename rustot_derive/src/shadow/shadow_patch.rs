@@ -67,18 +67,18 @@ pub fn shadow_patch(attr: TokenStream, input: TokenStream) -> TokenStream {
     let reported = format_ident!("Reported");
     let reported_ident = format_ident!("Reported{}", &original_ident);
 
-    let desired_tokens = {
-        let mut auto_derives = vec!["Serialize", "Deserialize", "Clone"];
-        if !macro_params.no_default.unwrap_or_default() {
-            auto_derives.push("Default");
-        }
+    let mut auto_derives = vec!["Serialize", "Deserialize", "Clone"];
+    if !macro_params.no_default.unwrap_or_default() {
+        auto_derives.push("Default");
+    }
 
+    let desired_tokens = {
         ShadowGenerator::new(full_input.clone())
             .modifier(&mut ReportOnlyModifier)
             .modifier(&mut RenameModifier(original_ident.clone()))
             .modifier(&mut WithDerivesModifier(
                 macro_params.auto_derive.unwrap_or(true),
-                auto_derives,
+                auto_derives.clone(),
             ))
             .generator(&mut DefaultGenerator(
                 macro_params.no_default.unwrap_or_default(),
@@ -103,7 +103,10 @@ pub fn shadow_patch(attr: TokenStream, input: TokenStream) -> TokenStream {
             )))
             .modifier(&mut WithDerivesModifier(
                 macro_params.auto_derive.unwrap_or(true),
-                vec!["Deserialize", "Clone"],
+                auto_derives,
+            ))
+            .generator(&mut DefaultGenerator(
+                macro_params.no_default.unwrap_or_default(),
             ))
             .generator(&mut shadowpatch_impl_generator)
             .variant_or_field_visitor(&mut RemoveShadowAttributesVisitor)
