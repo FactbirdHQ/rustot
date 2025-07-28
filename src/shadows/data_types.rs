@@ -27,9 +27,9 @@ impl<T> From<T> for Patch<T> {
 }
 
 #[derive(Serialize)]
-pub struct RequestState<R> {
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // pub desired: Option<D>,
+pub struct RequestState<D, R> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desired: Option<D>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reported: Option<R>,
 }
@@ -56,8 +56,8 @@ pub struct DeltaState<D, R> {
 ///   if the specified version matches the latest version it has.
 #[derive(Serialize)]
 #[serde(default)]
-pub struct Request<'a, R> {
-    pub state: RequestState<R>,
+pub struct Request<'a, D, R> {
+    pub state: RequestState<D, R>,
 
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
