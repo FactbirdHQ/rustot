@@ -59,7 +59,7 @@ fn nested() {
     assert_eq!(Foo::MAX_PAYLOAD_SIZE, 256);
 
     assert_eq!(
-        ReportedFoo::from(foo.clone()),
+        foo.clone().into_reported(),
         ReportedFoo {
             bar: Some(56),
             baz: Some("HelloWorld".to_string()),
@@ -151,7 +151,7 @@ fn simple_enum() {
         bar: Some(Either::B),
     });
 
-    assert_eq!(ReportedFoo::from(desired), reported);
+    assert_eq!(desired.into_reported(), reported);
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn complex_enum() {
             bar: Either::D(InnerA { hello: 56 }, InnerB::default())
         }
     );
-    assert_eq!(ReportedFoo::from(desired), reported);
+    assert_eq!(desired.into_reported(), reported);
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn manual_reported() {
             Self {
                 bar: Some(v.bar),
                 baz: Some(v.baz),
-                inner: Some(v.inner.into()),
+                inner: Some(v.inner.into_reported()),
                 ..Default::default()
             }
         }

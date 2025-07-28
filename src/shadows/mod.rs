@@ -3,6 +3,9 @@ pub mod data_types;
 pub mod error;
 pub mod topics;
 
+#[cfg(feature = "std")]
+mod alloc_impl;
+
 pub use rustot_derive;
 
 use core::{marker::PhantomData, ops::DerefMut};
@@ -39,9 +42,11 @@ pub trait ShadowPatch: Default + Clone + Sized {
     type Delta: DeserializeOwned + Clone;
 
     // Contains all fields from `Delta` + additional optional fields
-    type Reported: From<Self> + Serialize + Default;
+    type Reported: Serialize + Default;
 
     fn apply_patch(&mut self, delta: Self::Delta);
+
+    fn into_reported(self) -> Self::Reported;
 }
 
 struct ShadowHandler<'a, 'm, M: RawMutex, S> {
@@ -385,7 +390,7 @@ where
 
             state.apply_patch(delta.clone());
 
-            self.handler.report(state.clone().into()).await?;
+            self.handler.report(state.clone().into_reported()).await?;
 
             self.dao.lock().await.write(&state).await?;
         }
@@ -407,7 +412,7 @@ where
         if let Some(delta) = delta_state.delta {
             state.apply_patch(delta.clone());
             self.dao.lock().await.write(&state).await?;
-            self.handler.report(state.clone().into()).await?;
+            self.handler.report(state.clone().into_reported()).await?;
         }
 
         Ok(state)
@@ -417,7 +422,7 @@ where
     pub async fn report(&self) -> Result<(), Error> {
         let state = self.dao.lock().await.read().await?;
 
-        self.handler.report(state.into()).await?;
+        self.handler.report(state.into_reported()).await?;
         Ok(())
     }
 
@@ -426,12 +431,6 @@ where
     /// This function will update the desired state of the shadow in the cloud,
     /// and depending on whether the state update is rejected or accepted, it
     /// will automatically update the local version after response
-    ///
-    /// The returned `bool` from the update closure will determine whether the
-    /// update is persisted using the `DAO`, or just updated in the cloud. This
-    /// can be handy for activity or status field updates that are not relevant
-    /// to store persistent on the device, but are required to be part of the
-    /// same cloud shadow.
     pub async fn update<F: FnOnce(&S, &mut S::Reported)>(&self, f: F) -> Result<(), Error> {
         let mut update = S::Reported::default();
         let mut state = self.dao.lock().await.read().await?;
@@ -493,7 +492,9 @@ where
 
             self.state.apply_patch(delta.clone());
 
-            self.handler.report(self.state.clone().into()).await?;
+            self.handler
+                .report(self.state.clone().into_reported())
+                .await?;
         }
 
         Ok((&self.state, delta))
@@ -506,7 +507,9 @@ where
 
     /// Report the state of the shadow.
     pub async fn report(&mut self) -> Result<(), Error> {
-        self.handler.report(self.state.clone().into()).await?;
+        self.handler
+            .report(self.state.clone().into_reported())
+            .await?;
         Ok(())
     }
 
@@ -535,7 +538,9 @@ where
         debug!("Persisting new state after get shadow request");
         if let Some(delta) = delta_state.delta {
             self.state.apply_patch(delta.clone());
-            self.handler.report(self.state.clone().into()).await?;
+            self.handler
+                .report(self.state.clone().into_reported())
+                .await?;
         }
 
         Ok(&self.state)

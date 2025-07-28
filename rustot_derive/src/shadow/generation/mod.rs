@@ -6,10 +6,12 @@ use generator::Generator;
 use modifier::Modifier;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{punctuated::Punctuated, Data, DeriveInput, Path, Token};
+use syn::{punctuated::Punctuated, spanned::Spanned as _, Data, DeriveInput, Path, Token};
 use variant_or_field_visitor::{
     borrow_fields_mut, get_attr, has_shadow_arg, is_primitive, VariantOrFieldVisitor,
 };
+
+use crate::shadow::generation::variant_or_field_visitor::borrow_fields;
 
 use super::CFG_ATTRIBUTE;
 
@@ -92,6 +94,40 @@ impl GenerateShadowPatchImplVisitor {
             apply_patch_impl: quote! {},
         }
     }
+
+    fn variables_actions<'a>(
+        fields: impl Iterator<Item = &'a syn::Field>,
+    ) -> (
+        Punctuated<syn::Ident, Token![,]>,
+        Punctuated<TokenStream, Token![,]>,
+    ) {
+        fields.enumerate().fold(
+            (Punctuated::new(), Punctuated::new()),
+            |(mut variables, mut actions), (i, field)| {
+                let var_ident = field.ident.clone().unwrap_or_else(|| {
+                    syn::Ident::new(&format!("{}", (b'a' + i as u8) as char), field.span())
+                });
+
+                let action = if is_primitive(&field.ty) || has_shadow_arg(&field.attrs, "leaf") {
+                    quote! {Some(#var_ident)}
+                } else {
+                    quote! {Some(#var_ident.into_reported())}
+                };
+
+                actions.push(
+                    field
+                        .ident
+                        .as_ref()
+                        .map(|ident| quote! {#ident: #action})
+                        .unwrap_or(action),
+                );
+
+                variables.push(var_ident);
+
+                (variables, actions)
+            },
+        )
+    }
 }
 
 impl Generator for GenerateShadowPatchImplVisitor {
@@ -116,6 +152,71 @@ impl Generator for GenerateShadowPatchImplVisitor {
             }
         };
 
+        let into_reported_impl = match (&original.data, &output.data) {
+            (Data::Struct(data_struct_old), Data::Struct(data_struct_new)) => {
+                let original_fields = borrow_fields(data_struct_old);
+                let new_fields = borrow_fields(data_struct_new);
+
+                let from_fields = original_fields.iter().fold(quote! {}, |acc, field| {
+                    let is_leaf = is_primitive(&field.ty) || has_shadow_arg(&field.attrs, "leaf");
+
+                    let has_new_field = new_fields
+                        .iter()
+                        .find(|&f| f.ident == field.ident)
+                        .is_some();
+
+                    let cfg_attr = get_attr(&field.attrs, CFG_ATTRIBUTE);
+
+                    let ident = &field.ident;
+                    if !has_new_field {
+                        quote! { #acc #cfg_attr #ident: None, }
+                    } else if is_leaf {
+                        quote! { #acc #cfg_attr #ident: Some(self.#ident), }
+                    } else {
+                        quote! { #acc #cfg_attr #ident: Some(self.#ident.into_reported()), }
+                    }
+                });
+
+                quote! {
+                    Self::Reported {
+                        #from_fields
+                    }
+                }
+            }
+            (Data::Enum(data_struct_old), Data::Enum(_)) => {
+                let match_arms = data_struct_old
+                            .variants
+                            .iter()
+                            .fold(Punctuated::<TokenStream, Token![,]>::new(), |mut acc, variant| {
+                                let variant_ident = &variant.ident;
+                                let cfg_attr = get_attr(&variant.attrs, CFG_ATTRIBUTE);
+
+                                acc.push(match &variant.fields {
+                                    syn::Fields::Named(fields_named) => {
+                                        let (variables, actions) = Self::variables_actions(fields_named.named.iter());
+                                        quote! {#cfg_attr #orig_name::#variant_ident { #variables } => Self::Reported::#variant_ident { #actions }}
+                                    }
+                                    syn::Fields::Unnamed(fields_unnamed) => {
+                                        let (variables, actions) = Self::variables_actions(fields_unnamed.unnamed.iter());
+                                        quote! {#cfg_attr #orig_name::#variant_ident ( #variables ) => Self::Reported::#variant_ident ( #actions )}
+                                    }
+                                    syn::Fields::Unit => {
+                                        quote! {#cfg_attr #orig_name::#variant_ident => Self::Reported::#variant_ident}
+                                    }
+                                });
+
+                                acc
+                            });
+
+                quote! {
+                    match self {
+                        #match_arms
+                    }
+                }
+            }
+            _ => panic!(),
+        };
+
         quote! {
             impl #impl_generics rustot::shadows::ShadowPatch for #orig_name #ty_generics #where_clause {
                 type Delta = #delta_name #ty_generics;
@@ -123,6 +224,10 @@ impl Generator for GenerateShadowPatchImplVisitor {
 
                 fn apply_patch(&mut self, delta: Self::Delta) {
                     #apply_patch_impl
+                }
+
+                fn into_reported(self) -> Self::Reported {
+                    #into_reported_impl
                 }
             }
         }

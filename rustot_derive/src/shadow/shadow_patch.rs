@@ -6,7 +6,7 @@ use syn::{
 };
 
 use crate::shadow::generation::{
-    generator::{DefaultGenerator, GenerateFromImpl, NewGenerator},
+    generator::{DefaultGenerator, NewGenerator},
     modifier::{RenameModifier, ReportOnlyModifier, WithDerivesModifier},
     variant_or_field_visitor::{
         AddSerdeSkipAttribute, RemoveShadowAttributesVisitor, SetNewTypeVisitor,
@@ -125,7 +125,6 @@ pub fn shadow_patch(attr: TokenStream, input: TokenStream) -> TokenStream {
             .variant_or_field_visitor(&mut RemoveShadowAttributesVisitor)
             .generator(&mut NewGenerator)
             .modifier(&mut ReportOnlyModifier)
-            .generator(&mut GenerateFromImpl)
             .finalize()
     };
 
