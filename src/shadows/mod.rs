@@ -300,14 +300,14 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
                         SubscribeTopic::builder()
                             .topic_path(
                                 accepted
-                                    .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
+                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
                                     .as_str(),
                             )
                             .build(),
                         SubscribeTopic::builder()
                             .topic_path(
                                 rejected
-                                    .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
+                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
                                     .as_str(),
                             )
                             .build(),
