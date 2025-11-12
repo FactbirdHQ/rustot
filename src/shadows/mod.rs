@@ -100,9 +100,15 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
 
-        let (delta, _) =
-            serde_json_core::from_slice::<DeltaResponse<S::Delta>>(delta_message.payload())
-                .map_err(|_| Error::InvalidPayload)?;
+        // Buffer to temporarily hold escaped characters data
+        let mut buf = [0u8; 64];
+
+        // Use from_slice_escaped to properly handle escaped characters
+        let (delta, _) = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
+            delta_message.payload(),
+            &mut buf,
+        )
+        .map_err(|_| Error::InvalidPayload)?;
 
         Ok(delta.state)
     }
@@ -151,10 +157,11 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
 
             match Topic::from_str(S::PREFIX, message.topic_name()) {
                 Some((Topic::UpdateAccepted, _, _)) => {
-                    let (response, _) = serde_json_core::from_slice::<
+                    let mut buf = [0u8; 64];
+                    let (response, _) = serde_json_core::from_slice_escaped::<
                         // FIXME:
                         AcceptedResponse<S::Delta, S::Delta>,
-                    >(message.payload())
+                    >(message.payload(), &mut buf)
                     .map_err(|_| Error::InvalidPayload)?;
 
                     if response.client_token != Some(self.mqtt.client_id()) {
@@ -164,9 +171,12 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
                     return Ok(response.state);
                 }
                 Some((Topic::UpdateRejected, _, _)) => {
-                    let (error_response, _) =
-                        serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                            .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+                    let mut buf = [0u8; 64];
+                    let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
+                        message.payload(),
+                        &mut buf,
+                    )
+                    .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
 
                     if error_response.client_token != Some(self.mqtt.client_id()) {
                         continue;
@@ -200,17 +210,21 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         // Persist shadow and return new shadow
         match Topic::from_str(S::PREFIX, get_message.topic_name()) {
             Some((Topic::GetAccepted, _, _)) => {
-                let (response, _) = serde_json_core::from_slice::<
+                let mut buf = [0u8; 64];
+                let (response, _) = serde_json_core::from_slice_escaped::<
                     AcceptedResponse<S::Delta, S::Delta>,
-                >(get_message.payload())
+                >(get_message.payload(), &mut buf)
                 .map_err(|_| Error::InvalidPayload)?;
 
                 Ok(response.state)
             }
             Some((Topic::GetRejected, _, _)) => {
-                let (error_response, _) =
-                    serde_json_core::from_slice::<ErrorResponse>(get_message.payload())
-                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+                let mut buf = [0u8; 64];
+                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
+                    get_message.payload(),
+                    &mut buf,
+                )
+                .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
 
                 if error_response.code == 404 {
                     debug!(
@@ -249,9 +263,12 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         match Topic::from_str(S::PREFIX, message.topic_name()) {
             Some((Topic::DeleteAccepted, _, _)) => Ok(()),
             Some((Topic::DeleteRejected, _, _)) => {
-                let (error_response, _) =
-                    serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                        .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
+                let mut buf = [0u8; 64];
+                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
+                    message.payload(),
+                    &mut buf,
+                )
+                .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
 
                 Err(Error::ShadowError(
                     error_response
@@ -609,8 +626,59 @@ where
     }
 }
 
-// #[cfg(test)]
-// mod tests {
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+    struct TestDelta {
+        field: heapless::String<20>,
+    }
+
+    #[test]
+    fn test_from_slice_escaped() {
+        let delta_message = b"{\"field\":\"\\\\HELLO WORLD\"}"; // FROM 4 backslashes in my string is saved in json as 2 backslashes which will be deserialized to 1 backslash
+        let mut buf = [0u8; 64];
+
+        let (delta, _) = serde_json_core::from_slice_escaped::<TestDelta>(delta_message, &mut buf)
+            .expect("Failed to deserialize");
+
+        println!("{}", delta.field);
+
+        assert_eq!(delta.field.as_str(), "\\HELLO WORLD");
+    }
+
+    #[test]
+    fn test_to_slice_escaping() {
+        // Create a struct with a backslash in the string
+        let mut test_data = TestDelta::default();
+        test_data.field.push_str("\\HELLO WORLD").unwrap();
+
+        let mut output = [0u8; 128];
+        let bytes_written =
+            serde_json_core::to_slice(&test_data, &mut output).expect("Failed to serialize");
+
+        let serialized = &output[..bytes_written];
+        let json_str = core::str::from_utf8(serialized).unwrap();
+        println!("Serialized JSON: {}", json_str);
+
+        // The JSON should contain \\ (escaped backslash)
+        assert!(
+            json_str.contains("\\\\"),
+            "JSON should contain escaped backslash"
+        );
+        assert_eq!(json_str, r#"{"field":"\\HELLO WORLD"}"#);
+
+        // Now test round-trip: deserialize it back
+        let mut buf = [0u8; 64];
+        let (deserialized, _) =
+            serde_json_core::from_slice_escaped::<TestDelta>(serialized, &mut buf)
+                .expect("Failed to deserialize");
+
+        assert_eq!(deserialized.field.as_str(), "\\HELLO WORLD");
+    }
+}
+
 //     use super::*;
 //     use crate as rustot;
 //     use crate::test::MockMqtt;
