@@ -52,65 +52,74 @@ struct ShadowHandler<'a, 'm, M: RawMutex, S> {
 
 impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
     async fn handle_delta(&self) -> Result<Option<S::Delta>, Error> {
-        let mut sub_ref = self.subscription.lock().await;
+        // Loop to automatically retry on clean session
+        loop {
+            let mut sub_ref = self.subscription.lock().await;
 
-        let delta_subscription = match sub_ref.deref_mut() {
-            Some(sub) => sub,
-            None => {
-                info!("Subscribing to delta topic");
-                self.mqtt.wait_connected().await;
+            let delta_subscription = match sub_ref.deref_mut() {
+                Some(sub) => sub,
+                None => {
+                    info!("Subscribing to delta topic");
+                    self.mqtt.wait_connected().await;
 
-                let sub = self
-                    .mqtt
-                    .subscribe::<2>(
-                        Subscribe::builder()
-                            .topics(&[SubscribeTopic::builder()
-                                .topic_path(
-                                    topics::Topic::UpdateDelta
-                                        .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
-                                        .as_str(),
-                                )
-                                .build()])
-                            .build(),
-                    )
-                    .await
-                    .map_err(Error::MqttError)?;
+                    let sub = self
+                        .mqtt
+                        .subscribe::<2>(
+                            Subscribe::builder()
+                                .topics(&[SubscribeTopic::builder()
+                                    .topic_path(
+                                        topics::Topic::UpdateDelta
+                                            .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
+                                            .as_str(),
+                                    )
+                                    .build()])
+                                .build(),
+                        )
+                        .await
+                        .map_err(Error::MqttError)?;
 
-                let _ = sub_ref.insert(sub);
+                    let _ = sub_ref.insert(sub);
 
-                let delta_state = self.get_shadow().await?;
+                    let delta_state = self.get_shadow().await?;
 
-                return Ok(delta_state.delta);
-            }
-        };
+                    return Ok(delta_state.delta);
+                }
+            };
 
-        let delta_message = match delta_subscription.next_message().await {
-            Some(msg) => msg,
-            None => {
-                // Clear subscription if we get clean session
-                sub_ref.take();
-                return Err(Error::InvalidPayload);
-            }
-        };
+            let delta_message = match delta_subscription.next_message().await {
+                Some(msg) => msg,
+                None => {
+                    // Clear subscription if we get clean session
+                    info!(
+                        "[{:?}] Clean session detected, resubscribing to delta topic",
+                        S::NAME.unwrap_or(CLASSIC_SHADOW)
+                    );
+                    sub_ref.take();
+                    // Drop the lock and continue the loop to retry
+                    drop(sub_ref);
+                    continue;
+                }
+            };
 
-        // Update the device's state to match the desired state in the
-        // message body.
-        debug!(
-            "[{:?}] Received shadow delta event.",
-            S::NAME.unwrap_or(CLASSIC_SHADOW),
-        );
+            // Update the device's state to match the desired state in the
+            // message body.
+            debug!(
+                "[{:?}] Received shadow delta event.",
+                S::NAME.unwrap_or(CLASSIC_SHADOW),
+            );
 
-        // Buffer to temporarily hold escaped characters data
-        let mut buf = [0u8; 64];
+            // Buffer to temporarily hold escaped characters data
+            let mut buf = [0u8; 64];
 
-        // Use from_slice_escaped to properly handle escaped characters
-        let (delta, _) = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
-            delta_message.payload(),
-            &mut buf,
-        )
-        .map_err(|_| Error::InvalidPayload)?;
+            // Use from_slice_escaped to properly handle escaped characters
+            let (delta, _) = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
+                delta_message.payload(),
+                &mut buf,
+            )
+            .map_err(|_| Error::InvalidPayload)?;
 
-        Ok(delta.state)
+            return Ok(delta.state);
+        }
     }
 
     /// Internal helper function for applying a delta state to the actual shadow
