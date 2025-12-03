@@ -6,7 +6,6 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_mqtt::{
     DeferredPayload, EncodingError, MqttClient, Publish, Subscribe, SubscribeTopic, Subscription,
 };
-use futures::StreamExt;
 
 use crate::ota::error::OtaError;
 use crate::ota::ProgressState;
@@ -126,7 +125,11 @@ impl OtaTopic<'_> {
 
 impl<M: RawMutex> BlockTransfer for Subscription<'_, '_, M, 1> {
     async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError> {
-        Ok(self.next().await)
+        let next = self.next_message().await;
+        if next.is_none() {
+            warn!("[OTA] Data stream ended (subscription closed due to clean session/disconnect)");
+        }
+        Ok(next)
     }
 }
 
@@ -152,9 +155,16 @@ impl<'a, M: RawMutex> DataInterface for MqttClient<'a, M> {
 
         debug!("Subscribing to: [{:?}]", &topic_path);
 
-        Ok(self
+        let sub = self
             .subscribe::<1>(Subscribe::builder().topics(&topics).build())
-            .await?)
+            .await?;
+
+        info!(
+            "[OTA] Subscribed to data stream {}",
+            file_ctx.stream_name.as_str()
+        );
+
+        Ok(sub)
     }
 
     /// Request file block by publishing to the get stream topic
@@ -190,7 +200,13 @@ impl<'a, M: RawMutex> DataInterface for MqttClient<'a, M> {
             "Requesting more file blocks. Remaining: {}",
             progress_state.request_block_remaining
         );
-
+        info!(
+            "[OTA] Requesting blocks stream={} offset={} bitmap_len={} blocks_remaining={}",
+            file_ctx.stream_name.as_str(),
+            progress_state.block_offset,
+            progress_state.bitmap.len(),
+            progress_state.blocks_remaining
+        );
         self.publish(
             Publish::builder()
                 .topic_name(

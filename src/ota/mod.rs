@@ -48,6 +48,10 @@ impl Updater {
         pal: &mut impl pal::OtaPal,
         config: &config::Config,
     ) -> Result<(), error::OtaError> {
+        info!(
+            "[OTA] Starting perform_ota for job={} stream={} size={}",
+            file_ctx.job_name, file_ctx.stream_name, file_ctx.filesize
+        );
         let progress_state = Mutex::new(ProgressState {
             total_blocks: file_ctx.filesize.div_ceil(config.block_size),
             blocks_remaining: file_ctx.filesize.div_ceil(config.block_size),
@@ -95,20 +99,23 @@ impl Updater {
 
             info!("Initialized file handler! Requesting file blocks");
 
-            // Prepare the storage layer on receiving a new file
-            let mut subscription = data.init_file_transfer(&file_ctx).await?;
-
-            {
-                let mut progress = progress_state.lock().await;
-                data.request_file_blocks(&file_ctx, &mut progress, config)
-                    .await?;
-            }
-
-            info!("Awaiting file blocks!");
-
+            // Outer loop to handle resubscription on clean session
             loop {
-                // Select over the futures
-                match subscription.next_block().await {
+                // Prepare the storage layer on receiving a new file
+                let mut subscription = data.init_file_transfer(&file_ctx).await?;
+
+                {
+                    let mut progress = progress_state.lock().await;
+                    data.request_file_blocks(&file_ctx, &mut progress, config)
+                        .await?;
+                }
+
+                info!("Awaiting file blocks!");
+
+                // Inner loop to process blocks
+                loop {
+                    // Select over the futures
+                    match subscription.next_block().await {
                     Ok(Some(mut payload)) => {
                         // Decode the file block received
                         let mut progress = progress_state.lock().await;
@@ -183,20 +190,27 @@ impl Updater {
                         }
                     }
                     Ok(None) => {
-                        error!("Stream ended unexpectedly");
-                        // Handle the case where next_block returns None,
-                        // this might mean the stream has ended unexpectedly.
-                        todo!();
+                        warn!("[OTA] Data stream subscription ended (clean session/disconnect). Resubscribing and resuming...");
+
+                        let blocks_remaining = {
+                            let progress = progress_state.lock().await;
+                            progress.blocks_remaining
+                        };
+
+                        info!("[OTA] Resuming OTA: {} blocks remaining", blocks_remaining);
+
+                        // Break inner loop to trigger resubscription in outer loop
+                        break;
                     }
 
                     // Handle status update future results
                     Err(e) => {
                         error!("Status update error: {:?}", e);
-                        // Handle the error appropriately.
-                        todo!();
+                        return Err(e);
                     }
                 }
-            }
+            } // End of inner block processing loop
+            } // End of outer resubscribe loop
         };
 
         let (data_res, _) = embassy_futures::join::join(
@@ -224,6 +238,7 @@ impl Updater {
                 Ok(())
             }
             Err(error::OtaError::MomentumAbort) => {
+                warn!("[OTA] Momentum abort triggered");
                 job_updater
                     .set_image_state_with_reason(
                         pal,

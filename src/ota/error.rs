@@ -13,6 +13,7 @@ pub enum OtaError {
     BlockOutOfRange,
     ZeroFileSize,
     Overflow,
+    DataStreamEnded,
     UnexpectedTopic,
     InvalidFile,
     UpdateRejected(ErrorCode),
