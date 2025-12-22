@@ -450,7 +450,20 @@ where
 
     /// Report the state of the shadow.
     pub async fn report(&self) -> Result<(), Error> {
-        let state = self.dao.lock().await.read().await?;
+        let mut dao = self.dao.lock().await;
+
+        let state = match dao.read().await {
+            Ok(state) => state,
+            Err(_) => {
+                error!("Could not read state from flash writing default");
+                let state = S::default();
+                dao.write(&state).await?;
+                state
+            }
+        };
+
+        // Drop the lock to avoid deadlock
+        drop(dao);
 
         self.handler.update_shadow(None, Some(state.into())).await?;
         Ok(())

@@ -216,7 +216,7 @@ impl FleetProvisioner {
         debug!("Starting RegisterThing");
 
         let mut register_subscription = mqtt
-            .subscribe::<1>(
+            .subscribe::<2>(
                 Subscribe::builder()
                     .topics(&[SubscribeTopic::builder()
                         .topic_path(
@@ -224,7 +224,15 @@ impl FleetProvisioner {
                                 .format::<150>()?
                                 .as_str(),
                         )
-                        .build()])
+                        .build(),
+                        SubscribeTopic::builder()
+                        .topic_path(
+                            Topic::RegisterThingRejected(template_name, payload_format)
+                                .format::<150>()?
+                                .as_str(),
+                        )
+                        .build()
+                        ])
                     .build(),
             )
             .await?;
