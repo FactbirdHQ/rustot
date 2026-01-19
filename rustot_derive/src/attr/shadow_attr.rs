@@ -136,13 +136,20 @@ mod tests {
 
     #[test]
     fn test_parse_shadow_params_full() {
-        let params: ShadowParams =
-            syn::parse2(quote::quote!(name = "test", topic_prefix = "$custom", max_payload_size = 1024))
-                .unwrap();
+        let params: ShadowParams = syn::parse2(quote::quote!(
+            name = "test",
+            topic_prefix = "$custom",
+            max_payload_size = 1024
+        ))
+        .unwrap();
         assert_eq!(params.name.unwrap().value(), "test");
         assert_eq!(params.topic_prefix.unwrap().value(), "$custom");
         assert_eq!(
-            params.max_payload_size.unwrap().base10_parse::<usize>().unwrap(),
+            params
+                .max_payload_size
+                .unwrap()
+                .base10_parse::<usize>()
+                .unwrap(),
             1024
         );
     }
@@ -164,8 +171,7 @@ mod tests {
 
     #[test]
     fn test_unknown_attribute_error() {
-        let result: syn::Result<ShadowParams> =
-            syn::parse2(quote::quote!(unknown_attr = "value"));
+        let result: syn::Result<ShadowParams> = syn::parse2(quote::quote!(unknown_attr = "value"));
         match result {
             Err(err) => assert!(err.to_string().contains("unknown shadow attribute")),
             Ok(_) => panic!("Expected error for unknown attribute"),

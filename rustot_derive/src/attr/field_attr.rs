@@ -41,7 +41,6 @@ impl FieldAttrs {
 
         result
     }
-
 }
 
 /// Get a specific attribute by name from an attribute list
@@ -82,5 +81,4 @@ mod tests {
         assert!(field_attrs.leaf);
         assert!(field_attrs.report_only);
     }
-
 }

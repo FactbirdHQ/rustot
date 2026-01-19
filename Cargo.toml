@@ -29,6 +29,10 @@ serde = { version = "1.0", default-features = false, features = ["derive"] }
 minicbor = { version = "0.25", optional = true }
 minicbor-serde = { version = "0.3.2", optional = true }
 
+# KV-based shadow storage dependencies
+sequential-storage = { version = "7.0", features = ["heapless"] }
+postcard = { version = "1.1", default-features = false, features = ["experimental-derive"] }
+miniconf = { version = "0.20", default-features = false }
 
 serde-json-core = { version = "0.6" }
 rustot-derive = { path = "rustot_derive", version = "0.2.1" }
@@ -44,6 +48,11 @@ embassy-futures = "0.1.2"
 log = { version = "0.4", default-features = false, optional = true }
 defmt = { version = "0.3", optional = true }
 bon = { version = "3.3.2", default-features = false }
+
+# std feature dependencies (for FileKVStore)
+tokio = { version = "1", features = ["fs", "io-util", "sync"], optional = true }
+serde_json = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
 
 [dev-dependencies]
 native-tls = { version = "0.2" }
@@ -83,7 +92,7 @@ ota_mqtt_data = ["dep:minicbor", "dep:minicbor-serde"]
 
 ota_http_data = []
 
-std = ["serde/std", "minicbor-serde?/std"]
+std = ["serde/std", "minicbor-serde?/std", "dep:tokio", "dep:serde_json", "dep:base64"]
 
 defmt = [
     "dep:defmt",

@@ -8,7 +8,10 @@ use quote::quote;
 use syn::DeriveInput;
 
 use attr::{ShadowParams, ShadowPatchParams};
-use codegen::{generate_enum_default_impl, generate_shadow_patch_impl, generate_shadow_patch_types, generate_shadow_state_impl, TypeDefConfig};
+use codegen::{
+    generate_enum_default_impl, generate_shadow_patch_impl, generate_shadow_patch_types,
+    generate_shadow_state_impl, TypeDefConfig,
+};
 use transform::validate_no_optional_fields;
 
 /// The `#[shadow]` attribute macro generates AWS IoT Shadow types and implementations.

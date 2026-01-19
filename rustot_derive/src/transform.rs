@@ -176,7 +176,10 @@ fn update_derives(attrs: &mut Vec<Attribute>, config: &TypeTransformConfig) {
         if config.is_enum && *derive == "Default" {
             continue;
         }
-        all_derives.push(Path::from(Ident::new(derive, proc_macro2::Span::call_site())));
+        all_derives.push(Path::from(Ident::new(
+            derive,
+            proc_macro2::Span::call_site(),
+        )));
     }
 
     // Preserve existing derives that aren't in our list
