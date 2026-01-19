@@ -364,9 +364,7 @@ mod tests {
 
         // Remove device/a and device/b
         let removed = kv
-            .remove_if("device", |key| {
-                key.ends_with("/a") || key.ends_with("/b")
-            })
+            .remove_if("device", |key| key.ends_with("/a") || key.ends_with("/b"))
             .await
             .unwrap();
 
