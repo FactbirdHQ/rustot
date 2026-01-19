@@ -3,13 +3,11 @@ pub mod data_types;
 pub mod error;
 pub mod topics;
 
-// New KV-based shadow storage modules (Phase 1)
+// KV-based shadow storage modules
 pub mod commit;
 pub mod hash;
 pub mod kv_store;
 pub mod migration;
-
-// Phase 2: JSON scanning utilities
 pub mod scan;
 
 pub use rustot_derive;
@@ -35,7 +33,7 @@ pub use hash::{fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64, FNV1A_INIT};
 // Re-export new error types
 pub use error::{EnumFieldError, EnumFieldMeta, KeySet, KvError, ScanError};
 
-// Re-export JSON scanning utilities (Phase 2)
+// Re-export JSON scanning utilities
 pub use scan::TaggedJsonScan;
 
 use core::{future::Future, marker::PhantomData, ops::DerefMut};
@@ -75,6 +73,481 @@ pub trait ShadowPatch: Default + Clone + Sized {
     type Reported: From<Self> + Serialize + Default;
 
     fn apply_patch(&mut self, delta: Self::Delta);
+}
+
+// =============================================================================
+// KV-based Shadow Storage Traits
+// =============================================================================
+
+/// Trait for types that can serialize their fields into an existing map.
+///
+/// Used for flat union serialization of adjacently-tagged enum Reported types.
+/// When reporting an adjacently-tagged enum to AWS IoT Shadow, we need to serialize
+/// all possible variant fields - active variant fields with their values, and
+/// inactive variant fields as `null` to clear them from the shadow.
+///
+/// ## Why Universal Implementation?
+///
+/// All `#[shadow_node]` types generate `ReportedUnionFields` for their Reported type,
+/// even if they're not used inside an adjacently-tagged enum. This is because at
+/// macro expansion time, we don't know if a type will later be used as an inner
+/// type of an adjacently-tagged enum.
+///
+/// ## Supertrait: `Serialize`
+///
+/// `ReportedUnionFields` requires `Serialize` as a supertrait. This means the
+/// `ShadowNode::Reported` bound of `ReportedUnionFields` implies `Serialize`.
+pub trait ReportedUnionFields: Serialize {
+    /// Names of all fields this type contributes to the flat union.
+    ///
+    /// Used to null out inactive variant fields during serialization.
+    const FIELD_NAMES: &'static [&'static str];
+
+    /// Serialize this type's fields into an existing map.
+    ///
+    /// Unlike the standard `Serialize` impl which creates a new map, this method
+    /// adds fields to an existing `SerializeMap`. This enables flat union serialization
+    /// where multiple types' fields are combined into a single JSON object.
+    fn serialize_into_map<S: serde::ser::SerializeMap>(&self, map: &mut S) -> Result<(), S::Error>;
+}
+
+/// Helper to serialize null values for inactive variant fields.
+///
+/// When serializing an adjacently-tagged enum's Reported type, inactive variants'
+/// fields must be serialized as `null` to clear them from AWS IoT Shadow.
+///
+/// # Example
+///
+/// ```ignore
+/// // When PortMode is Analog, Digital fields are nulled:
+/// serialize_null_fields(ReportedDigitalConfig::FIELD_NAMES, &mut map)?;
+/// ```
+pub fn serialize_null_fields<S: serde::ser::SerializeMap>(
+    field_names: &[&str],
+    map: &mut S,
+) -> Result<(), S::Error> {
+    for name in field_names {
+        map.serialize_entry(*name, &None::<()>)?;
+    }
+    Ok(())
+}
+
+/// Trait for types that can be patched from a delta and persisted to KV storage.
+///
+/// Implemented by both top-level shadow structs (`#[shadow_root]`) and nested
+/// patchable types (`#[shadow_node]`).
+///
+/// ## miniconf Integration
+///
+/// This trait requires miniconf's Tree traits for path-based field access:
+/// - `TreeSchema`: Schema introspection and key iteration
+/// - `TreeSerialize`: Serialize individual fields by path
+/// - `TreeDeserialize`: Deserialize individual fields by path
+///
+/// Field iteration and serialization use miniconf's APIs:
+/// ```ignore
+/// // Iterate all field paths using SCHEMA from TreeSchema
+/// for path in Self::SCHEMA.nodes::<Path<...>, MAX_DEPTH>() { ... }
+///
+/// // Deserialize a field by path
+/// miniconf::postcard::set_by_key(&mut self.state, &path, data)?;
+///
+/// // Serialize a field by path
+/// miniconf::postcard::get_by_key(&self.state, &path, buf)?;
+/// ```
+///
+/// ## miniconf Enum Limitations
+///
+/// **Important**: miniconf only supports **unit** and **newtype** (single-field tuple)
+/// enum variants. Struct variants and multi-field tuple variants are NOT supported.
+///
+/// ```ignore
+/// // ✅ Supported
+/// enum Good {
+///     Unit,              // unit variant
+///     Newtype(Config),   // newtype variant (single field)
+/// }
+///
+/// // ❌ NOT supported by miniconf
+/// enum Bad {
+///     Struct { a: u32 },     // struct variant - use newtype instead
+///     Tuple(u32, u32),       // multi-field tuple - wrap in struct
+/// }
+/// ```
+///
+/// ## Naming Convention
+///
+/// - `ShadowNode`: Any type in the shadow tree (structs, enums, nested types)
+/// - `ShadowRoot`: Top-level shadow with a name (prefix for KV keys)
+///
+/// ## SCHEMA_HASH Composition
+///
+/// Each `ShadowNode` type has a compile-time `SCHEMA_HASH` that captures its
+/// schema structure. For nested types, the hash is composed from child hashes:
+///
+/// ```text
+/// Parent::SCHEMA_HASH = hash(
+///     field1_name + <Field1Type as ShadowNode>::SCHEMA_HASH +
+///     field2_name + hash(primitive_type_name) +
+///     ...
+/// )
+/// ```
+///
+/// This ensures that changes to nested types propagate to parent hashes.
+/// Only the top-level `ShadowRoot::SCHEMA_HASH` is actually stored in KV.
+pub trait ShadowNode:
+    Default
+    + Clone
+    + Sized
+    + miniconf::TreeSchema
+    + miniconf::TreeSerialize
+    + for<'de> miniconf::TreeDeserialize<'de>
+{
+    /// Delta type for partial updates (fields wrapped in Option).
+    ///
+    /// Used by the generated `apply_and_persist()` method to update state
+    /// and persist changed fields in a single pass.
+    ///
+    /// ## Trait Bounds
+    ///
+    /// - `Default`: Create empty delta for `update_desired()` pattern
+    /// - `Serialize`: Send delta to cloud via MQTT (device→cloud desired updates)
+    /// - `DeserializeOwned`: Receive delta from cloud via MQTT (cloud→device)
+    /// - `TreeSchema + TreeSerialize`: miniconf traversal for `apply_and_persist()`
+    ///
+    /// ## Delta Type Shapes
+    ///
+    /// For **structs** and **simple enums**, the Delta mirrors the type structure
+    /// with fields/variants wrapped in `Option`:
+    /// ```ignore
+    /// struct Config { timeout: u32 }
+    /// // Delta:
+    /// struct DeltaConfig { timeout: Option<u32> }
+    ///
+    /// enum Mode { Off, On(Config) }
+    /// // Delta:
+    /// enum DeltaMode { Off, On(DeltaConfig) }
+    /// ```
+    ///
+    /// For **adjacently-tagged enums** (`#[serde(tag="...", content="...")]`),
+    /// the Delta is a struct with optional tag and content fields to support
+    /// partial updates:
+    /// ```ignore
+    /// #[serde(tag = "mode", content = "config")]
+    /// enum PortMode { Inactive, Sio(SioConfig) }
+    /// // Delta - struct shape for partial updates:
+    /// struct DeltaPortMode {
+    ///     mode: Option<PortModeVariant>,
+    ///     config: Option<DeltaPortModeConfig>,
+    /// }
+    /// ```
+    /// This allows `{"config": {"polarity": "npn"}}` to update config without
+    /// changing the variant.
+    type Delta: Default
+        + Serialize
+        + DeserializeOwned
+        + miniconf::TreeSchema
+        + miniconf::TreeSerialize;
+
+    /// Reported type for serialization to cloud.
+    ///
+    /// Used for device→cloud acknowledgment after applying deltas.
+    /// Fields marked `report_only` are `None` in the Reported type.
+    ///
+    /// ## Trait Bound: `ReportedUnionFields`
+    ///
+    /// All `Reported` types must implement `ReportedUnionFields`, which provides:
+    /// - `Serialize` (as a supertrait)
+    /// - `serialize_into_map()` for flat union serialization
+    ///
+    /// **Why universal?** At macro expansion time, we don't know if a type will be
+    /// used as an inner type of an adjacently-tagged enum. So all `#[shadow_node]`
+    /// types generate `ReportedUnionFields` defensively.
+    ///
+    /// ## Generation Requirements
+    ///
+    /// All `Option` fields in the generated Reported type must have:
+    /// ```ignore
+    /// #[serde(skip_serializing_if = "Option::is_none")]
+    /// ```
+    /// This ensures `None` fields are omitted from JSON rather than serialized as `null`.
+    type Reported: ReportedUnionFields;
+
+    // =========================================================================
+    // KV Storage Constants
+    // =========================================================================
+
+    /// Maximum nesting depth for this type's field tree.
+    ///
+    /// Derived from miniconf's `SCHEMA.shape().max_depth`.
+    const MAX_DEPTH: usize = Self::SCHEMA.shape().max_depth;
+
+    /// Maximum key length needed for this type's fields (excluding prefix).
+    ///
+    /// Derived from miniconf's `SCHEMA.shape().max_length("/")`.
+    const MAX_KEY_LEN: usize = Self::SCHEMA.shape().max_length("/");
+
+    /// Maximum serialized value size for any field.
+    ///
+    /// Computed using `postcard::experimental::max_size::MaxSize::POSTCARD_MAX_SIZE`
+    /// for leaf types. Opaque field types must implement `MaxSize`.
+    const MAX_VALUE_LEN: usize;
+
+    /// Compile-time hash of this type's schema structure.
+    ///
+    /// For nested `ShadowNode` fields, this includes their `SCHEMA_HASH`.
+    /// For primitive fields, this includes the field name and type name.
+    /// For fields with migrations, this includes the migration source keys.
+    ///
+    /// **Note**: This hash is used for composition. Only the top-level
+    /// `ShadowRoot` hash is stored in KV for change detection.
+    const SCHEMA_HASH: u64;
+
+    // =========================================================================
+    // Core Methods
+    // =========================================================================
+
+    /// Apply delta to state AND persist changed fields to KV in one pass.
+    ///
+    /// This method updates self with delta values AND persists those values
+    /// to KV storage in a single traversal.
+    ///
+    /// ## Why `&Self::Delta` (by reference)?
+    ///
+    /// Taking delta by reference (not by value) allows callers to retain the
+    /// delta after applying, which is needed for patterns like `wait_delta()`
+    /// that return the delta to the caller:
+    ///
+    /// ```ignore
+    /// if let Some(ref delta) = received_delta {
+    ///     shadow.apply_and_persist(delta, prefix, kv, &mut buf).await?;
+    ///     // delta still available to return to caller
+    /// }
+    /// Ok((state, received_delta))
+    /// ```
+    ///
+    /// This eliminates the need for `Clone` on Delta.
+    ///
+    /// ## Why `&K` (shared reference for KVStore)?
+    ///
+    /// KVStore uses interior mutability (`Mutex`), so methods take `&self`.
+    /// This allows multiple shadows to share a single KVStore via `&'a K`
+    /// references without requiring `alloc`.
+    ///
+    /// ## Implementation Strategy
+    ///
+    /// **For structs:** Uses generic miniconf traversal. Since `Option<T>` is
+    /// transparent in miniconf (`None` → `ValueError::Absent`, `Some(v)` → inner value),
+    /// we can iterate Delta's schema and skip absent fields:
+    ///
+    /// ```ignore
+    /// for path in Self::Delta::SCHEMA.nodes::<KeyPath<128>, { Self::MAX_DEPTH }>() {
+    ///     match miniconf::postcard::get_by_key(delta, &path, buf) {
+    ///         Ok(bytes) => {
+    ///             miniconf::postcard::set_by_key(self, &path, bytes)?;
+    ///             kv.store(&make_key(prefix, &path), bytes).await?;
+    ///         }
+    ///         Err(SerdeError::Value(ValueError::Absent)) => continue,
+    ///         Err(e) => return Err(e.into()),
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// **For enums:** Uses custom generated code for variant switching, then
+    /// delegates to inner type's `apply_and_persist`. Matching on `&Delta`
+    /// yields references to inner data:
+    ///
+    /// ```ignore
+    /// match delta {  // delta: &DeltaIpSettings
+    ///     DeltaIpSettings::Static(delta_inner) => {  // delta_inner: &DeltaStaticConfig
+    ///         if !matches!(self, IpSettings::Static(_)) {
+    ///             *self = IpSettings::Static(StaticConfig::default());
+    ///             kv.store(&make_key(prefix, "/_variant"), b"Static").await?;
+    ///         }
+    ///         if let IpSettings::Static(ref mut inner) = self {
+    ///             inner.apply_and_persist(delta_inner, &make_key(prefix, "/Static"), kv, buf).await?;
+    ///         }
+    ///     }
+    ///     // ... other variants
+    /// }
+    /// ```
+    ///
+    /// For adjacently-tagged enums (`#[serde(tag = "mode", content = "config")]`),
+    /// the JSON `mode`/`config` structure is translated to KV `/_variant` + paths.
+    fn apply_and_persist<K: KVStore>(
+        &mut self,
+        delta: &Self::Delta,
+        prefix: &str,
+        kv: &K,
+        buf: &mut [u8],
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>>;
+
+    /// Convert this state into its reported representation.
+    fn into_reported(self) -> Self::Reported;
+
+    // =========================================================================
+    // KV Field Enumeration (Unified API)
+    // =========================================================================
+
+    /// Returns an iterator over key paths based on the requested set.
+    ///
+    /// All paths start with `/` (miniconf style) and are flattened to include
+    /// nested struct fields.
+    ///
+    /// ## KeySet::Schema
+    ///
+    /// Returns current schema field keys:
+    /// - All field paths (e.g., `/config/timeout`)
+    /// - For enums: fields for ALL variants (not just active)
+    /// - `_variant` keys for enum fields (e.g., `/ip/_variant`)
+    ///
+    /// ## KeySet::WithMigrations
+    ///
+    /// Returns schema keys PLUS migration source keys:
+    /// - Everything from `KeySet::Schema`
+    /// - Old keys that may still exist from previous schemas
+    ///
+    /// Used by GC to identify truly orphaned keys. A key is orphaned only if
+    /// it's NOT in this set.
+    ///
+    /// ## Example
+    ///
+    /// ```text
+    /// keys(Schema):         ["/ip/_variant", "/ip/Static/address", "/ip/Dhcp/lease_time"]
+    /// keys(WithMigrations): ["/ip/_variant", "/ip/Static/address", "/ip/Dhcp/lease_time", "/old_ip"]
+    /// ```
+    ///
+    /// ## Implementation Note
+    ///
+    /// Returns a concrete slice iterator (not `impl Iterator`) to allow different
+    /// key sets to be returned from match arms. Generated code uses function-scoped
+    /// consts to avoid name clashes:
+    ///
+    /// ```ignore
+    /// fn keys(set: KeySet) -> core::slice::Iter<'static, &'static str> {
+    ///     const SCHEMA: &[&str] = &["/timeout", "/retries"];
+    ///     const WITH_MIGRATIONS: &[&str] = &["/timeout", "/retries", "/old_timeout"];
+    ///     match set {
+    ///         KeySet::Schema => SCHEMA.iter(),
+    ///         KeySet::WithMigrations => WITH_MIGRATIONS.iter(),
+    ///     }
+    /// }
+    /// ```
+    fn keys(set: KeySet) -> core::slice::Iter<'static, &'static str>;
+
+    /// Get migration sources for a field path.
+    ///
+    /// Returns empty slice if no migrations defined for this field.
+    fn migration_sources(field_path: &str) -> &'static [MigrationSource];
+
+    /// Apply a custom default value to a field if one is defined.
+    ///
+    /// This is used during loading when a field has no stored value and no
+    /// migration source. It allows setting non-trivial defaults for primitive
+    /// types without needing newtype wrappers.
+    ///
+    /// ## Why This Exists
+    ///
+    /// Rust's `Default` trait always returns the type's inherent default
+    /// (e.g., `0` for `u32`, `false` for `bool`). But shadow fields often
+    /// need different defaults:
+    ///
+    /// ```ignore
+    /// #[shadow_node]
+    /// struct Config {
+    ///     #[shadow_attr(default = 5000)]
+    ///     timeout_ms: u32,  // Default::default() would give 0, but we want 5000
+    ///
+    ///     #[shadow_attr(default = true)]
+    ///     enabled: bool,    // Default::default() would give false
+    /// }
+    /// ```
+    ///
+    /// Without `apply_field_default()`, users would need newtype wrappers:
+    /// ```ignore
+    /// struct Timeout(u32);
+    /// impl Default for Timeout {
+    ///     fn default() -> Self { Timeout(5000) }
+    /// }
+    /// ```
+    ///
+    /// ## Return Value
+    ///
+    /// - `true`: A custom default was applied to the field at `field_path`
+    /// - `false`: No custom default defined; caller should use `Default::default()`
+    fn apply_field_default(&mut self, field_path: &str) -> bool;
+
+    // =========================================================================
+    // Enum Handling (with defaults for non-enum types)
+    // =========================================================================
+
+    /// Get metadata about enum fields in this type.
+    ///
+    /// Returns empty slice for types with no enum fields.
+    fn enum_fields() -> &'static [EnumFieldMeta] {
+        &[]
+    }
+
+    /// Set the active variant for an enum field.
+    ///
+    /// The variant is constructed with default field values.
+    fn set_enum_variant(
+        &mut self,
+        _field_path: &str,
+        _variant: &str,
+    ) -> Result<(), EnumFieldError> {
+        Err(EnumFieldError::NotAnEnumField)
+    }
+
+    /// Get the active variant name for an enum field.
+    fn get_enum_variant(&self, _field_path: &str) -> Result<&'static str, EnumFieldError> {
+        Err(EnumFieldError::NotAnEnumField)
+    }
+
+    /// Check if a field path belongs to the currently active enum variant.
+    ///
+    /// For non-enum fields, always returns `true`.
+    /// For enum variant fields, returns `true` only if the variant is active.
+    ///
+    /// This is generated by the derive macro as a direct match statement
+    /// for efficiency (no string parsing at runtime).
+    fn is_field_active(&self, _field_path: &str) -> bool {
+        true
+    }
+}
+
+/// Trait for top-level shadow state types.
+///
+/// This is only implemented by types marked with `#[shadow_root]`, not `#[shadow_node]`.
+/// It provides the shadow name and is the type whose `SCHEMA_HASH` gets stored.
+///
+/// ## Example
+///
+/// ```ignore
+/// // Top-level shadow - implements both ShadowRoot and ShadowNode
+/// #[shadow_root(name = "device")]
+/// struct DeviceShadow {
+///     config: Config,      // nested ShadowNode
+///     version: u32,        // primitive
+/// }
+///
+/// // Nested type - implements only ShadowNode
+/// #[shadow_node]
+/// struct Config {
+///     timeout: u32,
+///     retries: u8,
+/// }
+/// ```
+///
+/// Only `DeviceShadow::SCHEMA_HASH` is stored in KV at `"device/__schema_hash__"`.
+pub trait ShadowRoot: ShadowNode {
+    /// The shadow name used as KV key prefix (e.g., "device").
+    ///
+    /// Returns `None` for classic/unnamed shadows, which use "classic" as prefix.
+    const NAME: Option<&'static str>;
+
+    // Note: SCHEMA_HASH comes from ShadowNode, but only ShadowRoot's hash
+    // is stored in KV at `{prefix}/__schema_hash__`
 }
 
 struct ShadowHandler<'a, 'm, M: RawMutex, S> {
