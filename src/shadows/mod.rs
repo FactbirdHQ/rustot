@@ -3,7 +3,35 @@ pub mod data_types;
 pub mod error;
 pub mod topics;
 
+// New KV-based shadow storage modules (Phase 1)
+pub mod commit;
+pub mod hash;
+pub mod kv_store;
+pub mod migration;
+
+
 pub use rustot_derive;
+
+// Re-export KVStore trait and implementations
+#[cfg(feature = "std")]
+pub use kv_store::FileKVStore;
+pub use kv_store::KVStore;
+pub use kv_store::SequentialKVStore;
+
+// Re-export kv_store helper types and functions
+pub use kv_store::{path_to_key, try_path_to_key, KeyPath};
+
+// Re-export migration types
+pub use migration::{LoadResult, MigrationError, MigrationSource};
+
+// Re-export commit types
+pub use commit::CommitStats;
+
+// Re-export hash functions (for derive macro use)
+pub use hash::{fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64, FNV1A_INIT};
+
+// Re-export new error types
+pub use error::{EnumFieldError, EnumFieldMeta, KeySet, KvError, ScanError};
 
 use core::{marker::PhantomData, ops::DerefMut};
 

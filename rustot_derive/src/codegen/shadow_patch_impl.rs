@@ -144,7 +144,10 @@ fn generate_struct_into_reported(
 }
 
 /// Generate apply_patch body for enums
-fn generate_enum_apply_patch(data_enum: &DataEnum, _orig_ident: &Ident) -> syn::Result<TokenStream> {
+fn generate_enum_apply_patch(
+    data_enum: &DataEnum,
+    _orig_ident: &Ident,
+) -> syn::Result<TokenStream> {
     let mut arms = TokenStream::new();
 
     for variant in &data_enum.variants {
