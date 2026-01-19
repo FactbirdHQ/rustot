@@ -35,6 +35,9 @@ pub enum KvError<E: Debug> {
     /// Path not found in schema
     PathNotFound,
 
+    /// Key exceeds maximum length
+    KeyTooLong,
+
     /// Enum variant mismatch (delta variant doesn't match current state)
     VariantMismatch,
 

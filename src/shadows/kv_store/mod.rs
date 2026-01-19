@@ -3,12 +3,15 @@
 //! This module provides the `KVStore` trait and implementations:
 //! - `SequentialKVStore`: For embedded systems using NOR flash
 //! - `FileKVStore`: For std environments (testing, desktop) - requires `std` feature
+//! - `NoPersist`: Zero-cost no-op for non-persisted shadows
 
+mod no_persist;
 mod sequential;
 
 #[cfg(feature = "std")]
 mod file;
 
+pub use no_persist::NoPersist;
 pub use sequential::SequentialKVStore;
 
 #[cfg(feature = "std")]

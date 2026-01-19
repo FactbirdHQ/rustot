@@ -6,6 +6,7 @@ pub mod topics;
 // KV-based shadow storage modules
 pub mod commit;
 pub mod hash;
+pub mod kv_shadow;
 pub mod kv_store;
 pub mod migration;
 pub mod scan;
@@ -16,7 +17,11 @@ pub use rustot_derive;
 #[cfg(feature = "std")]
 pub use kv_store::FileKVStore;
 pub use kv_store::KVStore;
+pub use kv_store::NoPersist;
 pub use kv_store::SequentialKVStore;
+
+// Re-export KvShadow
+pub use kv_shadow::KvShadow;
 
 // Re-export kv_store helper types and functions
 pub use kv_store::{path_to_key, try_path_to_key, KeyPath};

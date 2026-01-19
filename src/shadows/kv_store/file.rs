@@ -71,6 +71,36 @@ impl FileKVStore {
         }
     }
 
+    /// Create a new FileKVStore in a unique temporary directory.
+    ///
+    /// Useful for testing. The directory is created immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the temporary directory cannot be created.
+    pub fn temp() -> Result<Self, FileKVStoreError> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "kv_shadow_test_{}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            id
+        ));
+
+        std::fs::create_dir_all(&tmp_dir)?;
+
+        Ok(Self {
+            base_path: tmp_dir,
+            _mutex: Mutex::new(()),
+        })
+    }
+
     /// Initialize the store, creating the directory if needed.
     pub async fn init(&self) -> Result<(), FileKVStoreError> {
         fs::create_dir_all(&self.base_path).await?;
