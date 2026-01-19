@@ -9,6 +9,8 @@ pub mod hash;
 pub mod kv_store;
 pub mod migration;
 
+// Phase 2: JSON scanning utilities
+pub mod scan;
 
 pub use rustot_derive;
 
@@ -32,6 +34,9 @@ pub use hash::{fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64, FNV1A_INIT};
 
 // Re-export new error types
 pub use error::{EnumFieldError, EnumFieldMeta, KeySet, KvError, ScanError};
+
+// Re-export JSON scanning utilities (Phase 2)
+pub use scan::TaggedJsonScan;
 
 use core::{marker::PhantomData, ops::DerefMut};
 
