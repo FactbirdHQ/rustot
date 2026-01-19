@@ -217,13 +217,39 @@ where
     /// Persist all fields to KV storage.
     ///
     /// Uses miniconf's postcard integration for path-based serialization.
-    /// Iterates using miniconf's SCHEMA.nodes() which returns `Path` objects.
+    /// Writes `_variant` keys as plain UTF-8 for enum fields, then field values.
     async fn persist_all_fields(&mut self, prefix: &str) -> Result<(), KvError<K::Error>> {
         // Use fixed-size buffer - MAX_VALUE_LEN is compile-time checked by implementations
         let mut buf = [0u8; 512];
 
-        // Iterate all leaf nodes using miniconf's Path type
-        // Use depth 8 as a reasonable maximum nesting depth
+        // =====================================================================
+        // Write enum _variant keys as plain UTF-8
+        // =====================================================================
+        for enum_meta in S::enum_fields() {
+            if let Ok(variant_name) = S::get_enum_variant(&self.state, enum_meta.path) {
+                // Build variant key: prefix + enum_path + "/_variant"
+                let mut variant_key: heapless::String<256> = heapless::String::new();
+                variant_key
+                    .push_str(prefix)
+                    .map_err(|_| KvError::KeyTooLong)?;
+                variant_key
+                    .push_str(enum_meta.path)
+                    .map_err(|_| KvError::KeyTooLong)?;
+                variant_key
+                    .push_str("/_variant")
+                    .map_err(|_| KvError::KeyTooLong)?;
+
+                // Store variant name as plain UTF-8, not postcard-encoded
+                self.kv_store
+                    .store(&variant_key, variant_name.as_bytes())
+                    .await
+                    .map_err(KvError::Kv)?;
+            }
+        }
+
+        // =====================================================================
+        // Write field values - only active variant's fields will serialize
+        // =====================================================================
         for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
             let path = path_result.map_err(|_| KvError::PathNotFound)?;
 
@@ -264,20 +290,55 @@ where
     ///
     /// ## Implementation Strategy
     ///
-    /// **For structs:** Generic miniconf traversal - iterate schema nodes, fetch
-    /// each field from KV, deserialize via miniconf. `ValueError::Absent` indicates
-    /// inactive enum variant fields (expected, skip them).
+    /// **Two-phase loading for enums:**
+    /// 1. Phase 1: Read `_variant` keys and call `set_enum_variant()` to set up variants
+    /// 2. Phase 2: Load field values via miniconf traversal
     ///
-    /// **For enums:** Handled in Phase 6's two-phase loading - `_variant` keys are
-    /// read first to set up variants, then field loading proceeds.
+    /// This ensures enum variants are constructed before we try to load their fields.
+    /// `ValueError::Absent` indicates inactive enum variant fields (expected, skip them).
     async fn load_fields(&mut self, prefix: &str) -> Result<LoadResult, KvError<K::Error>> {
         // Use fixed-size buffer
         let mut buf = [0u8; 512];
         let mut fields_loaded = 0;
         let mut fields_defaulted = 0;
 
+        // =====================================================================
+        // Phase 1: Load enum variants first
+        // This sets up the correct variant before we try to load its fields
+        // =====================================================================
+        for enum_meta in S::enum_fields() {
+            // Build variant key: prefix + enum_path + "/_variant"
+            let mut variant_key: heapless::String<256> = heapless::String::new();
+            variant_key
+                .push_str(prefix)
+                .map_err(|_| KvError::KeyTooLong)?;
+            variant_key
+                .push_str(enum_meta.path)
+                .map_err(|_| KvError::KeyTooLong)?;
+            variant_key
+                .push_str("/_variant")
+                .map_err(|_| KvError::KeyTooLong)?;
+
+            let mut variant_buf = [0u8; 64];
+            if let Some(data) = self
+                .kv_store
+                .fetch(&variant_key, &mut variant_buf)
+                .await
+                .map_err(KvError::Kv)?
+            {
+                // _variant keys are stored as plain UTF-8, not postcard
+                if let Ok(variant_name) = core::str::from_utf8(data) {
+                    // Set the enum variant; errors are silently ignored (use default)
+                    let _ = S::set_enum_variant(&mut self.state, enum_meta.path, variant_name);
+                }
+            }
+            // If no _variant key exists, the enum keeps its #[default] variant
+        }
+
+        // =====================================================================
+        // Phase 2: Load field values
         // Iterate all leaf nodes using miniconf's Path type
-        // Use depth 8 as a reasonable maximum nesting depth
+        // =====================================================================
         for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
             let path = path_result.map_err(|_| KvError::PathNotFound)?;
 
@@ -330,8 +391,8 @@ where
     /// Load fields with migration (hash mismatch).
     ///
     /// This method handles schema changes by:
-    /// 1. Trying to load from the primary key first
-    /// 2. If not found (or deserialization fails), trying migration sources
+    /// 1. Phase 1: Load enum variants from `_variant` keys
+    /// 2. Phase 2: Load field values, trying migration sources when needed
     /// 3. Performing "soft migration" - writing to new key while preserving old
     ///
     /// ## OTA Safety
@@ -348,8 +409,43 @@ where
         let mut fields_migrated = 0;
         let mut fields_defaulted = 0;
 
+        // =====================================================================
+        // Phase 1: Load enum variants first
+        // This sets up the correct variant before we try to load its fields
+        // =====================================================================
+        for enum_meta in S::enum_fields() {
+            // Build variant key: prefix + enum_path + "/_variant"
+            let mut variant_key: heapless::String<256> = heapless::String::new();
+            variant_key
+                .push_str(prefix)
+                .map_err(|_| KvError::KeyTooLong)?;
+            variant_key
+                .push_str(enum_meta.path)
+                .map_err(|_| KvError::KeyTooLong)?;
+            variant_key
+                .push_str("/_variant")
+                .map_err(|_| KvError::KeyTooLong)?;
+
+            let mut variant_buf = [0u8; 64];
+            if let Some(data) = self
+                .kv_store
+                .fetch(&variant_key, &mut variant_buf)
+                .await
+                .map_err(KvError::Kv)?
+            {
+                // _variant keys are stored as plain UTF-8, not postcard
+                if let Ok(variant_name) = core::str::from_utf8(data) {
+                    // Set the enum variant; errors are silently ignored (use default)
+                    let _ = S::set_enum_variant(&mut self.state, enum_meta.path, variant_name);
+                }
+            }
+            // If no _variant key exists, the enum keeps its #[default] variant
+        }
+
+        // =====================================================================
+        // Phase 2: Load field values with migration support
         // Iterate all leaf nodes using miniconf's Path type
-        // Use depth 8 as a reasonable maximum nesting depth
+        // =====================================================================
         for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
             let path = path_result.map_err(|_| KvError::PathNotFound)?;
             let field_path = path.as_ref();
@@ -1116,5 +1212,257 @@ mod tests {
 
         // // Network keys untouched
         // assert!(kv_has_key(&kv, "network/some_key").await);
+    }
+
+    // =========================================================================
+    // Phase 6 Tests: Enum Handling
+    // =========================================================================
+
+    /*
+    // Phase 6 test fixtures - these require Phase 8 derive macros
+
+    #[shadow_node]
+    struct StaticConfig {
+        address: [u8; 4],
+        gateway: [u8; 4],
+    }
+
+    #[shadow_node]
+    enum IpSettings {
+        #[default]
+        Dhcp,
+        Static(StaticConfig),
+    }
+
+    #[shadow_root(name = "wifi")]
+    struct WifiConfig {
+        ip: IpSettings,
+    }
+
+    // For serde rename test
+    #[shadow_node]
+    enum WifiAuth {
+        #[serde(rename = "none")]
+        #[default]
+        Open,
+        Wpa2(WpaConfig),
+    }
+
+    #[shadow_root(name = "wifi")]
+    struct AuthConfig {
+        auth: WifiAuth,
+    }
+    */
+
+    // Helper to fetch raw bytes from KV (not postcard-decoded)
+    #[allow(dead_code)]
+    async fn kv_fetch_raw(kv: &FileKVStore, key: &str) -> Vec<u8> {
+        let mut buf = [0u8; 256];
+        kv.fetch(key, &mut buf).await.unwrap().unwrap().to_vec()
+    }
+
+    // =========================================================================
+    // 6.1 Enum Load Sequence
+    // =========================================================================
+
+    #[tokio::test]
+    #[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
+    async fn test_enum_load_sets_variant_before_reading_fields() {
+        // If variant isn't set first, field deserialization fails with Absent
+        let _kv = setup_kv(&[
+            ("wifi/ip/_variant", b"Static"), // plain UTF-8, not postcard
+            ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
+            ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
+        ])
+        .await;
+
+        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        // shadow.load().await.unwrap();
+
+        // match &shadow.state.ip {
+        //     IpSettings::Static(cfg) => {
+        //         assert_eq!(cfg.address, [192, 168, 1, 100]);
+        //     }
+        //     IpSettings::Dhcp => panic!("Wrong variant loaded"),
+        // }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
+    async fn test_enum_load_missing_variant_uses_default() {
+        // No _variant key -> use #[default] variant
+        let _kv = empty_kv();
+
+        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        // shadow.load().await.unwrap();  // First boot - initializes defaults
+
+        // assert!(matches!(shadow.state.ip, IpSettings::Dhcp));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
+    async fn test_enum_load_ignores_inactive_variant_fields() {
+        // _variant says Dhcp, but Static fields exist in KV (orphans from previous)
+        // Should not error, just ignore them
+        let _kv = setup_kv(&[
+            ("wifi/ip/_variant", b"Dhcp"),
+            ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])), // orphan
+        ])
+        .await;
+
+        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        // shadow.load().await.unwrap(); // Should not fail
+
+        // assert!(matches!(shadow.state.ip, IpSettings::Dhcp));
+    }
+
+    // =========================================================================
+    // 6.2 Enum Persistence via First-Boot and apply_and_save
+    // =========================================================================
+
+    #[tokio::test]
+    #[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
+    async fn test_enum_first_boot_writes_variant_key_as_utf8() {
+        // First boot (empty KV) persists defaults including _variant keys
+        let _kv = empty_kv();
+
+        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv.clone());
+        // let result = shadow.load().await.unwrap();
+
+        // assert!(result.first_boot);
+
+        // // Default variant (Dhcp) stored as plain UTF-8, not postcard
+        // let variant = kv_fetch_raw(&kv, "wifi/ip/_variant").await;
+        // assert_eq!(variant, b"Dhcp");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Phase 8 derive macro support for WifiConfig and Phase 7 apply_and_save"]
+    async fn test_enum_apply_and_save_writes_variant_key_as_utf8() {
+        // Use apply_and_save to change variant and verify UTF-8 storage
+        let _kv = empty_kv();
+
+        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv.clone());
+        // shadow.load().await.unwrap(); // First boot - initializes Dhcp
+
+        // // Apply delta to change variant to Static
+        // let delta = DeltaWifiConfig {
+        //     ip: Some(DeltaIpSettings::Static(StaticConfig {
+        //         address: [192, 168, 1, 100],
+        //         gateway: [192, 168, 1, 1],
+        //     })),
+        // };
+        // shadow.apply_and_save(delta).await.unwrap();
+
+        // // Variant stored as plain UTF-8, not postcard
+        // let variant = kv_fetch_raw(&kv, "wifi/ip/_variant").await;
+        // assert_eq!(variant, b"Static");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Phase 8 derive macro support for WifiConfig and Phase 7 apply_and_save"]
+    async fn test_enum_variant_switch_preserves_inactive_fields() {
+        // Was Static, apply_and_save to Dhcp - Static fields should be PRESERVED
+        // (they are valid keys, not orphans)
+        let _kv = setup_kv(&[
+            ("wifi/__schema_hash__", &0u64.to_le_bytes()), // placeholder hash
+            ("wifi/ip/_variant", b"Static"),
+            ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
+            ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
+        ])
+        .await;
+
+        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv.clone());
+        // shadow.load().await.unwrap();
+
+        // // Change variant via apply_and_save
+        // let delta = DeltaWifiConfig {
+        //     ip: Some(DeltaIpSettings::Dhcp),
+        // };
+        // shadow.apply_and_save(delta).await.unwrap();
+
+        // // Static fields STILL exist (valid keys, preserved for if we switch back)
+        // assert!(kv_has_key(&kv, "wifi/ip/Static/address").await);
+        // assert!(kv_has_key(&kv, "wifi/ip/Static/gateway").await);
+
+        // // commit() does NOT remove them - they are valid keys
+        // shadow.commit().await.unwrap();
+
+        // assert!(kv_has_key(&kv, "wifi/ip/Static/address").await);
+        // assert!(kv_has_key(&kv, "wifi/ip/Static/gateway").await);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Phase 8 derive macro support for WifiConfig and Phase 7 apply_and_save"]
+    async fn test_enum_variant_switch_and_back_restores_values_on_reload() {
+        // Design decision: Switching variants at runtime uses defaults from delta,
+        // but preserved KV values are restored on RELOAD (e.g., after reboot).
+        //
+        // Flow:
+        // 1. Load Static with values from KV
+        // 2. apply_and_save(Dhcp) - switches to Dhcp, Static values remain in KV
+        // 3. apply_and_save(Static(defaults)) - switches back, uses defaults from delta
+        // 4. RELOAD from KV - now loads preserved Static values from KV
+        let _kv = setup_kv(&[
+            ("wifi/__schema_hash__", &0u64.to_le_bytes()), // placeholder hash
+            ("wifi/ip/_variant", b"Static"),
+            ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
+            ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
+        ])
+        .await;
+
+        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv.clone());
+        // shadow.load().await.unwrap();
+
+        // // Switch to Dhcp via apply_and_save
+        // let delta = DeltaWifiConfig {
+        //     ip: Some(DeltaIpSettings::Dhcp),
+        // };
+        // shadow.apply_and_save(delta).await.unwrap();
+
+        // // In-memory state is now Dhcp
+        // assert!(matches!(shadow.state.ip, IpSettings::Dhcp));
+
+        // // Switch back to Static with default values in the delta
+        // let delta = DeltaWifiConfig {
+        //     ip: Some(DeltaIpSettings::Static(DeltaStaticConfig::default())),
+        // };
+        // shadow.apply_and_save(delta).await.unwrap();
+
+        // // In-memory state has DEFAULT values (from delta), not original KV values
+        // match &shadow.state.ip {
+        //     IpSettings::Static(cfg) => {
+        //         assert_eq!(cfg.address, [0, 0, 0, 0]); // defaults from delta
+        //     }
+        //     _ => panic!("Expected Static variant"),
+        // }
+
+        // // But on RELOAD, the preserved KV values are loaded
+        // let mut shadow2 = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        // shadow2.load().await.unwrap();
+
+        // match &shadow2.state.ip {
+        //     IpSettings::Static(cfg) => {
+        //         assert_eq!(cfg.address, [192, 168, 1, 100]); // Original KV values!
+        //         assert_eq!(cfg.gateway, [192, 168, 1, 1]);
+        //     }
+        //     _ => panic!("Expected Static variant"),
+        // }
+    }
+
+    // =========================================================================
+    // 6.3 Serde Rename Interaction
+    // =========================================================================
+
+    #[tokio::test]
+    #[ignore = "Requires Phase 8 derive macro support for AuthConfig"]
+    async fn test_enum_serde_rename_affects_variant_key() {
+        // #[serde(rename = "none")] on Open variant
+        let _kv = setup_kv(&[("wifi/auth/_variant", b"none")]).await; // serde-renamed
+
+        // let mut shadow = KvShadow::<AuthConfig, _>::new_persistent(&kv);
+        // shadow.load().await.unwrap();
+
+        // assert!(matches!(shadow.state.auth, WifiAuth::Open));
     }
 }
