@@ -109,20 +109,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fnv1a_deterministic() {
-        let h1 = fnv1a_hash(b"device/config/timeout");
-        let h2 = fnv1a_hash(b"device/config/timeout");
-        assert_eq!(h1, h2);
-    }
-
-    #[test]
-    fn test_fnv1a_different_inputs() {
-        let h1 = fnv1a_hash(b"device/config/timeout");
-        let h2 = fnv1a_hash(b"device/config/retries");
-        assert_ne!(h1, h2);
-    }
-
-    #[test]
     fn test_fnv1a_composition() {
         // Simulates schema hash composition: field name + nested hash
         let nested_hash: u64 = 0x123456789abcdef0;

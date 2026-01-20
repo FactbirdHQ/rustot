@@ -12,7 +12,7 @@ use crate::shadows::{
     error::KvError,
     kv_store::{path_to_key, KVStore, KeyPath, NoPersist},
     migration::LoadResult,
-    KeySet, ShadowRoot,
+    ShadowRoot,
 };
 use miniconf::{SerdeError, ValueError};
 
@@ -182,13 +182,18 @@ where
     ) -> Result<LoadResult, KvError<K::Error>> {
         // state is already Default::default() from constructor
 
-        // Apply any custom field defaults
-        for field_path in S::keys(KeySet::Schema) {
-            S::apply_field_default(&mut self.state, field_path);
+        // Apply any custom field defaults using SCHEMA.nodes()
+        let mut total_fields = 0;
+        for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
+            if let Ok(path) = path_result {
+                let field_path = path.as_ref();
+                // Skip system keys
+                if !field_path.starts_with("/__") {
+                    S::apply_field_default(&mut self.state, field_path);
+                    total_fields += 1;
+                }
+            }
         }
-
-        // Count total fields for result
-        let total_fields = S::keys(KeySet::Schema).count();
 
         // Persist all fields
         self.persist_all_fields(prefix).await?;
@@ -482,7 +487,7 @@ where
                     Err(_) => {
                         // Deserialization failed - try migration with type conversion
                         if self
-                            .try_migrations(prefix, field_path, &full_key, &mut buf)
+                            .try_migrations(prefix, &path, &full_key, &mut buf)
                             .await?
                         {
                             fields_migrated += 1;
@@ -496,7 +501,7 @@ where
             } else {
                 // Key not found - try migration sources
                 if self
-                    .try_migrations(prefix, field_path, &full_key, &mut buf)
+                    .try_migrations(prefix, &path, &full_key, &mut buf)
                     .await?
                 {
                     fields_migrated += 1;
@@ -525,10 +530,9 @@ where
     /// # Arguments
     ///
     /// * `prefix` - Shadow prefix (e.g., "device")
-    /// * `field_path` - Field path (e.g., "/config/timeout")
+    /// * `path` - Field path as KeyPath (e.g., "/config/timeout")
     /// * `new_key` - Full key for the new location (e.g., "device/config/timeout")
     /// * `buf` - Buffer for reading/converting values
-    /// * `is_type_conversion` - If true, the primary key exists but deserialization failed
     ///
     /// # Returns
     ///
@@ -536,10 +540,11 @@ where
     async fn try_migrations(
         &mut self,
         prefix: &str,
-        field_path: &str,
+        path: &KeyPath<128>,
         new_key: &str,
         buf: &mut [u8],
     ) -> Result<bool, KvError<K::Error>> {
+        let field_path = path.as_ref();
         for source in S::migration_sources(field_path) {
             // Build old key from migration source
             let mut old_key: heapless::String<256> = heapless::String::new();
@@ -573,10 +578,10 @@ where
 
                 let value_bytes = &buf[..value_len];
 
-                // Deserialize into state
+                // Deserialize into state using the path reference
                 match miniconf::postcard::set_by_key(
                     &mut self.state,
-                    field_path.as_bytes(),
+                    path,
                     postcard::de_flavors::Slice::new(value_bytes),
                 ) {
                     Ok(_) => {}
@@ -667,15 +672,13 @@ where
     ///
     /// ## Orphan Detection
     ///
-    /// Identifies orphaned keys by comparing stored keys against
-    /// `keys(KeySet::WithMigrations)` which includes:
+    /// Identifies orphaned keys by comparing stored keys against valid keys:
     /// - All current field keys (including ALL enum variant fields)
-    /// - All migration source keys
     /// - All `_variant` keys for enum fields
     ///
     /// **Important**: Inactive enum variant fields are NOT removed - they are
-    /// valid keys. Only truly orphaned keys (removed fields, removed variants)
-    /// are cleaned up.
+    /// valid keys. Only truly orphaned keys (removed fields, removed variants,
+    /// and migration source keys) are cleaned up after commit.
     ///
     /// ## no_std Compatibility
     ///
@@ -686,11 +689,44 @@ where
     pub async fn commit(&mut self) -> Result<CommitStats, KvError<K::Error>> {
         let prefix = Self::prefix();
 
-        // Collect valid keys into a set for O(1) lookup
+        // Build set of valid keys for O(1) lookup during GC
         // Using heapless::FnvIndexSet for no_std compatibility
-        // Note: keys() returns Iter<&'static str>, so we need .copied() to get &str
-        let valid: heapless::FnvIndexSet<&'static str, 64> =
-            S::keys(KeySet::WithMigrations).copied().collect();
+        //
+        // Valid keys come from three sources:
+        // 1. SCHEMA.nodes() - all current schema paths (including ALL enum variant fields)
+        // 2. enum_fields() - /_variant paths for enum fields
+        // 3. all_migration_keys() - old keys that may still contain data
+        let mut valid: heapless::FnvIndexSet<heapless::String<128>, 128> =
+            heapless::FnvIndexSet::new();
+
+        // Helper to create heapless::String from &str
+        fn to_heapless_string(s: &str) -> heapless::String<128> {
+            let mut hs: heapless::String<128> = heapless::String::new();
+            let _ = hs.push_str(s);
+            hs
+        }
+
+        // Add schema paths from SCHEMA.nodes()
+        for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
+            if let Ok(path) = path_result {
+                let field_path = path.as_ref();
+                if !field_path.starts_with("/__") {
+                    let _ = valid.insert(to_heapless_string(field_path));
+                }
+            }
+        }
+
+        // Add /_variant paths for enum fields
+        for enum_meta in S::enum_fields() {
+            let mut variant_path: heapless::String<128> = heapless::String::new();
+            let _ = variant_path.push_str(enum_meta.path);
+            let _ = variant_path.push_str("/_variant");
+            let _ = valid.insert(variant_path);
+        }
+
+        // NOTE: Migration source keys are NOT added to valid set.
+        // After commit(), migration is finalized and old keys should be removed.
+        // This is OTA-safe because commit() is only called after boot is confirmed.
 
         // Remove orphaned keys using KVStore::remove_if
         // The implementation handles batching internally
@@ -699,14 +735,11 @@ where
             .remove_if(prefix, |key| {
                 // Strip prefix to get relative key for comparison
                 // Key format: "device/config/timeout" -> "/config/timeout"
-                let rel_key = if key.starts_with(prefix) {
-                    &key[prefix.len()..]
-                } else {
-                    key
-                };
+                let rel_key = key.strip_prefix(prefix).unwrap_or(key);
 
                 // Remove if not in valid set and not a system key
-                !valid.contains(rel_key) && !rel_key.starts_with("/__")
+                let rel_key_string = to_heapless_string(rel_key);
+                !valid.contains(&rel_key_string) && !rel_key.starts_with("/__")
             })
             .await
             .map_err(KvError::Kv)?;
@@ -760,31 +793,194 @@ mod tests {
     }
 
     // =========================================================================
-    // Phase 8 Tests - Require derive macro support
-    // These tests are ignored until Phase 8 provides #[shadow_root] and
-    // #[shadow_node] derive macros that generate ShadowRoot implementations.
+    // Phase 8 Tests - Test fixtures using proc macros
     // =========================================================================
+    //
+    // The derive macros now use `proc-macro-crate` to automatically detect whether
+    // they're used inside the rustot crate (generating `crate::` paths) or externally
+    // (generating `::rustot::` paths).
 
-    // Test fixtures - will be replaced with actual derived types in Phase 8
-    // For now, these are placeholders to document the expected test structure.
+    use crate::shadows::ShadowNode;
+    use postcard::experimental::max_size::MaxSize;
+    use rustot_derive::shadow_root;
+    use serde::{Deserialize, Serialize};
 
-    /*
-    // Example of what the test types will look like after Phase 8:
+    // Test fixture: SimpleConfig (shadow name = "device")
     #[shadow_root(name = "device")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
     struct SimpleConfig {
         value: u32,
     }
 
-    #[shadow_root(name = "device")]
-    struct DeviceShadow {
-        value: u32,
-    }
-
+    // Test fixture: NetworkShadow (shadow name = "network")
     #[shadow_root(name = "network")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
     struct NetworkShadow {
         value: u32,
     }
-    */
+
+    // =========================================================================
+    // Phase 5 Migration Test Fixtures
+    // =========================================================================
+
+    use rustot_derive::shadow_node;
+
+    // Config with migration from old key
+    #[shadow_root(name = "device")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct MigratedConfig {
+        #[shadow_attr(migrate(from = "/old_timeout"))]
+        timeout: u32,
+    }
+
+    // Old config (for rollback tests) - simulates old firmware
+    #[shadow_root(name = "device")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct OldConfig {
+        old_timeout: u32,
+    }
+
+    // Current config (for orphan tests)
+    #[shadow_root(name = "device")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct CurrentConfig {
+        timeout: u32,
+    }
+
+    // =========================================================================
+    // Phase 6 Enum Test Fixtures
+    // =========================================================================
+
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct StaticIpConfig {
+        #[shadow_attr(leaf)]
+        address: [u8; 4],
+        #[shadow_attr(leaf)]
+        gateway: [u8; 4],
+    }
+
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    enum IpSettings {
+        #[default]
+        Dhcp,
+        Static(StaticIpConfig),
+    }
+
+    #[shadow_root(name = "wifi")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct WifiConfig {
+        ip: IpSettings,
+    }
+
+    // For serde rename test - using simple types that work with miniconf
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct WpaConfig {
+        psk_length: u8,
+    }
+
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    enum WifiAuth {
+        #[serde(rename = "none")]
+        #[default]
+        Open,
+        Wpa2(WpaConfig),
+    }
+
+    #[shadow_root(name = "wifi")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct AuthConfig {
+        auth: WifiAuth,
+    }
+
+    // =========================================================================
+    // Phase 7 Delta Apply/Save Test Fixtures
+    // =========================================================================
+
+    #[shadow_root(name = "test")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct TestConfig {
+        timeout: u32,
+        enabled: bool,
+        retries: u8,
+    }
+
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct InnerConfig {
+        timeout: u32,
+        retries: u8,
+    }
+
+    #[shadow_root(name = "device")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct DeviceShadow {
+        config: InnerConfig,
+        version: u32,
+    }
+
+    // =========================================================================
+    // Phase 8 Type Conversion Migration Test Fixtures
+    // =========================================================================
+
+    use crate::shadows::MigrationError;
+
+    // Conversion: u8 -> u16
+    fn u8_to_u16(old: &[u8], new: &mut [u8]) -> Result<usize, MigrationError> {
+        let val: u8 = postcard::from_bytes(old).map_err(|_| MigrationError::InvalidSourceFormat)?;
+        let serialized =
+            postcard::to_slice(&(val as u16), new).map_err(|_| MigrationError::ConversionFailed)?;
+        Ok(serialized.len())
+    }
+
+    // Conversion: ms (u32) -> secs (u32)
+    fn ms_to_secs(old: &[u8], new: &mut [u8]) -> Result<usize, MigrationError> {
+        let ms: u32 = postcard::from_bytes(old).map_err(|_| MigrationError::InvalidSourceFormat)?;
+        let secs = ms / 1000;
+        let serialized =
+            postcard::to_slice(&secs, new).map_err(|_| MigrationError::ConversionFailed)?;
+        Ok(serialized.len())
+    }
+
+    // Conversion that always fails
+    fn failing_convert(_: &[u8], _: &mut [u8]) -> Result<usize, MigrationError> {
+        Err(MigrationError::ConversionFailed)
+    }
+
+    // Fixture: Type conversion u8 -> u16
+    #[shadow_root(name = "device")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct TypeMigratedConfig {
+        #[shadow_attr(migrate(from = "/precision", convert = u8_to_u16))]
+        precision: u16,
+    }
+
+    // Fixture: ms to secs conversion
+    #[shadow_root(name = "device")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct MsToSecsConfig {
+        #[shadow_attr(migrate(from = "/timeout_ms", convert = ms_to_secs))]
+        timeout_secs: u32,
+    }
+
+    // Fixture: Failing conversion
+    #[shadow_root(name = "device")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct FailingConversionConfig {
+        #[shadow_attr(migrate(from = "/old_value", convert = failing_convert))]
+        value: u16,
+    }
+
+    // Fixture: Multiple migration sources
+    #[shadow_root(name = "device")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    struct MultiSourceConfig {
+        #[shadow_attr(migrate(from = "/old_value"), migrate(from = "/legacy_value"))]
+        current_value: u32,
+    }
 
     // Helper functions for tests - will be used when Phase 8 tests are enabled
     #[allow(dead_code)]
@@ -826,78 +1022,79 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for SimpleConfig"]
     async fn test_load_detects_schema_change() {
         // Store a different schema hash (simulates old firmware)
-        let _kv = setup_kv(&[
+        let kv = setup_kv(&[
             ("device/__schema_hash__", &0xDEADBEEFu64.to_le_bytes()),
             ("device/value", &encode(42u32)),
         ])
         .await;
 
         // Shadow borrows KVStore via & reference (interior mutability)
-        // let mut shadow = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
-        // let result = shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
+        let result = shadow.load().await.unwrap();
 
-        // assert!(!result.first_boot);      // Not first boot - hash existed
-        // assert!(result.schema_changed);   // But hash didn't match
+        assert!(!result.first_boot); // Not first boot - hash existed
+        assert!(result.schema_changed); // But hash didn't match
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for SimpleConfig"]
     async fn test_load_no_schema_change_when_hash_matches() {
-        // let kv = setup_kv(&[
-        //     ("device/__schema_hash__", &SimpleConfig::SCHEMA_HASH.to_le_bytes()),
-        //     ("device/value", &encode(42u32)),
-        // ]).await;
+        let kv = setup_kv(&[
+            (
+                "device/__schema_hash__",
+                &SimpleConfig::SCHEMA_HASH.to_le_bytes(),
+            ),
+            ("device/value", &encode(42u32)),
+        ])
+        .await;
 
-        // let mut shadow = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
-        // let result = shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
+        let result = shadow.load().await.unwrap();
 
-        // assert!(!result.first_boot);
-        // assert!(!result.schema_changed);
+        assert!(!result.first_boot);
+        assert!(!result.schema_changed);
+        assert_eq!(shadow.state.value, 42);
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for SimpleConfig"]
     async fn test_first_boot_initializes_and_persists() {
         // Empty store = first boot
-        let _kv = empty_kv();
+        let kv = empty_kv();
 
-        // let mut shadow = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
-        // let result = shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
+        let result = shadow.load().await.unwrap();
 
-        // assert!(result.first_boot);       // First boot detected
-        // assert!(!result.schema_changed);  // Not a schema change - it's first boot
+        assert!(result.first_boot); // First boot detected
+        assert!(!result.schema_changed); // Not a schema change - it's first boot
 
-        // // Verify hash was written
-        // let hash_key = "device/__schema_hash__";
-        // assert!(kv_has_key(&kv, hash_key).await);
+        // Verify hash was written
+        let hash_key = "device/__schema_hash__";
+        assert!(kv_has_key(&kv, hash_key).await);
 
-        // // Verify fields were persisted with defaults
-        // let value: u32 = kv_fetch_decode(&kv, "device/value").await;
-        // assert_eq!(value, SimpleConfig::default().value);
+        // Verify fields were persisted with defaults
+        let value: u32 = kv_fetch_decode(&kv, "device/value").await;
+        assert_eq!(value, SimpleConfig::default().value);
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for SimpleConfig"]
     async fn test_first_boot_then_normal_boot() {
-        let _kv = empty_kv();
+        let kv = empty_kv();
 
         // First boot
-        // {
-        //     let mut shadow1 = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
-        //     let result1 = shadow1.load().await.unwrap();
-        //     assert!(result1.first_boot);
-        // }
+        {
+            let mut shadow1 = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
+            let result1 = shadow1.load().await.unwrap();
+            assert!(result1.first_boot);
+        }
 
         // Second boot - should be normal load
-        // {
-        //     let mut shadow2 = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
-        //     let result2 = shadow2.load().await.unwrap();
-        //     assert!(!result2.first_boot);
-        //     assert!(!result2.schema_changed);
-        // }
+        {
+            let mut shadow2 = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
+            let result2 = shadow2.load().await.unwrap();
+            assert!(!result2.first_boot);
+            assert!(!result2.schema_changed);
+        }
     }
 
     // =========================================================================
@@ -905,35 +1102,34 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for DeviceShadow and NetworkShadow"]
     async fn test_multiple_shadows_share_kvstore() {
-        let _kv = empty_kv();
+        let kv = empty_kv();
 
         // Multiple shadows can share the same KVStore via & references
         // This is the key benefit of interior mutability
-        // let mut device = KvShadow::<DeviceShadow, _>::new_persistent(&kv);
-        // let mut network = KvShadow::<NetworkShadow, _>::new_persistent(&kv);
+        let mut device = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
+        let mut network = KvShadow::<NetworkShadow, _>::new_persistent(&kv);
 
         // Both initialize on first boot (different prefixes, same KVStore)
-        // device.load().await.unwrap();
-        // network.load().await.unwrap();
+        device.load().await.unwrap();
+        network.load().await.unwrap();
 
         // Modify via apply_and_save (Phase 7)
-        // let delta = DeltaDeviceShadow { value: Some(42) };
-        // device.apply_and_save(&delta).await.unwrap();
+        let delta = DeltaSimpleConfig { value: Some(42) };
+        device.apply_and_save(&delta).await.unwrap();
 
-        // let delta = DeltaNetworkShadow { value: Some(99) };
-        // network.apply_and_save(&delta).await.unwrap();
+        let delta = DeltaNetworkShadow { value: Some(99) };
+        network.apply_and_save(&delta).await.unwrap();
 
         // Reload fresh - still sharing the same KVStore
-        // let mut device2 = KvShadow::<DeviceShadow, _>::new_persistent(&kv);
-        // let mut network2 = KvShadow::<NetworkShadow, _>::new_persistent(&kv);
+        let mut device2 = KvShadow::<SimpleConfig, _>::new_persistent(&kv);
+        let mut network2 = KvShadow::<NetworkShadow, _>::new_persistent(&kv);
 
-        // device2.load().await.unwrap();
-        // network2.load().await.unwrap();
+        device2.load().await.unwrap();
+        network2.load().await.unwrap();
 
-        // assert_eq!(device2.state.value, 42);
-        // assert_eq!(network2.state.value, 99);
+        assert_eq!(device2.state.value, 42);
+        assert_eq!(network2.state.value, 99);
     }
 
     // =========================================================================
@@ -941,44 +1137,41 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for SimpleConfig"]
     async fn test_in_memory_shadow_initializes_defaults() {
         // Non-persisted shadow using NoPersist KVStore
-        // let mut shadow = KvShadow::<SimpleConfig, NoPersist>::new_in_memory();
-        // let result = shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<SimpleConfig, NoPersist>::new_in_memory();
+        let result = shadow.load().await.unwrap();
 
         // Always "first boot" since nothing is persisted
-        // assert!(result.first_boot);
-        // assert_eq!(shadow.state, SimpleConfig::default());
+        assert!(result.first_boot);
+        assert_eq!(shadow.state, SimpleConfig::default());
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for SimpleConfig and Phase 7 apply_and_save"]
     async fn test_in_memory_shadow_apply_and_save_updates_state() {
-        // let mut shadow = KvShadow::<SimpleConfig, NoPersist>::new_in_memory();
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<SimpleConfig, NoPersist>::new_in_memory();
+        shadow.load().await.unwrap();
 
-        // let delta = DeltaSimpleConfig { value: Some(42) };
-        // shadow.apply_and_save(&delta).await.unwrap();
+        let delta = DeltaSimpleConfig { value: Some(42) };
+        shadow.apply_and_save(&delta).await.unwrap();
 
         // State updated (but not persisted anywhere)
-        // assert_eq!(shadow.state.value, 42);
+        assert_eq!(shadow.state.value, 42);
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for SimpleConfig and Phase 7 apply_and_save"]
     async fn test_in_memory_shadow_reload_resets_to_defaults() {
-        // let mut shadow = KvShadow::<SimpleConfig, NoPersist>::new_in_memory();
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<SimpleConfig, NoPersist>::new_in_memory();
+        shadow.load().await.unwrap();
 
-        // let delta = DeltaSimpleConfig { value: Some(42) };
-        // shadow.apply_and_save(&delta).await.unwrap();
+        let delta = DeltaSimpleConfig { value: Some(42) };
+        shadow.apply_and_save(&delta).await.unwrap();
 
         // Create new shadow - state should be default (not persisted)
-        // let mut shadow2 = KvShadow::<SimpleConfig, NoPersist>::new_in_memory();
-        // shadow2.load().await.unwrap();
+        let mut shadow2 = KvShadow::<SimpleConfig, NoPersist>::new_in_memory();
+        shadow2.load().await.unwrap();
 
-        // assert_eq!(shadow2.state.value, SimpleConfig::default().value);
+        assert_eq!(shadow2.state.value, SimpleConfig::default().value);
     }
 
     // =========================================================================
@@ -1061,52 +1254,55 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for MigratedConfig"]
     async fn test_migration_prefers_primary_key_over_old() {
         // Both old and new keys exist - must use new key
-        let _kv = setup_kv(&[
+        let kv = setup_kv(&[
+            (
+                "device/__schema_hash__",
+                &MigratedConfig::SCHEMA_HASH.to_le_bytes(),
+            ),
             ("device/timeout", &encode(5000u32)),
             ("device/old_timeout", &encode(9999u32)),
         ])
         .await;
 
-        // let mut shadow = KvShadow::<MigratedConfig, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<MigratedConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
 
-        // assert_eq!(shadow.state.timeout, 5000); // NOT 9999
+        assert_eq!(shadow.state.timeout, 5000); // NOT 9999
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for MultiSourceConfig"]
     async fn test_migration_multiple_sources_tried_in_order() {
-        // Only second source exists
-        let _kv = setup_kv(&[
-            ("device/legacy_name", &encode("from_legacy")),
-            // "old_name" doesn't exist
-            // "current_name" doesn't exist
+        // Only second source exists (old_value doesn't exist, legacy_value does)
+        let kv = setup_kv(&[
+            ("device/__schema_hash__", &0xDEADBEEFu64.to_le_bytes()),
+            ("device/legacy_value", &encode(42u32)),
+            // "old_value" doesn't exist
+            // "current_value" doesn't exist
         ])
         .await;
 
-        // let mut shadow = KvShadow::<MultiSourceConfig, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<MultiSourceConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
 
-        // assert_eq!(shadow.state.current_name.as_str(), "from_legacy");
+        assert_eq!(shadow.state.current_value, 42);
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for TypeMigratedConfig"]
     async fn test_migration_type_conversion_when_new_type_fails_deserialize() {
-        // Key exists but contains old type (u8), field expects new type (u16)
-        // Should try conversion function as fallback
-        let _kv = setup_kv(&[
-            ("device/precision", &encode(42u8)), // old type
+        // Key exists at migration source with old type (u8), field expects new type (u16)
+        // Conversion function converts u8 -> u16
+        let kv = setup_kv(&[
+            ("device/__schema_hash__", &0xDEADBEEFu64.to_le_bytes()),
+            ("device/precision", &encode(42u8)), // old type at migration source
         ])
         .await;
 
-        // let mut shadow = KvShadow::<TypeMigratedConfig, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<TypeMigratedConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
 
-        // assert_eq!(shadow.state.precision, 42u16); // converted
+        assert_eq!(shadow.state.precision, 42u16); // converted
     }
 
     // =========================================================================
@@ -1114,56 +1310,67 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for MigratedConfig"]
     async fn test_load_writes_new_key_but_preserves_old() {
-        let _kv = setup_kv(&[("device/old_timeout", &encode(5000u32))]).await;
+        // Set up with old schema hash to trigger migration
+        let kv = setup_kv(&[
+            ("device/__schema_hash__", &0xDEADBEEFu64.to_le_bytes()),
+            ("device/old_timeout", &encode(5000u32)),
+        ])
+        .await;
 
-        // let mut shadow = KvShadow::<MigratedConfig, _>::new_persistent(&kv.clone());
-        // let result = shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<MigratedConfig, _>::new_persistent(&kv);
+        let result = shadow.load().await.unwrap();
 
-        // assert_eq!(result.fields_migrated, 1);
+        assert_eq!(result.fields_migrated, 1);
 
-        // // New key written
-        // assert!(kv_has_key(&kv, "device/timeout").await);
-        // // Old key STILL exists (for rollback)
-        // assert!(kv_has_key(&kv, "device/old_timeout").await);
+        // New key written
+        assert!(kv_has_key(&kv, "device/timeout").await);
+        // Old key STILL exists (for rollback)
+        assert!(kv_has_key(&kv, "device/old_timeout").await);
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for MigratedConfig"]
     async fn test_commit_removes_old_keys_only_after_explicit_call() {
-        let _kv = setup_kv(&[("device/old_timeout", &encode(5000u32))]).await;
+        // Set up with old schema hash to trigger migration
+        let kv = setup_kv(&[
+            ("device/__schema_hash__", &0xDEADBEEFu64.to_le_bytes()),
+            ("device/old_timeout", &encode(5000u32)),
+        ])
+        .await;
 
-        // let mut shadow = KvShadow::<MigratedConfig, _>::new_persistent(&kv.clone());
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<MigratedConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
 
-        // // Old key still there
-        // assert!(kv_has_key(&kv, "device/old_timeout").await);
+        // Old key still there
+        assert!(kv_has_key(&kv, "device/old_timeout").await);
 
-        // // Now commit (after boot marked successful)
-        // shadow.commit().await.unwrap();
+        // Now commit (after boot marked successful)
+        shadow.commit().await.unwrap();
 
-        // // Old key gone
-        // assert!(!kv_has_key(&kv, "device/old_timeout").await);
-        // // New key still there
-        // assert!(kv_has_key(&kv, "device/timeout").await);
+        // Old key gone
+        assert!(!kv_has_key(&kv, "device/old_timeout").await);
+        // New key still there
+        assert!(kv_has_key(&kv, "device/timeout").await);
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for OldConfig"]
     async fn test_rollback_scenario_old_firmware_reads_old_keys() {
         // Simulate: new firmware migrated, then rollback to old firmware
-        let _kv = setup_kv(&[
-            ("device/timeout", &encode(5000u32)), // new key (from migration)
+        let kv = setup_kv(&[
+            (
+                "device/__schema_hash__",
+                &OldConfig::SCHEMA_HASH.to_le_bytes(),
+            ),
+            ("device/timeout", &encode(5000u32)),      // new key (from migration)
             ("device/old_timeout", &encode(5000u32)), // old key (preserved)
         ])
         .await;
 
         // "Old firmware" only knows about old_timeout
-        // let mut old_shadow = KvShadow::<OldConfig, _>::new_persistent(&kv);
-        // old_shadow.load().await.unwrap();
+        let mut old_shadow = KvShadow::<OldConfig, _>::new_persistent(&kv);
+        old_shadow.load().await.unwrap();
 
-        // assert_eq!(old_shadow.state.old_timeout, 5000); // Works!
+        assert_eq!(old_shadow.state.old_timeout, 5000); // Works!
     }
 
     // =========================================================================
@@ -1171,31 +1378,34 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for MsToSecsConfig"]
     async fn test_conversion_function_receives_correct_bytes() {
         // Verify the conversion wrapper correctly deserializes old type,
         // calls user function, and serializes new type
-        let _kv = setup_kv(&[("device/timeout_ms", &encode(5000u32))]).await;
-
-        // let mut shadow = KvShadow::<MsToSecsConfig, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap();
-
-        // assert_eq!(shadow.state.timeout_secs, 5); // 5000ms -> 5s
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for FailingConversionConfig"]
-    async fn test_conversion_failure_propagates_error() {
-        // Conversion function can fail (e.g., value out of range)
-        let _kv = setup_kv(&[
-            ("device/value", &encode(u32::MAX)), // Too large for conversion
+        let kv = setup_kv(&[
+            ("device/__schema_hash__", &0xDEADBEEFu64.to_le_bytes()),
+            ("device/timeout_ms", &encode(5000u32)),
         ])
         .await;
 
-        // let mut shadow = KvShadow::<FailingConversionConfig, _>::new_persistent(&kv);
-        // let result = shadow.load().await;
+        let mut shadow = KvShadow::<MsToSecsConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
 
-        // assert!(result.is_err());
+        assert_eq!(shadow.state.timeout_secs, 5); // 5000ms -> 5s
+    }
+
+    #[tokio::test]
+    async fn test_conversion_failure_propagates_error() {
+        // Conversion function always fails - error should propagate
+        let kv = setup_kv(&[
+            ("device/__schema_hash__", &0xDEADBEEFu64.to_le_bytes()),
+            ("device/old_value", &encode(123u32)), // Value at migration source (not primary key)
+        ])
+        .await;
+
+        let mut shadow = KvShadow::<FailingConversionConfig, _>::new_persistent(&kv);
+        let result = shadow.load().await;
+
+        assert!(result.is_err());
     }
 
     // =========================================================================
@@ -1203,25 +1413,28 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for CurrentConfig"]
     async fn test_commit_removes_truly_orphaned_keys() {
         // Simulate: old schema had "device/removed_field", new schema doesn't
-        let _kv = setup_kv(&[
+        let kv = setup_kv(&[
+            (
+                "device/__schema_hash__",
+                &0xDEADBEEFu64.to_le_bytes(), // Different hash to trigger migration
+            ),
             ("device/timeout", &encode(5000u32)),      // current field
             ("device/removed_field", &encode(123u32)), // orphaned - not in schema
             ("device/also_removed", &encode(456u32)),  // orphaned - not in schema
         ])
         .await;
 
-        // let mut shadow = KvShadow::<CurrentConfig, _>::new_persistent(&kv.clone());
-        // shadow.load().await.unwrap();
-        // shadow.commit().await.unwrap();
+        let mut shadow = KvShadow::<CurrentConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
+        shadow.commit().await.unwrap();
 
-        // // Current field preserved
-        // assert!(kv_has_key(&kv, "device/timeout").await);
-        // // Orphaned keys removed
-        // assert!(!kv_has_key(&kv, "device/removed_field").await);
-        // assert!(!kv_has_key(&kv, "device/also_removed").await);
+        // Current field preserved
+        assert!(kv_has_key(&kv, "device/timeout").await);
+        // Orphaned keys removed
+        assert!(!kv_has_key(&kv, "device/removed_field").await);
+        assert!(!kv_has_key(&kv, "device/also_removed").await);
     }
 
     #[tokio::test]
@@ -1247,21 +1460,24 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for CurrentConfig"]
     async fn test_commit_does_not_affect_other_shadow_prefixes() {
         // GC for "device" should not touch "network" keys
-        let _kv = setup_kv(&[
+        let kv = setup_kv(&[
+            (
+                "device/__schema_hash__",
+                &0xDEADBEEFu64.to_le_bytes(), // Different hash to trigger migration
+            ),
             ("device/timeout", &encode(5000u32)),
             ("network/some_key", &encode(123u32)),
         ])
         .await;
 
-        // let mut shadow = KvShadow::<CurrentConfig, _>::new_persistent(&kv.clone());
-        // shadow.load().await.unwrap();
-        // shadow.commit().await.unwrap();
+        let mut shadow = KvShadow::<CurrentConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
+        shadow.commit().await.unwrap();
 
-        // // Network keys untouched
-        // assert!(kv_has_key(&kv, "network/some_key").await);
+        // Network keys untouched
+        assert!(kv_has_key(&kv, "network/some_key").await);
     }
 
     // =========================================================================
@@ -1316,54 +1532,60 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
+    #[ignore = "Requires recursive enum_fields() generation for nested struct fields"]
     async fn test_enum_load_sets_variant_before_reading_fields() {
         // If variant isn't set first, field deserialization fails with Absent
-        let _kv = setup_kv(&[
+        let kv = setup_kv(&[
+            (
+                "wifi/__schema_hash__",
+                &WifiConfig::SCHEMA_HASH.to_le_bytes(),
+            ),
             ("wifi/ip/_variant", b"Static"), // plain UTF-8, not postcard
             ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
             ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
         ])
         .await;
 
-        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
 
-        // match &shadow.state.ip {
-        //     IpSettings::Static(cfg) => {
-        //         assert_eq!(cfg.address, [192, 168, 1, 100]);
-        //     }
-        //     IpSettings::Dhcp => panic!("Wrong variant loaded"),
-        // }
+        match &shadow.state.ip {
+            IpSettings::Static(cfg) => {
+                assert_eq!(cfg.address, [192, 168, 1, 100]);
+            }
+            IpSettings::Dhcp => panic!("Wrong variant loaded"),
+        }
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
     async fn test_enum_load_missing_variant_uses_default() {
         // No _variant key -> use #[default] variant
-        let _kv = empty_kv();
+        let kv = empty_kv();
 
-        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap();  // First boot - initializes defaults
+        let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap(); // First boot - initializes defaults
 
-        // assert!(matches!(shadow.state.ip, IpSettings::Dhcp));
+        assert!(matches!(shadow.state.ip, IpSettings::Dhcp));
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
     async fn test_enum_load_ignores_inactive_variant_fields() {
         // _variant says Dhcp, but Static fields exist in KV (orphans from previous)
         // Should not error, just ignore them
-        let _kv = setup_kv(&[
+        let kv = setup_kv(&[
+            (
+                "wifi/__schema_hash__",
+                &WifiConfig::SCHEMA_HASH.to_le_bytes(),
+            ),
             ("wifi/ip/_variant", b"Dhcp"),
             ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])), // orphan
         ])
         .await;
 
-        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap(); // Should not fail
+        let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap(); // Should not fail
 
-        // assert!(matches!(shadow.state.ip, IpSettings::Dhcp));
+        assert!(matches!(shadow.state.ip, IpSettings::Dhcp));
     }
 
     // =========================================================================
@@ -1371,19 +1593,19 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
+    #[ignore = "Requires recursive enum_fields() generation for nested struct fields"]
     async fn test_enum_first_boot_writes_variant_key_as_utf8() {
         // First boot (empty KV) persists defaults including _variant keys
-        let _kv = empty_kv();
+        let kv = empty_kv();
 
-        // let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv.clone());
-        // let result = shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        let result = shadow.load().await.unwrap();
 
-        // assert!(result.first_boot);
+        assert!(result.first_boot);
 
-        // // Default variant (Dhcp) stored as plain UTF-8, not postcard
-        // let variant = kv_fetch_raw(&kv, "wifi/ip/_variant").await;
-        // assert_eq!(variant, b"Dhcp");
+        // Default variant (Dhcp) stored as plain UTF-8, not postcard
+        let variant = kv_fetch_raw(&kv, "wifi/ip/_variant").await;
+        assert_eq!(variant, b"Dhcp");
     }
 
     #[tokio::test]
@@ -1505,15 +1727,21 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for AuthConfig"]
     async fn test_enum_serde_rename_affects_variant_key() {
         // #[serde(rename = "none")] on Open variant
-        let _kv = setup_kv(&[("wifi/auth/_variant", b"none")]).await; // serde-renamed
+        let kv = setup_kv(&[
+            (
+                "wifi/__schema_hash__",
+                &AuthConfig::SCHEMA_HASH.to_le_bytes(),
+            ),
+            ("wifi/auth/_variant", b"none"), // serde-renamed
+        ])
+        .await;
 
-        // let mut shadow = KvShadow::<AuthConfig, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<AuthConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
 
-        // assert!(matches!(shadow.state.auth, WifiAuth::Open));
+        assert!(matches!(shadow.state.auth, WifiAuth::Open));
     }
 
     // =========================================================================
@@ -1562,38 +1790,41 @@ mod tests {
     */
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for Config"]
     async fn test_apply_and_save_only_persists_some_fields() {
         // Set up KV with initial values
-        // let kv = setup_kv(&[
-        //     ("test/__schema_hash__", &Config::SCHEMA_HASH.to_le_bytes()),
-        //     ("test/timeout", &encode(1000u32)),
-        //     ("test/enabled", &encode(false)),
-        //     ("test/retries", &encode(3u8)),
-        // ]).await;
+        let kv = setup_kv(&[
+            (
+                "test/__schema_hash__",
+                &TestConfig::SCHEMA_HASH.to_le_bytes(),
+            ),
+            ("test/timeout", &encode(1000u32)),
+            ("test/enabled", &encode(false)),
+            ("test/retries", &encode(3u8)),
+        ])
+        .await;
 
-        // let mut shadow = KvShadow::<Config, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<TestConfig, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
 
-        // // Delta only changes timeout
-        // let delta = DeltaConfig {
-        //     timeout: Some(5000),
-        //     enabled: None,
-        //     retries: None,
-        // };
-        // shadow.apply_and_save(&delta).await.unwrap();
-        // // delta still available if needed
+        // Delta only changes timeout
+        let delta = DeltaTestConfig {
+            timeout: Some(5000),
+            enabled: None,
+            retries: None,
+        };
+        shadow.apply_and_save(&delta).await.unwrap();
+        // delta still available if needed
 
-        // // State updated
-        // assert_eq!(shadow.state.timeout, 5000);
+        // State updated
+        assert_eq!(shadow.state.timeout, 5000);
 
-        // // Only timeout written to KV (check write count or value)
-        // // enabled and retries should have original values
-        // let timeout: u32 = kv_fetch_decode(&kv, "test/timeout").await;
-        // let enabled: bool = kv_fetch_decode(&kv, "test/enabled").await;
+        // Only timeout written to KV (check write count or value)
+        // enabled and retries should have original values
+        let timeout: u32 = kv_fetch_decode(&kv, "test/timeout").await;
+        let enabled: bool = kv_fetch_decode(&kv, "test/enabled").await;
 
-        // assert_eq!(timeout, 5000);
-        // assert_eq!(enabled, false); // unchanged
+        assert_eq!(timeout, 5000);
+        assert!(!enabled); // unchanged
     }
 
     #[tokio::test]
@@ -1622,32 +1853,380 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Phase 8 derive macro support for DeviceShadow"]
     async fn test_apply_and_save_nested_struct_fields() {
-        // let kv = setup_kv(&[
-        //     ("device/__schema_hash__", &DeviceShadow::SCHEMA_HASH.to_le_bytes()),
-        //     ("device/config/timeout", &encode(1000u32)),
-        //     ("device/config/retries", &encode(3u8)),
-        // ]).await;
+        let kv = setup_kv(&[
+            (
+                "device/__schema_hash__",
+                &DeviceShadow::SCHEMA_HASH.to_le_bytes(),
+            ),
+            ("device/config/timeout", &encode(1000u32)),
+            ("device/config/retries", &encode(3u8)),
+            ("device/version", &encode(1u32)),
+        ])
+        .await;
 
-        // let mut shadow = KvShadow::<DeviceShadow, _>::new_persistent(&kv);
-        // shadow.load().await.unwrap();
+        let mut shadow = KvShadow::<DeviceShadow, _>::new_persistent(&kv);
+        shadow.load().await.unwrap();
 
-        // // Delta changes only nested timeout
-        // let delta = DeltaDeviceShadow {
-        //     config: Some(DeltaInnerConfig {
-        //         timeout: Some(9999),
-        //         retries: None,
-        //     }),
-        //     version: None,
-        // };
-        // shadow.apply_and_save(&delta).await.unwrap();
+        // Delta changes only nested timeout
+        let delta = DeltaDeviceShadow {
+            config: Some(DeltaInnerConfig {
+                timeout: Some(9999),
+                retries: None,
+            }),
+            version: None,
+        };
+        shadow.apply_and_save(&delta).await.unwrap();
 
-        // // Only timeout updated
-        // let timeout: u32 = kv_fetch_decode(&kv, "device/config/timeout").await;
-        // let retries: u8 = kv_fetch_decode(&kv, "device/config/retries").await;
+        // Only timeout updated
+        let timeout: u32 = kv_fetch_decode(&kv, "device/config/timeout").await;
+        let retries: u8 = kv_fetch_decode(&kv, "device/config/retries").await;
 
-        // assert_eq!(timeout, 9999);
-        // assert_eq!(retries, 3); // unchanged
+        assert_eq!(timeout, 9999);
+        assert_eq!(retries, 3); // unchanged
+    }
+
+    // =========================================================================
+    // Phase 8 Tests: Adjacently-Tagged Enum Support
+    // =========================================================================
+
+    mod adjacently_tagged {
+        use super::*;
+        use rustot_derive::shadow_node;
+
+        // Inner config type for Sio variant
+        #[shadow_node]
+        #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+        pub struct SioConfig {
+            #[serde(rename = "polarity")]
+            pub polarity: bool,
+        }
+
+        // Inner config type for IoLink variant
+        #[shadow_node]
+        #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+        pub struct IoLinkConfig {
+            pub cycle_time: u16,
+        }
+
+        // Adjacently-tagged enum
+        #[shadow_node]
+        #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+        #[serde(tag = "mode", content = "config", rename_all = "lowercase")]
+        pub enum PortMode {
+            #[default]
+            Inactive,
+            Sio(SioConfig),
+            IoLink(IoLinkConfig),
+        }
+
+        #[test]
+        fn test_adjacently_tagged_delta_is_struct() {
+            // Verify DeltaPortMode is a struct with mode and config fields
+            let delta = DeltaPortMode {
+                mode: Some(PortModeVariant::Sio),
+                config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                    polarity: Some(true),
+                })),
+            };
+
+            // Test Default
+            let default_delta = DeltaPortMode::default();
+            assert!(default_delta.mode.is_none());
+            assert!(default_delta.config.is_none());
+
+            // Test mode-only
+            let mode_only = DeltaPortMode {
+                mode: Some(PortModeVariant::Inactive),
+                config: None,
+            };
+            assert_eq!(mode_only.mode, Some(PortModeVariant::Inactive));
+
+            // Test config-only
+            let config_only = DeltaPortMode {
+                mode: None,
+                config: Some(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
+                    cycle_time: Some(1000),
+                })),
+            };
+            assert!(config_only.mode.is_none());
+
+            // Verify that the delta has both mode and config
+            assert_eq!(delta.mode, Some(PortModeVariant::Sio));
+        }
+
+        #[test]
+        fn test_adjacently_tagged_variant_enum_generated() {
+            // Verify PortModeVariant enum exists and has correct variants
+            let inactive = PortModeVariant::Inactive;
+            let sio = PortModeVariant::Sio;
+            let iolink = PortModeVariant::IoLink;
+
+            // Test equality
+            assert_eq!(inactive, PortModeVariant::Inactive);
+            assert_ne!(inactive, sio);
+            assert_ne!(sio, iolink);
+
+            // Test Default (should be Inactive)
+            let default_variant = PortModeVariant::default();
+            assert_eq!(default_variant, PortModeVariant::Inactive);
+
+            // Test Clone and Copy
+            let cloned = inactive.clone();
+            assert_eq!(cloned, inactive);
+
+            let copied: PortModeVariant = inactive;
+            assert_eq!(copied, inactive);
+        }
+
+        #[test]
+        fn test_adjacently_tagged_delta_serialization() {
+            // Test JSON serialization of delta with mode and config
+            let delta = DeltaPortMode {
+                mode: Some(PortModeVariant::Sio),
+                config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                    polarity: Some(true),
+                })),
+            };
+
+            let json = serde_json::to_string(&delta).unwrap();
+            // Should have "mode" and "config" keys (renamed from fields)
+            assert!(json.contains("\"mode\""));
+            assert!(json.contains("\"config\""));
+            assert!(json.contains("\"sio\"")); // lowercase due to rename_all
+            assert!(json.contains("\"polarity\""));
+
+            // Test deserialization
+            let parsed: DeltaPortMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.mode, Some(PortModeVariant::Sio));
+        }
+
+        #[test]
+        fn test_adjacently_tagged_mode_only_delta() {
+            // Test mode-only delta (no config)
+            let json = r#"{"mode": "inactive"}"#;
+            let delta: DeltaPortMode = serde_json::from_str(json).unwrap();
+            assert_eq!(delta.mode, Some(PortModeVariant::Inactive));
+            assert!(delta.config.is_none());
+        }
+
+        #[test]
+        fn test_adjacently_tagged_config_only_delta() {
+            // Test config-only delta (partial update)
+            let json = r#"{"config": {"sio": {"polarity": true}}}"#;
+            let delta: DeltaPortMode = serde_json::from_str(json).unwrap();
+            assert!(delta.mode.is_none());
+            assert!(delta.config.is_some());
+
+            if let Some(DeltaPortModeConfig::Sio(sio_config)) = delta.config {
+                assert_eq!(sio_config.polarity, Some(true));
+            } else {
+                panic!("Expected Sio config");
+            }
+        }
+
+        #[test]
+        fn test_adjacently_tagged_reported_type() {
+            // Test that Reported type is an enum
+            let _inactive = ReportedPortMode::Inactive;
+            let sio = ReportedPortMode::Sio(ReportedSioConfig {
+                polarity: Some(false),
+            });
+
+            // Verify Default works (should be Inactive)
+            let default_reported = ReportedPortMode::default();
+            match default_reported {
+                ReportedPortMode::Inactive => {}
+                _ => panic!("Expected Inactive as default"),
+            }
+
+            // Verify Clone works
+            let cloned_sio = sio.clone();
+            match cloned_sio {
+                ReportedPortMode::Sio(config) => {
+                    assert_eq!(config.polarity, Some(false));
+                }
+                _ => panic!("Expected Sio variant"),
+            }
+        }
+
+        #[test]
+        fn test_adjacently_tagged_into_reported() {
+            // Test into_reported() conversion
+            let port_mode = PortMode::Sio(SioConfig { polarity: true });
+            let reported = port_mode.into_reported();
+
+            match reported {
+                ReportedPortMode::Sio(config) => {
+                    assert_eq!(config.polarity, Some(true));
+                }
+                _ => panic!("Expected Sio variant"),
+            }
+
+            // Test Inactive variant
+            let inactive = PortMode::Inactive;
+            let reported_inactive = inactive.into_reported();
+            match reported_inactive {
+                ReportedPortMode::Inactive => {}
+                _ => panic!("Expected Inactive variant"),
+            }
+        }
+
+        #[test]
+        fn test_adjacently_tagged_reported_serialization() {
+            // Test flat union serialization of Reported type
+            let reported = ReportedPortMode::Sio(ReportedSioConfig {
+                polarity: Some(true),
+            });
+
+            let json = serde_json::to_string(&reported).unwrap();
+            // Should serialize as a flat object with mode field
+            assert!(json.contains("\"mode\""));
+            assert!(json.contains("\"sio\""));
+            assert!(json.contains("\"polarity\""));
+        }
+
+        #[test]
+        fn test_adjacently_tagged_set_get_enum_variant() {
+            // Test set_enum_variant and get_enum_variant
+            let mut port_mode = PortMode::Inactive;
+
+            // Get current variant
+            let variant = port_mode.get_enum_variant("").unwrap();
+            assert_eq!(variant, "inactive");
+
+            // Set to Sio variant
+            port_mode.set_enum_variant("", "sio").unwrap();
+            let variant = port_mode.get_enum_variant("").unwrap();
+            assert_eq!(variant, "sio");
+
+            // Set to IoLink variant
+            port_mode.set_enum_variant("", "iolink").unwrap();
+            let variant = port_mode.get_enum_variant("").unwrap();
+            assert_eq!(variant, "iolink");
+
+            // Error on unknown variant
+            let result = port_mode.set_enum_variant("", "unknown");
+            assert!(result.is_err());
+
+            // Error on wrong field path
+            let result = port_mode.set_enum_variant("wrong/path", "sio");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_adjacently_tagged_enum_fields() {
+            // Test enum_fields() returns correct metadata
+            let fields = PortMode::enum_fields();
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].path, "");
+            assert!(fields[0].variants.contains(&"inactive"));
+            assert!(fields[0].variants.contains(&"sio"));
+            assert!(fields[0].variants.contains(&"iolink"));
+        }
+
+        #[tokio::test]
+        async fn test_adjacently_tagged_apply_mode_only() {
+            // Test applying a mode-only delta
+            let kv = NoPersist;
+            let mut port_mode = PortMode::Inactive;
+            let mut buf = [0u8; 256];
+
+            let delta = DeltaPortMode {
+                mode: Some(PortModeVariant::Sio),
+                config: None,
+            };
+
+            port_mode
+                .apply_and_persist(&delta, "/test", &kv, &mut buf)
+                .await
+                .unwrap();
+
+            // Variant should change to Sio with default config
+            match port_mode {
+                PortMode::Sio(config) => {
+                    assert_eq!(config.polarity, false); // Default
+                }
+                _ => panic!("Expected Sio variant"),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_adjacently_tagged_apply_config_only_matching_variant() {
+            // Test applying config-only delta when variant matches
+            let kv = NoPersist;
+            let mut port_mode = PortMode::Sio(SioConfig { polarity: false });
+            let mut buf = [0u8; 256];
+
+            let delta = DeltaPortMode {
+                mode: None,
+                config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                    polarity: Some(true),
+                })),
+            };
+
+            port_mode
+                .apply_and_persist(&delta, "/test", &kv, &mut buf)
+                .await
+                .unwrap();
+
+            // Config should update
+            match port_mode {
+                PortMode::Sio(config) => {
+                    assert_eq!(config.polarity, true);
+                }
+                _ => panic!("Expected Sio variant"),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_adjacently_tagged_apply_config_only_wrong_variant() {
+            // Test applying config-only delta when variant doesn't match
+            let kv = NoPersist;
+            let mut port_mode = PortMode::Inactive;
+            let mut buf = [0u8; 256];
+
+            let delta = DeltaPortMode {
+                mode: None,
+                config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                    polarity: Some(true),
+                })),
+            };
+
+            let result = port_mode
+                .apply_and_persist(&delta, "/test", &kv, &mut buf)
+                .await;
+
+            // Should return VariantMismatch error
+            assert!(matches!(result, Err(KvError::VariantMismatch)));
+        }
+
+        #[tokio::test]
+        async fn test_adjacently_tagged_apply_mode_and_config() {
+            // Test applying both mode and config in one delta
+            let kv = NoPersist;
+            let mut port_mode = PortMode::Inactive;
+            let mut buf = [0u8; 256];
+
+            let delta = DeltaPortMode {
+                mode: Some(PortModeVariant::IoLink),
+                config: Some(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
+                    cycle_time: Some(5000),
+                })),
+            };
+
+            port_mode
+                .apply_and_persist(&delta, "/test", &kv, &mut buf)
+                .await
+                .unwrap();
+
+            // Variant should change and config should update
+            match port_mode {
+                PortMode::IoLink(config) => {
+                    assert_eq!(config.cycle_time, 5000);
+                }
+                _ => panic!("Expected IoLink variant"),
+            }
+        }
     }
 }

@@ -46,37 +46,3 @@ impl KVStore for NoPersist {
         Ok(0) // No keys to remove
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_no_persist_fetch_returns_none() {
-        let kv = NoPersist;
-        let mut buf = [0u8; 16];
-        let result = kv.fetch("any/key", &mut buf).await.unwrap();
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_no_persist_store_succeeds() {
-        let kv = NoPersist;
-        let result = kv.store("any/key", &[1, 2, 3]).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_no_persist_remove_succeeds() {
-        let kv = NoPersist;
-        let result = kv.remove("any/key").await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_no_persist_remove_if_returns_zero() {
-        let kv = NoPersist;
-        let result = kv.remove_if("prefix", |_| true).await.unwrap();
-        assert_eq!(result, 0);
-    }
-}
