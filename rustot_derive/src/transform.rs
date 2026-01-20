@@ -4,7 +4,7 @@ use syn::{
 };
 
 use crate::attr::{FieldAttrs, SHADOW_ATTR};
-use crate::types::{extract_inner_from_option, is_primitive};
+use crate::types::extract_inner_from_option;
 
 /// How to wrap the field type
 #[derive(Debug, Clone)]
@@ -127,7 +127,10 @@ fn transform_field(field: &mut Field, config: &TypeTransformConfig) {
 
     // Transform type
     let original_ty = &field.ty;
-    let is_leaf = attrs.opaque || is_primitive(original_ty);
+    // Only explicit opaque marking makes a field a leaf.
+    // Primitives now implement ShadowPatch with Delta = Self, so
+    // <u32 as ShadowPatch>::Delta = u32 works correctly.
+    let is_leaf = attrs.opaque;
 
     // Check if the original type is already an Option
     let (inner_ty, is_base_opt) = match extract_inner_from_option(original_ty) {
@@ -136,7 +139,8 @@ fn transform_field(field: &mut Field, config: &TypeTransformConfig) {
     };
 
     // Determine if the inner type is a leaf
-    let inner_is_leaf = is_leaf || (is_base_opt && (attrs.opaque || is_primitive(inner_ty)));
+    // For Option<T> fields, check if the inner T is marked opaque
+    let inner_is_leaf = is_leaf || (is_base_opt && attrs.opaque);
 
     field.ty = match &config.type_wrapper {
         TypeWrapper::None => original_ty.clone(),

@@ -16,7 +16,6 @@ use crate::attr::{
     apply_rename_all, get_serde_rename, get_serde_rename_all, get_serde_tag_content,
     get_variant_serde_name, has_default_attr, DefaultValue, FieldAttrs,
 };
-use crate::types::is_primitive;
 
 /// Get the path to the rustot crate, handling both internal and external usage.
 fn rustot_crate_path() -> TokenStream {
@@ -147,8 +146,17 @@ fn generate_struct_code(
 
         field_names.push(serde_name.clone());
 
-        // Check if this is a leaf type
-        let is_leaf = attrs.is_leaf() || is_primitive(field_ty);
+        // Check if this is a leaf type for KV operations.
+        // A field is a leaf if:
+        // 1. It's explicitly marked as opaque, OR
+        // 2. It has migration attributes (migration must be handled at struct level)
+        //
+        // Primitives now implement ShadowNode with Delta = Self, so they
+        // don't need special handling for Delta types - <u32 as ShadowNode>::Delta = u32
+        // However, if a primitive field has migration attributes, we need to handle
+        // the migration inline rather than delegating to the primitive's ShadowNode impl.
+        let has_migration = !attrs.migrate_from.is_empty();
+        let is_leaf = attrs.opaque || has_migration;
 
         // Collect opaque field types for where clause
         if attrs.opaque {
@@ -875,7 +883,9 @@ fn generate_simple_enum_code(
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 // Newtype variant
                 let inner_ty = &fields.unnamed[0].ty;
-                let is_leaf = is_primitive(inner_ty);
+                // All types now implement ShadowNode (primitives have Delta = Self),
+                // so we always use the ShadowNode delegation pattern
+                let is_leaf = false;
 
                 if is_leaf {
                     delta_variants.push(quote! { #variant_ident(#inner_ty), });
@@ -1571,7 +1581,9 @@ fn generate_adjacently_tagged_enum_code(
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 // Newtype variant - has data
                 let inner_ty = &fields.unnamed[0].ty;
-                let is_leaf = is_primitive(inner_ty);
+                // All types now implement ShadowNode (primitives have Delta = Self),
+                // so we always use the ShadowNode delegation pattern
+                let is_leaf = false;
 
                 variants_with_data.push((variant, serde_name.clone()));
 
@@ -2021,25 +2033,23 @@ fn generate_adjacently_tagged_enum_code(
                     })
                     .unwrap();
 
-                let is_leaf = is_primitive(inner_ty);
-
-                if is_leaf {
-                    // Leaf type - serialize directly
-                    quote! {
-                        Self::#variant_ident(ref config) => {
-                            map.serialize_entry(#tag_key, #serde_name)?;
+                // Use runtime check on FIELD_NAMES.is_empty() to determine serialization strategy.
+                // Primitives have FIELD_NAMES = &[] and need serialize_entry for the content.
+                // Nested types have fields to flatten with serialize_into_map.
+                // The const check will be optimized away by the compiler.
+                quote! {
+                    Self::#variant_ident(ref config) => {
+                        map.serialize_entry(#tag_key, #serde_name)?;
+                        // Check if this is a leaf type (empty FIELD_NAMES) at compile time
+                        if <<#inner_ty as #krate::shadows::ShadowNode>::Reported
+                            as #krate::shadows::ReportedUnionFields>::FIELD_NAMES.is_empty() {
+                            // Leaf type - serialize as named content field
                             map.serialize_entry(#content_key, config)?;
-                            #(#nulls)*
-                        }
-                    }
-                } else {
-                    // Nested ShadowNode - use serialize_into_map
-                    quote! {
-                        Self::#variant_ident(ref config) => {
-                            map.serialize_entry(#tag_key, #serde_name)?;
+                        } else {
+                            // Nested ShadowNode - flatten fields into parent map
                             config.serialize_into_map(&mut map)?;
-                            #(#nulls)*
                         }
+                        #(#nulls)*
                     }
                 }
             } else {

@@ -405,7 +405,6 @@ fn generate_shadow_patch_with_custom_reported(
 fn generate_struct_apply_patch_body(input: &DeriveInput) -> syn::Result<TokenStream> {
     use crate::attr::{get_attr, FieldAttrs, CFG_ATTR};
     use crate::transform::borrow_fields;
-    use crate::types::is_primitive;
     use syn::{Data, Index};
 
     let Data::Struct(data_struct) = &input.data else {
@@ -437,7 +436,9 @@ fn generate_struct_apply_patch_body(input: &DeriveInput) -> syn::Result<TokenStr
                 quote! { #idx }
             });
 
-        let is_leaf = attrs.opaque || is_primitive(&field.ty);
+        // Only explicit opaque marking makes a field a leaf.
+        // Primitives now implement ShadowPatch with Delta = Self.
+        let is_leaf = attrs.opaque;
 
         let statement = if is_leaf {
             quote! {
