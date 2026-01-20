@@ -19,11 +19,9 @@ pub const SERDE_ATTR: &str = "serde";
 /// Parsed field-level shadow attributes
 #[derive(Default, Clone)]
 pub struct FieldAttrs {
-    /// Field is a "leaf" - doesn't recursively implement ShadowPatch/ShadowNode
-    pub leaf: bool,
     /// Field is only included in the Reported type, not Delta
     pub report_only: bool,
-    /// Field is opaque - treated as leaf, requires MaxSize bound
+    /// Field is opaque - treated as leaf (primitive-like, no recursive patching)
     pub opaque: bool,
     /// Migration sources for this field
     pub migrate_from: Vec<String>,
@@ -59,7 +57,6 @@ impl FieldAttrs {
                 if let Ok(parsed) = attr.parse_args_with(ShadowAttrArgs::parse) {
                     for arg in parsed.args {
                         match arg {
-                            ShadowAttrArg::Leaf => result.leaf = true,
                             ShadowAttrArg::ReportOnly => result.report_only = true,
                             ShadowAttrArg::Opaque => result.opaque = true,
                             ShadowAttrArg::Migrate(spec) => {
@@ -84,7 +81,7 @@ impl FieldAttrs {
 
     /// Check if this field is a leaf (primitive-like, no recursive patching)
     pub fn is_leaf(&self) -> bool {
-        self.leaf || self.opaque
+        self.opaque
     }
 }
 
@@ -110,7 +107,6 @@ impl Parse for ShadowAttrArgs {
 
 /// Single argument within #[shadow_attr(...)]
 enum ShadowAttrArg {
-    Leaf,
     ReportOnly,
     Opaque,
     Migrate(MigrateSpec),
@@ -122,7 +118,6 @@ impl Parse for ShadowAttrArg {
         let ident: Ident = input.parse()?;
 
         match ident.to_string().as_str() {
-            "leaf" => Ok(ShadowAttrArg::Leaf),
             "report_only" => Ok(ShadowAttrArg::ReportOnly),
             "opaque" => Ok(ShadowAttrArg::Opaque),
             "migrate" => {
@@ -404,10 +399,11 @@ mod tests {
     use syn::parse_quote;
 
     #[test]
-    fn test_parse_leaf() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(leaf)])];
+    fn test_parse_opaque() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque)])];
         let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert!(field_attrs.leaf);
+        assert!(field_attrs.opaque);
+        assert!(field_attrs.is_leaf());
         assert!(!field_attrs.report_only);
     }
 
@@ -415,24 +411,16 @@ mod tests {
     fn test_parse_report_only() {
         let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(report_only)])];
         let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert!(!field_attrs.leaf);
+        assert!(!field_attrs.opaque);
         assert!(field_attrs.report_only);
     }
 
     #[test]
     fn test_parse_multiple() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(leaf, report_only)])];
-        let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert!(field_attrs.leaf);
-        assert!(field_attrs.report_only);
-    }
-
-    #[test]
-    fn test_parse_opaque() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque)])];
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque, report_only)])];
         let field_attrs = FieldAttrs::from_attrs(&attrs);
         assert!(field_attrs.opaque);
-        assert!(field_attrs.is_leaf());
+        assert!(field_attrs.report_only);
     }
 
     #[test]

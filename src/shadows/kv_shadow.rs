@@ -10,11 +10,10 @@
 use crate::shadows::{
     commit::CommitStats,
     error::KvError,
-    kv_store::{path_to_key, KVStore, KeyPath, NoPersist},
+    kv_store::{KVStore, NoPersist},
     migration::LoadResult,
     ShadowRoot,
 };
-use miniconf::{SerdeError, ValueError};
 
 /// Suffix for schema hash keys.
 const SCHEMA_HASH_SUFFIX: &str = "/__schema_hash__";
@@ -181,22 +180,13 @@ where
         prefix: &str,
     ) -> Result<LoadResult, KvError<K::Error>> {
         // state is already Default::default() from constructor
+        let mut buf = [0u8; 512];
 
-        // Apply any custom field defaults using SCHEMA.nodes()
-        let mut total_fields = 0;
-        for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
-            if let Ok(path) = path_result {
-                let field_path = path.as_ref();
-                // Skip system keys
-                if !field_path.starts_with("/__") {
-                    S::apply_field_default(&mut self.state, field_path);
-                    total_fields += 1;
-                }
-            }
-        }
-
-        // Persist all fields
-        self.persist_all_fields(prefix).await?;
+        // Persist all fields using per-field codegen
+        // Use 128 as key buffer size - sufficient for most shadow paths
+        self.state
+            .persist_to_kv::<K, 128>(prefix, self.kv_store, &mut buf)
+            .await?;
 
         // Write schema hash
         let mut hash_key: heapless::String<128> = heapless::String::new();
@@ -210,6 +200,12 @@ where
             .await
             .map_err(KvError::Kv)?;
 
+        // Count fields by collecting valid keys
+        let mut total_fields = 0usize;
+        S::collect_valid_keys::<128>(prefix, &mut |_| {
+            total_fields += 1;
+        });
+
         Ok(LoadResult {
             first_boot: true,
             schema_changed: false,
@@ -219,186 +215,30 @@ where
         })
     }
 
-    /// Persist all fields to KV storage.
-    ///
-    /// Uses miniconf's postcard integration for path-based serialization.
-    /// Writes `_variant` keys as plain UTF-8 for enum fields, then field values.
-    async fn persist_all_fields(&mut self, prefix: &str) -> Result<(), KvError<K::Error>> {
-        // Use fixed-size buffer - MAX_VALUE_LEN is compile-time checked by implementations
-        let mut buf = [0u8; 512];
-
-        // =====================================================================
-        // Write enum _variant keys as plain UTF-8
-        // =====================================================================
-        for enum_meta in S::enum_fields() {
-            if let Ok(variant_name) = S::get_enum_variant(&self.state, enum_meta.path) {
-                // Build variant key: prefix + enum_path + "/_variant"
-                let mut variant_key: heapless::String<256> = heapless::String::new();
-                variant_key
-                    .push_str(prefix)
-                    .map_err(|_| KvError::KeyTooLong)?;
-                variant_key
-                    .push_str(enum_meta.path)
-                    .map_err(|_| KvError::KeyTooLong)?;
-                variant_key
-                    .push_str("/_variant")
-                    .map_err(|_| KvError::KeyTooLong)?;
-
-                // Store variant name as plain UTF-8, not postcard-encoded
-                self.kv_store
-                    .store(&variant_key, variant_name.as_bytes())
-                    .await
-                    .map_err(KvError::Kv)?;
-            }
-        }
-
-        // =====================================================================
-        // Write field values - only active variant's fields will serialize
-        // =====================================================================
-        for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
-            let path = path_result.map_err(|_| KvError::PathNotFound)?;
-
-            // Skip system keys (e.g., /__schema_hash__)
-            if path.as_ref().starts_with("/__") {
-                continue;
-            }
-
-            // Build full KV key: prefix + path
-            let full_key = path_to_key::<256, 128>(prefix, &path);
-
-            // Serialize field value using miniconf's path-based API
-            match miniconf::postcard::get_by_key(
-                &self.state,
-                &path,
-                postcard::ser_flavors::Slice::new(&mut buf),
-            ) {
-                Ok(slice) => {
-                    self.kv_store
-                        .store(&full_key, slice)
-                        .await
-                        .map_err(KvError::Kv)?;
-                }
-                Err(SerdeError::Value(ValueError::Absent)) => {
-                    // Field belongs to inactive enum variant - skip
-                    continue;
-                }
-                Err(_) => return Err(KvError::Serialization),
-            }
-        }
-
-        Ok(())
-    }
-
     /// Load fields from KV (normal boot, hash matches).
     ///
-    /// Uses miniconf's postcard integration for path-based deserialization.
-    ///
-    /// ## Implementation Strategy
-    ///
-    /// **Two-phase loading for enums:**
-    /// 1. Phase 1: Read `_variant` keys and call `set_enum_variant()` to set up variants
-    /// 2. Phase 2: Load field values via miniconf traversal
-    ///
-    /// This ensures enum variants are constructed before we try to load their fields.
-    /// `ValueError::Absent` indicates inactive enum variant fields (expected, skip them).
+    /// Uses per-field codegen for path-based deserialization.
+    /// Each type loads itself: enums read `_variant` first, then inner fields.
     async fn load_fields(&mut self, prefix: &str) -> Result<LoadResult, KvError<K::Error>> {
-        // Use fixed-size buffer
         let mut buf = [0u8; 512];
-        let mut fields_loaded = 0;
-        let mut fields_defaulted = 0;
-
-        // =====================================================================
-        // Phase 1: Load enum variants first
-        // This sets up the correct variant before we try to load its fields
-        // =====================================================================
-        for enum_meta in S::enum_fields() {
-            // Build variant key: prefix + enum_path + "/_variant"
-            let mut variant_key: heapless::String<256> = heapless::String::new();
-            variant_key
-                .push_str(prefix)
-                .map_err(|_| KvError::KeyTooLong)?;
-            variant_key
-                .push_str(enum_meta.path)
-                .map_err(|_| KvError::KeyTooLong)?;
-            variant_key
-                .push_str("/_variant")
-                .map_err(|_| KvError::KeyTooLong)?;
-
-            let mut variant_buf = [0u8; 64];
-            if let Some(data) = self
-                .kv_store
-                .fetch(&variant_key, &mut variant_buf)
-                .await
-                .map_err(KvError::Kv)?
-            {
-                // _variant keys are stored as plain UTF-8, not postcard
-                if let Ok(variant_name) = core::str::from_utf8(data) {
-                    // Set the enum variant; errors are silently ignored (use default)
-                    let _ = S::set_enum_variant(&mut self.state, enum_meta.path, variant_name);
-                }
-            }
-            // If no _variant key exists, the enum keeps its #[default] variant
-        }
-
-        // =====================================================================
-        // Phase 2: Load field values
-        // Iterate all leaf nodes using miniconf's Path type
-        // =====================================================================
-        for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
-            let path = path_result.map_err(|_| KvError::PathNotFound)?;
-
-            // Skip system keys
-            if path.as_ref().starts_with("/__") {
-                continue;
-            }
-
-            // Build full KV key: prefix + path
-            let full_key = path_to_key::<256, 128>(prefix, &path);
-
-            if let Some(data) = self
-                .kv_store
-                .fetch(&full_key, &mut buf)
-                .await
-                .map_err(KvError::Kv)?
-            {
-                // Deserialize field using miniconf's path-based API
-                match miniconf::postcard::set_by_key(
-                    &mut self.state,
-                    &path,
-                    postcard::de_flavors::Slice::new(data),
-                ) {
-                    Ok(_) => {
-                        fields_loaded += 1;
-                    }
-                    Err(SerdeError::Value(ValueError::Absent)) => {
-                        // Field belongs to inactive enum variant - skip
-                        // This is expected for enum variant fields when a different variant is active
-                        continue;
-                    }
-                    Err(_) => return Err(KvError::Serialization),
-                }
-            } else {
-                // Field not in KV - apply default
-                S::apply_field_default(&mut self.state, path.as_ref());
-                fields_defaulted += 1;
-            }
-        }
+        let field_result = self
+            .state
+            .load_from_kv::<K, 128>(prefix, self.kv_store, &mut buf)
+            .await?;
 
         Ok(LoadResult {
             first_boot: false,
             schema_changed: false,
-            fields_loaded,
+            fields_loaded: field_result.loaded,
             fields_migrated: 0,
-            fields_defaulted,
+            fields_defaulted: field_result.defaulted,
         })
     }
 
     /// Load fields with migration (hash mismatch).
     ///
-    /// This method handles schema changes by:
-    /// 1. Phase 1: Load enum variants from `_variant` keys
-    /// 2. Phase 2: Load field values, trying migration sources when needed
-    /// 3. Performing "soft migration" - writing to new key while preserving old
+    /// Uses per-field codegen for path-based deserialization with migration support.
+    /// Each type loads itself, trying migration sources when primary key fails.
     ///
     /// ## OTA Safety
     ///
@@ -408,201 +248,19 @@ where
         &mut self,
         prefix: &str,
     ) -> Result<LoadResult, KvError<K::Error>> {
-        // Use fixed-size buffer
         let mut buf = [0u8; 512];
-        let mut fields_loaded = 0;
-        let mut fields_migrated = 0;
-        let mut fields_defaulted = 0;
-
-        // =====================================================================
-        // Phase 1: Load enum variants first
-        // This sets up the correct variant before we try to load its fields
-        // =====================================================================
-        for enum_meta in S::enum_fields() {
-            // Build variant key: prefix + enum_path + "/_variant"
-            let mut variant_key: heapless::String<256> = heapless::String::new();
-            variant_key
-                .push_str(prefix)
-                .map_err(|_| KvError::KeyTooLong)?;
-            variant_key
-                .push_str(enum_meta.path)
-                .map_err(|_| KvError::KeyTooLong)?;
-            variant_key
-                .push_str("/_variant")
-                .map_err(|_| KvError::KeyTooLong)?;
-
-            let mut variant_buf = [0u8; 64];
-            if let Some(data) = self
-                .kv_store
-                .fetch(&variant_key, &mut variant_buf)
-                .await
-                .map_err(KvError::Kv)?
-            {
-                // _variant keys are stored as plain UTF-8, not postcard
-                if let Ok(variant_name) = core::str::from_utf8(data) {
-                    // Set the enum variant; errors are silently ignored (use default)
-                    let _ = S::set_enum_variant(&mut self.state, enum_meta.path, variant_name);
-                }
-            }
-            // If no _variant key exists, the enum keeps its #[default] variant
-        }
-
-        // =====================================================================
-        // Phase 2: Load field values with migration support
-        // Iterate all leaf nodes using miniconf's Path type
-        // =====================================================================
-        for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
-            let path = path_result.map_err(|_| KvError::PathNotFound)?;
-            let field_path = path.as_ref();
-
-            // Skip system keys
-            if field_path.starts_with("/__") {
-                continue;
-            }
-
-            // Build full KV key: prefix + path
-            let full_key = path_to_key::<256, 128>(prefix, &path);
-
-            // Try primary key first
-            if let Some(data) = self
-                .kv_store
-                .fetch(&full_key, &mut buf)
-                .await
-                .map_err(KvError::Kv)?
-            {
-                // Try to deserialize with current type
-                match miniconf::postcard::set_by_key(
-                    &mut self.state,
-                    &path,
-                    postcard::de_flavors::Slice::new(data),
-                ) {
-                    Ok(_) => {
-                        fields_loaded += 1;
-                        continue;
-                    }
-                    Err(SerdeError::Value(ValueError::Absent)) => {
-                        // Field belongs to inactive enum variant - skip
-                        continue;
-                    }
-                    Err(_) => {
-                        // Deserialization failed - try migration with type conversion
-                        if self
-                            .try_migrations(prefix, &path, &full_key, &mut buf)
-                            .await?
-                        {
-                            fields_migrated += 1;
-                            continue;
-                        }
-                        // Migration failed too, apply default
-                        S::apply_field_default(&mut self.state, field_path);
-                        fields_defaulted += 1;
-                    }
-                }
-            } else {
-                // Key not found - try migration sources
-                if self
-                    .try_migrations(prefix, &path, &full_key, &mut buf)
-                    .await?
-                {
-                    fields_migrated += 1;
-                } else {
-                    // No migration source - apply default
-                    S::apply_field_default(&mut self.state, field_path);
-                    fields_defaulted += 1;
-                }
-            }
-        }
+        let field_result = self
+            .state
+            .load_from_kv_with_migration::<K, 128>(prefix, self.kv_store, &mut buf)
+            .await?;
 
         Ok(LoadResult {
             first_boot: false,
             schema_changed: true,
-            fields_loaded,
-            fields_migrated,
-            fields_defaulted,
+            fields_loaded: field_result.loaded,
+            fields_migrated: field_result.migrated,
+            fields_defaulted: field_result.defaulted,
         })
-    }
-
-    /// Try to migrate a field from old keys.
-    ///
-    /// Iterates through migration sources for this field, trying each in order.
-    /// On success, performs "soft migration": writes to new key while preserving old.
-    ///
-    /// # Arguments
-    ///
-    /// * `prefix` - Shadow prefix (e.g., "device")
-    /// * `path` - Field path as KeyPath (e.g., "/config/timeout")
-    /// * `new_key` - Full key for the new location (e.g., "device/config/timeout")
-    /// * `buf` - Buffer for reading/converting values
-    ///
-    /// # Returns
-    ///
-    /// `Ok(true)` if migration succeeded, `Ok(false)` if no migration source found.
-    async fn try_migrations(
-        &mut self,
-        prefix: &str,
-        path: &KeyPath<128>,
-        new_key: &str,
-        buf: &mut [u8],
-    ) -> Result<bool, KvError<K::Error>> {
-        let field_path = path.as_ref();
-        for source in S::migration_sources(field_path) {
-            // Build old key from migration source
-            let mut old_key: heapless::String<256> = heapless::String::new();
-            old_key.push_str(prefix).map_err(|_| KvError::KeyTooLong)?;
-            old_key
-                .push_str(source.key)
-                .map_err(|_| KvError::KeyTooLong)?;
-
-            // Use a separate buffer for fetch to avoid borrow conflicts
-            let mut fetch_buf = [0u8; 512];
-            if let Some(data) = self
-                .kv_store
-                .fetch(&old_key, &mut fetch_buf)
-                .await
-                .map_err(KvError::Kv)?
-            {
-                // Copy data to main buffer for processing
-                let data_len = data.len();
-                buf[..data_len].copy_from_slice(data);
-
-                // Apply type conversion if specified
-                let value_len = if let Some(convert) = source.convert {
-                    let mut convert_buf = [0u8; 512];
-                    let new_len =
-                        convert(&buf[..data_len], &mut convert_buf).map_err(KvError::Migration)?;
-                    buf[..new_len].copy_from_slice(&convert_buf[..new_len]);
-                    new_len
-                } else {
-                    data_len
-                };
-
-                let value_bytes = &buf[..value_len];
-
-                // Deserialize into state using the path reference
-                match miniconf::postcard::set_by_key(
-                    &mut self.state,
-                    path,
-                    postcard::de_flavors::Slice::new(value_bytes),
-                ) {
-                    Ok(_) => {}
-                    Err(SerdeError::Value(ValueError::Absent)) => {
-                        // Field belongs to inactive enum variant - skip
-                        return Ok(false);
-                    }
-                    Err(_) => return Err(KvError::Serialization),
-                }
-
-                // Soft migrate: write to new key (preserve old for rollback)
-                self.kv_store
-                    .store(new_key, value_bytes)
-                    .await
-                    .map_err(KvError::Kv)?;
-
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
     }
 
     /// Apply a delta and save only the changed fields to KV storage.
@@ -692,37 +350,20 @@ where
         // Build set of valid keys for O(1) lookup during GC
         // Using heapless::FnvIndexSet for no_std compatibility
         //
-        // Valid keys come from three sources:
-        // 1. SCHEMA.nodes() - all current schema paths (including ALL enum variant fields)
-        // 2. enum_fields() - /_variant paths for enum fields
-        // 3. all_migration_keys() - old keys that may still contain data
+        // Valid keys come from collect_valid_keys() which reports:
+        // - All current field keys (including ALL enum variant fields)
+        // - All `_variant` keys for enum fields
         let mut valid: heapless::FnvIndexSet<heapless::String<128>, 128> =
             heapless::FnvIndexSet::new();
 
-        // Helper to create heapless::String from &str
-        fn to_heapless_string(s: &str) -> heapless::String<128> {
+        // Collect all valid keys using per-field codegen
+        S::collect_valid_keys::<128>(prefix, &mut |key| {
+            // Strip prefix to get relative key for comparison
+            let rel_key = key.strip_prefix(prefix).unwrap_or(key);
             let mut hs: heapless::String<128> = heapless::String::new();
-            let _ = hs.push_str(s);
-            hs
-        }
-
-        // Add schema paths from SCHEMA.nodes()
-        for path_result in S::SCHEMA.nodes::<KeyPath<128>, 8>() {
-            if let Ok(path) = path_result {
-                let field_path = path.as_ref();
-                if !field_path.starts_with("/__") {
-                    let _ = valid.insert(to_heapless_string(field_path));
-                }
-            }
-        }
-
-        // Add /_variant paths for enum fields
-        for enum_meta in S::enum_fields() {
-            let mut variant_path: heapless::String<128> = heapless::String::new();
-            let _ = variant_path.push_str(enum_meta.path);
-            let _ = variant_path.push_str("/_variant");
-            let _ = valid.insert(variant_path);
-        }
+            let _ = hs.push_str(rel_key);
+            let _ = valid.insert(hs);
+        });
 
         // NOTE: Migration source keys are NOT added to valid set.
         // After commit(), migration is finalized and old keys should be removed.
@@ -738,7 +379,8 @@ where
                 let rel_key = key.strip_prefix(prefix).unwrap_or(key);
 
                 // Remove if not in valid set and not a system key
-                let rel_key_string = to_heapless_string(rel_key);
+                let mut rel_key_string: heapless::String<128> = heapless::String::new();
+                let _ = rel_key_string.push_str(rel_key);
                 !valid.contains(&rel_key_string) && !rel_key.starts_with("/__")
             })
             .await
@@ -807,14 +449,14 @@ mod tests {
 
     // Test fixture: SimpleConfig (shadow name = "device")
     #[shadow_root(name = "device")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct SimpleConfig {
         value: u32,
     }
 
     // Test fixture: NetworkShadow (shadow name = "network")
     #[shadow_root(name = "network")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct NetworkShadow {
         value: u32,
     }
@@ -827,7 +469,7 @@ mod tests {
 
     // Config with migration from old key
     #[shadow_root(name = "device")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct MigratedConfig {
         #[shadow_attr(migrate(from = "/old_timeout"))]
         timeout: u32,
@@ -835,14 +477,14 @@ mod tests {
 
     // Old config (for rollback tests) - simulates old firmware
     #[shadow_root(name = "device")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct OldConfig {
         old_timeout: u32,
     }
 
     // Current config (for orphan tests)
     #[shadow_root(name = "device")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct CurrentConfig {
         timeout: u32,
     }
@@ -852,16 +494,16 @@ mod tests {
     // =========================================================================
 
     #[shadow_node]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct StaticIpConfig {
-        #[shadow_attr(leaf)]
+        #[shadow_attr(opaque)]
         address: [u8; 4],
-        #[shadow_attr(leaf)]
+        #[shadow_attr(opaque)]
         gateway: [u8; 4],
     }
 
     #[shadow_node]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     enum IpSettings {
         #[default]
         Dhcp,
@@ -869,20 +511,20 @@ mod tests {
     }
 
     #[shadow_root(name = "wifi")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct WifiConfig {
         ip: IpSettings,
     }
 
-    // For serde rename test - using simple types that work with miniconf
+    // For serde rename test
     #[shadow_node]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct WpaConfig {
         psk_length: u8,
     }
 
     #[shadow_node]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     enum WifiAuth {
         #[serde(rename = "none")]
         #[default]
@@ -891,7 +533,7 @@ mod tests {
     }
 
     #[shadow_root(name = "wifi")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct AuthConfig {
         auth: WifiAuth,
     }
@@ -901,7 +543,7 @@ mod tests {
     // =========================================================================
 
     #[shadow_root(name = "test")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct TestConfig {
         timeout: u32,
         enabled: bool,
@@ -909,14 +551,14 @@ mod tests {
     }
 
     #[shadow_node]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct InnerConfig {
         timeout: u32,
         retries: u8,
     }
 
     #[shadow_root(name = "device")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct DeviceShadow {
         config: InnerConfig,
         version: u32,
@@ -952,7 +594,7 @@ mod tests {
 
     // Fixture: Type conversion u8 -> u16
     #[shadow_root(name = "device")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct TypeMigratedConfig {
         #[shadow_attr(migrate(from = "/precision", convert = u8_to_u16))]
         precision: u16,
@@ -960,7 +602,7 @@ mod tests {
 
     // Fixture: ms to secs conversion
     #[shadow_root(name = "device")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct MsToSecsConfig {
         #[shadow_attr(migrate(from = "/timeout_ms", convert = ms_to_secs))]
         timeout_secs: u32,
@@ -968,7 +610,7 @@ mod tests {
 
     // Fixture: Failing conversion
     #[shadow_root(name = "device")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct FailingConversionConfig {
         #[shadow_attr(migrate(from = "/old_value", convert = failing_convert))]
         value: u16,
@@ -976,7 +618,7 @@ mod tests {
 
     // Fixture: Multiple migration sources
     #[shadow_root(name = "device")]
-    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     struct MultiSourceConfig {
         #[shadow_attr(migrate(from = "/old_value"), migrate(from = "/legacy_value"))]
         current_value: u32,
@@ -1484,41 +1126,30 @@ mod tests {
     // Phase 6 Tests: Enum Handling
     // =========================================================================
 
-    /*
-    // Phase 6 test fixtures - these require Phase 8 derive macros
+    // Phase 6 test fixtures - using different names to avoid conflict with earlier tests
 
     #[shadow_node]
-    struct StaticConfig {
+    #[derive(Clone, Default, Serialize, Deserialize, MaxSize)]
+    struct StaticIpCfg {
+        #[shadow_attr(opaque)]
         address: [u8; 4],
+        #[shadow_attr(opaque)]
         gateway: [u8; 4],
     }
 
     #[shadow_node]
-    enum IpSettings {
+    #[derive(Clone, Default, Serialize, Deserialize, MaxSize)]
+    enum IpSettingsCfg {
         #[default]
         Dhcp,
-        Static(StaticConfig),
+        Static(StaticIpCfg),
     }
 
     #[shadow_root(name = "wifi")]
-    struct WifiConfig {
-        ip: IpSettings,
+    #[derive(Clone, Default, Serialize, Deserialize, MaxSize)]
+    struct WifiCfg {
+        ip: IpSettingsCfg,
     }
-
-    // For serde rename test
-    #[shadow_node]
-    enum WifiAuth {
-        #[serde(rename = "none")]
-        #[default]
-        Open,
-        Wpa2(WpaConfig),
-    }
-
-    #[shadow_root(name = "wifi")]
-    struct AuthConfig {
-        auth: WifiAuth,
-    }
-    */
 
     // Helper to fetch raw bytes from KV (not postcard-decoded)
     #[allow(dead_code)]
@@ -1532,13 +1163,12 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires recursive enum_fields() generation for nested struct fields"]
     async fn test_enum_load_sets_variant_before_reading_fields() {
         // If variant isn't set first, field deserialization fails with Absent
         let kv = setup_kv(&[
             (
                 "wifi/__schema_hash__",
-                &WifiConfig::SCHEMA_HASH.to_le_bytes(),
+                &WifiCfg::SCHEMA_HASH.to_le_bytes(),
             ),
             ("wifi/ip/_variant", b"Static"), // plain UTF-8, not postcard
             ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
@@ -1546,14 +1176,14 @@ mod tests {
         ])
         .await;
 
-        let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        let mut shadow = KvShadow::<WifiCfg, _>::new_persistent(&kv);
         shadow.load().await.unwrap();
 
         match &shadow.state.ip {
-            IpSettings::Static(cfg) => {
+            IpSettingsCfg::Static(cfg) => {
                 assert_eq!(cfg.address, [192, 168, 1, 100]);
             }
-            IpSettings::Dhcp => panic!("Wrong variant loaded"),
+            IpSettingsCfg::Dhcp => panic!("Wrong variant loaded"),
         }
     }
 
@@ -1562,10 +1192,10 @@ mod tests {
         // No _variant key -> use #[default] variant
         let kv = empty_kv();
 
-        let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        let mut shadow = KvShadow::<WifiCfg, _>::new_persistent(&kv);
         shadow.load().await.unwrap(); // First boot - initializes defaults
 
-        assert!(matches!(shadow.state.ip, IpSettings::Dhcp));
+        assert!(matches!(shadow.state.ip, IpSettingsCfg::Dhcp));
     }
 
     #[tokio::test]
@@ -1575,17 +1205,17 @@ mod tests {
         let kv = setup_kv(&[
             (
                 "wifi/__schema_hash__",
-                &WifiConfig::SCHEMA_HASH.to_le_bytes(),
+                &WifiCfg::SCHEMA_HASH.to_le_bytes(),
             ),
             ("wifi/ip/_variant", b"Dhcp"),
             ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])), // orphan
         ])
         .await;
 
-        let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        let mut shadow = KvShadow::<WifiCfg, _>::new_persistent(&kv);
         shadow.load().await.unwrap(); // Should not fail
 
-        assert!(matches!(shadow.state.ip, IpSettings::Dhcp));
+        assert!(matches!(shadow.state.ip, IpSettingsCfg::Dhcp));
     }
 
     // =========================================================================
@@ -1593,12 +1223,11 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires recursive enum_fields() generation for nested struct fields"]
     async fn test_enum_first_boot_writes_variant_key_as_utf8() {
         // First boot (empty KV) persists defaults including _variant keys
         let kv = empty_kv();
 
-        let mut shadow = KvShadow::<WifiConfig, _>::new_persistent(&kv);
+        let mut shadow = KvShadow::<WifiCfg, _>::new_persistent(&kv);
         let result = shadow.load().await.unwrap();
 
         assert!(result.first_boot);
@@ -1896,7 +1525,7 @@ mod tests {
 
         // Inner config type for Sio variant
         #[shadow_node]
-        #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+        #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
         pub struct SioConfig {
             #[serde(rename = "polarity")]
             pub polarity: bool,
@@ -1904,14 +1533,14 @@ mod tests {
 
         // Inner config type for IoLink variant
         #[shadow_node]
-        #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+        #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
         pub struct IoLinkConfig {
             pub cycle_time: u16,
         }
 
         // Adjacently-tagged enum
         #[shadow_node]
-        #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize, miniconf::Tree)]
+        #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
         #[serde(tag = "mode", content = "config", rename_all = "lowercase")]
         pub enum PortMode {
             #[default]
@@ -2084,45 +1713,6 @@ mod tests {
             assert!(json.contains("\"mode\""));
             assert!(json.contains("\"sio\""));
             assert!(json.contains("\"polarity\""));
-        }
-
-        #[test]
-        fn test_adjacently_tagged_set_get_enum_variant() {
-            // Test set_enum_variant and get_enum_variant
-            let mut port_mode = PortMode::Inactive;
-
-            // Get current variant
-            let variant = port_mode.get_enum_variant("").unwrap();
-            assert_eq!(variant, "inactive");
-
-            // Set to Sio variant
-            port_mode.set_enum_variant("", "sio").unwrap();
-            let variant = port_mode.get_enum_variant("").unwrap();
-            assert_eq!(variant, "sio");
-
-            // Set to IoLink variant
-            port_mode.set_enum_variant("", "iolink").unwrap();
-            let variant = port_mode.get_enum_variant("").unwrap();
-            assert_eq!(variant, "iolink");
-
-            // Error on unknown variant
-            let result = port_mode.set_enum_variant("", "unknown");
-            assert!(result.is_err());
-
-            // Error on wrong field path
-            let result = port_mode.set_enum_variant("wrong/path", "sio");
-            assert!(result.is_err());
-        }
-
-        #[test]
-        fn test_adjacently_tagged_enum_fields() {
-            // Test enum_fields() returns correct metadata
-            let fields = PortMode::enum_fields();
-            assert_eq!(fields.len(), 1);
-            assert_eq!(fields[0].path, "");
-            assert!(fields[0].variants.contains(&"inactive"));
-            assert!(fields[0].variants.contains(&"sio"));
-            assert!(fields[0].variants.contains(&"iolink"));
         }
 
         #[tokio::test]

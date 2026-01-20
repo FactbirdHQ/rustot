@@ -127,7 +127,7 @@ fn transform_field(field: &mut Field, config: &TypeTransformConfig) {
 
     // Transform type
     let original_ty = &field.ty;
-    let is_leaf = attrs.leaf || is_primitive(original_ty);
+    let is_leaf = attrs.opaque || is_primitive(original_ty);
 
     // Check if the original type is already an Option
     let (inner_ty, is_base_opt) = match extract_inner_from_option(original_ty) {
@@ -136,7 +136,7 @@ fn transform_field(field: &mut Field, config: &TypeTransformConfig) {
     };
 
     // Determine if the inner type is a leaf
-    let inner_is_leaf = is_leaf || (is_base_opt && (attrs.leaf || is_primitive(inner_ty)));
+    let inner_is_leaf = is_leaf || (is_base_opt && (attrs.opaque || is_primitive(inner_ty)));
 
     field.ty = match &config.type_wrapper {
         TypeWrapper::None => original_ty.clone(),

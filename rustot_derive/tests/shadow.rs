@@ -13,7 +13,7 @@ fn nested() {
     struct Foo {
         pub bar: u8,
 
-        #[shadow_attr(leaf)]
+        #[shadow_attr(opaque)]
         #[serde(rename = "desired_rename")]
         pub baz: String,
 
@@ -29,7 +29,7 @@ fn nested() {
     struct Inner {
         hello: u16,
 
-        #[shadow_attr(report_only, leaf)]
+        #[shadow_attr(report_only, opaque)]
         inner_report: String,
     }
 
@@ -102,7 +102,7 @@ fn optionals() {
     struct Inner {
         hello: u16,
 
-        #[shadow_attr(report_only, leaf)]
+        #[shadow_attr(report_only, opaque)]
         inner_report: String,
     }
 
@@ -130,7 +130,7 @@ fn simple_enum() {
     #[shadow]
     #[derive(Debug, PartialEq)]
     struct Foo {
-        #[shadow_attr(leaf)]
+        #[shadow_attr(opaque)]
         pub bar: Either,
     }
 
@@ -220,10 +220,10 @@ fn static_str() {
     #[derive(Debug, PartialEq)]
     struct Foo {
         // fails: &'static str,
-        #[shadow_attr(report_only, leaf)]
+        #[shadow_attr(report_only, opaque)]
         pub bar: &'static str,
 
-        #[shadow_attr(report_only, leaf)]
+        #[shadow_attr(report_only, opaque)]
         pub baz: Option<&'static str>,
     }
 
@@ -242,7 +242,7 @@ fn manual_reported() {
     struct Foo {
         pub bar: u8,
 
-        #[shadow_attr(leaf)]
+        #[shadow_attr(opaque)]
         #[serde(rename = "desired_rename")]
         pub baz: String,
 
@@ -282,7 +282,7 @@ fn manual_reported() {
     struct Inner {
         hello: u16,
 
-        #[shadow_attr(report_only, leaf)]
+        #[shadow_attr(report_only, opaque)]
         inner_report: String,
     }
 
@@ -345,7 +345,7 @@ fn enum_leaf() {
         #[default]
         None,
 
-        Inner(#[shadow_attr(leaf)] String<64>),
+        Inner(#[shadow_attr(opaque)] String<64>),
     }
 
     // #[shadow_patch]
@@ -354,7 +354,7 @@ fn enum_leaf() {
     //     #[default]
     //     None,
 
-    //     #[shadow_attr(leaf)]
+    //     #[shadow_attr(opaque)]
     //     Inner(String<64>),
     // }
 }
@@ -366,7 +366,7 @@ fn enum_leaf() {
 //     #[shadow_patch]
 //     #[derive(Debug, Clone)]
 //     pub struct Foo<A> {
-//         #[shadow_attr(leaf)]
+//         #[shadow_attr(opaque)]
 //         pub ssid: String<64>,
 
 //         pub generic: Inner<A>,
@@ -375,7 +375,7 @@ fn enum_leaf() {
 //     #[shadow_patch]
 //     #[derive(Debug, Clone)]
 //     pub struct Inner<A> {
-//         #[shadow_attr(leaf)]
+//         #[shadow_attr(opaque)]
 //         a: A,
 //     }
 // }
@@ -384,5 +384,5 @@ fn enum_leaf() {
 // Adjacently-Tagged Enum Tests (shadow_node)
 // =========================================================================
 //
-// These tests are in the main crate's kv_shadow.rs file where miniconf/postcard
+// These tests are in the main crate's kv_shadow.rs file where postcard
 // dependencies are available. See src/shadows/kv_shadow.rs for the tests.

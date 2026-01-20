@@ -19,46 +19,6 @@ pub use file::FileKVStore;
 
 use core::fmt::Debug;
 
-/// Type alias for KV key paths using miniconf::Path.
-///
-/// The path separator is `/` and paths from miniconf start with `/`.
-/// Example: `/config/timeout`
-///
-/// To build a full KV key, prepend the shadow prefix:
-/// ```ignore
-/// let path: KeyPath<128> = /* from SCHEMA.nodes() */;
-/// let full_key = format!("{}{}", prefix, path.as_ref()); // "device/config/timeout"
-/// ```
-pub type KeyPath<const N: usize> = miniconf::Path<heapless::String<N>, '/'>;
-
-/// Build a full KV key string from prefix and a miniconf Path.
-///
-/// Key format: `${prefix}${path}` where path starts with `/`.
-/// Example: `path_to_key("device", path)` where path is `/config/timeout` → `"device/config/timeout"`
-///
-/// # Panics
-/// Panics if the combined key exceeds N bytes.
-pub fn path_to_key<const N: usize, const M: usize>(
-    prefix: &str,
-    path: &KeyPath<M>,
-) -> heapless::String<N> {
-    let mut s = heapless::String::new();
-    s.push_str(prefix).expect("key prefix too long");
-    s.push_str(path.as_ref()).expect("key path too long");
-    s
-}
-
-/// Try to build a full KV key, returning None if it would exceed N bytes.
-pub fn try_path_to_key<const N: usize, const M: usize>(
-    prefix: &str,
-    path: &KeyPath<M>,
-) -> Option<heapless::String<N>> {
-    let mut s = heapless::String::new();
-    s.push_str(prefix).ok()?;
-    s.push_str(path.as_ref()).ok()?;
-    Some(s)
-}
-
 /// A key-value store for persisting shadow state.
 ///
 /// Keys are strings in the format `"prefix/path/to/field"` where:
