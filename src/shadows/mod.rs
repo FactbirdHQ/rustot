@@ -517,6 +517,17 @@ pub trait ShadowRoot: ShadowNode {
     /// Returns `None` for classic/unnamed shadows, which use "classic" as prefix.
     const NAME: Option<&'static str>;
 
+    /// The AWS IoT topic prefix (default: "$aws").
+    ///
+    /// This is used for MQTT topic formatting in cloud communication.
+    const PREFIX: &'static str = "$aws";
+
+    /// Maximum payload size for shadow updates (default: 512 bytes).
+    ///
+    /// This should be set based on the maximum size of your shadow state
+    /// when serialized to JSON.
+    const MAX_PAYLOAD_SIZE: usize = 512;
+
     // Note: SCHEMA_HASH comes from ShadowNode, but only ShadowRoot's hash
     // is stored in KV at `{prefix}/__schema_hash__`
 }
