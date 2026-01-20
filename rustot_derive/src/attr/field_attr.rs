@@ -10,9 +10,6 @@ pub const SHADOW_ATTR: &str = "shadow_attr";
 /// The attribute name for default variant marker
 pub const DEFAULT_ATTR: &str = "default";
 
-/// The attribute name for cfg conditions
-pub const CFG_ATTR: &str = "cfg";
-
 /// The attribute name for serde attributes
 pub const SERDE_ATTR: &str = "serde";
 

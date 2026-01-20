@@ -15,7 +15,7 @@
 
 use crate::shadows::{
     fnv1a_hash, KVStore, KvError, LoadFieldResult, MigrationSource, ReportedUnionFields,
-    ShadowNode, ShadowPatch,
+    ShadowNode,
 };
 use core::future::Future;
 use postcard::experimental::max_size::MaxSize;
@@ -137,19 +137,6 @@ macro_rules! impl_opaque {
                 Ok(())
             }
         }
-
-        impl $crate::shadows::ShadowPatch for $ty {
-            type Delta = $ty;
-            type Reported = $ty;
-
-            fn apply_patch(&mut self, delta: Self::Delta) {
-                *self = delta;
-            }
-
-            fn into_reported(self) -> Self::Reported {
-                self
-            }
-        }
     )*};
 }
 
@@ -259,19 +246,6 @@ impl<const N: usize> ReportedUnionFields for heapless::String<N> {
     }
 }
 
-impl<const N: usize> ShadowPatch for heapless::String<N> {
-    type Delta = heapless::String<N>;
-    type Reported = heapless::String<N>;
-
-    fn apply_patch(&mut self, delta: Self::Delta) {
-        *self = delta;
-    }
-
-    fn into_reported(self) -> Self::Reported {
-        self
-    }
-}
-
 impl<T, const N: usize> ShadowNode for heapless::Vec<T, N>
 where
     T: Clone + Default + Serialize + DeserializeOwned + MaxSize,
@@ -368,22 +342,6 @@ where
 
     fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
         Ok(())
-    }
-}
-
-impl<T, const N: usize> ShadowPatch for heapless::Vec<T, N>
-where
-    T: Clone + Default + Serialize + DeserializeOwned + MaxSize,
-{
-    type Delta = heapless::Vec<T, N>;
-    type Reported = heapless::Vec<T, N>;
-
-    fn apply_patch(&mut self, delta: Self::Delta) {
-        *self = delta;
-    }
-
-    fn into_reported(self) -> Self::Reported {
-        self
     }
 }
 
@@ -490,8 +448,6 @@ mod std_impls {
         }
     }
 
-    // Note: ShadowPatch for String is in alloc_impl.rs
-
     impl<T> ShadowNode for Vec<T>
     where
         T: Clone + Default + Serialize + DeserializeOwned,
@@ -590,8 +546,6 @@ mod std_impls {
             Ok(())
         }
     }
-
-    // Note: ShadowPatch for Vec is in alloc_impl.rs
 }
 
 #[cfg(test)]
