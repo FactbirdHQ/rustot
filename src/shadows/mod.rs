@@ -23,20 +23,40 @@ pub use kv_store::SequentialKVStore;
 // Re-export KvShadow
 pub use kv_shadow::KvShadow;
 
-// Re-export kv_store helper types and functions
-pub use kv_store::{path_to_key, try_path_to_key, KeyPath};
-
 // Re-export migration types
 pub use migration::{LoadResult, MigrationError, MigrationSource};
 
 // Re-export commit types
 pub use commit::CommitStats;
 
+/// Result of loading fields from KV storage.
+///
+/// Returned by `load_from_kv()` to indicate how many fields were loaded,
+/// defaulted, or migrated.
+#[derive(Debug, Default, Clone)]
+pub struct LoadFieldResult {
+    /// Number of fields loaded from KV storage.
+    pub loaded: usize,
+    /// Number of fields that used default values (not in KV).
+    pub defaulted: usize,
+    /// Number of fields that were migrated from old keys.
+    pub migrated: usize,
+}
+
+impl LoadFieldResult {
+    /// Merge another result into this one.
+    pub fn merge(&mut self, other: LoadFieldResult) {
+        self.loaded += other.loaded;
+        self.defaulted += other.defaulted;
+        self.migrated += other.migrated;
+    }
+}
+
 // Re-export hash functions (for derive macro use)
 pub use hash::{fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64, FNV1A_INIT};
 
 // Re-export new error types
-pub use error::{EnumFieldError, EnumFieldMeta, KvError, ScanError};
+pub use error::{KvError, ScanError};
 
 // Re-export JSON scanning utilities
 pub use scan::TaggedJsonScan;
@@ -142,44 +162,6 @@ pub fn serialize_null_fields<S: serde::ser::SerializeMap>(
 /// Implemented by both top-level shadow structs (`#[shadow_root]`) and nested
 /// patchable types (`#[shadow_node]`).
 ///
-/// ## miniconf Integration
-///
-/// This trait requires miniconf's Tree traits for path-based field access:
-/// - `TreeSchema`: Schema introspection and key iteration
-/// - `TreeSerialize`: Serialize individual fields by path
-/// - `TreeDeserialize`: Deserialize individual fields by path
-///
-/// Field iteration and serialization use miniconf's APIs:
-/// ```ignore
-/// // Iterate all field paths using SCHEMA from TreeSchema
-/// for path in Self::SCHEMA.nodes::<Path<...>, MAX_DEPTH>() { ... }
-///
-/// // Deserialize a field by path
-/// miniconf::postcard::set_by_key(&mut self.state, &path, data)?;
-///
-/// // Serialize a field by path
-/// miniconf::postcard::get_by_key(&self.state, &path, buf)?;
-/// ```
-///
-/// ## miniconf Enum Limitations
-///
-/// **Important**: miniconf only supports **unit** and **newtype** (single-field tuple)
-/// enum variants. Struct variants and multi-field tuple variants are NOT supported.
-///
-/// ```ignore
-/// // ✅ Supported
-/// enum Good {
-///     Unit,              // unit variant
-///     Newtype(Config),   // newtype variant (single field)
-/// }
-///
-/// // ❌ NOT supported by miniconf
-/// enum Bad {
-///     Struct { a: u32 },     // struct variant - use newtype instead
-///     Tuple(u32, u32),       // multi-field tuple - wrap in struct
-/// }
-/// ```
-///
 /// ## Naming Convention
 ///
 /// - `ShadowNode`: Any type in the shadow tree (structs, enums, nested types)
@@ -200,14 +182,7 @@ pub fn serialize_null_fields<S: serde::ser::SerializeMap>(
 ///
 /// This ensures that changes to nested types propagate to parent hashes.
 /// Only the top-level `ShadowRoot::SCHEMA_HASH` is actually stored in KV.
-pub trait ShadowNode:
-    Default
-    + Clone
-    + Sized
-    + miniconf::TreeSchema
-    + miniconf::TreeSerialize
-    + for<'de> miniconf::TreeDeserialize<'de>
-{
+pub trait ShadowNode: Default + Clone + Sized {
     /// Delta type for partial updates (fields wrapped in Option).
     ///
     /// Used by the generated `apply_and_persist()` method to update state
@@ -218,7 +193,6 @@ pub trait ShadowNode:
     /// - `Default`: Create empty delta for `update_desired()` pattern
     /// - `Serialize`: Send delta to cloud via MQTT (device→cloud desired updates)
     /// - `DeserializeOwned`: Receive delta from cloud via MQTT (cloud→device)
-    /// - `TreeSchema + TreeSerialize`: miniconf traversal for `apply_and_persist()`
     ///
     /// ## Delta Type Shapes
     ///
@@ -248,11 +222,7 @@ pub trait ShadowNode:
     /// ```
     /// This allows `{"config": {"polarity": "npn"}}` to update config without
     /// changing the variant.
-    type Delta: Default
-        + Serialize
-        + DeserializeOwned
-        + miniconf::TreeSchema
-        + miniconf::TreeSerialize;
+    type Delta: Default + Serialize + DeserializeOwned;
 
     /// Reported type for serialization to cloud.
     ///
@@ -284,13 +254,16 @@ pub trait ShadowNode:
 
     /// Maximum nesting depth for this type's field tree.
     ///
-    /// Derived from miniconf's `SCHEMA.shape().max_depth`.
-    const MAX_DEPTH: usize = Self::SCHEMA.shape().max_depth;
+    /// Computed at compile time per-field during codegen.
+    /// For structs: 1 + max(nested field depths)
+    /// For enums: 1 + max(variant inner depths)
+    const MAX_DEPTH: usize;
 
     /// Maximum key length needed for this type's fields (excluding prefix).
     ///
-    /// Derived from miniconf's `SCHEMA.shape().max_length("/")`.
-    const MAX_KEY_LEN: usize = Self::SCHEMA.shape().max_length("/");
+    /// Computed at compile time per-field during codegen.
+    /// Includes the longest field path including nested types.
+    const MAX_KEY_LEN: usize;
 
     /// Maximum serialized value size for any field.
     ///
@@ -341,20 +314,19 @@ pub trait ShadowNode:
     ///
     /// ## Implementation Strategy
     ///
-    /// **For structs:** Uses generic miniconf traversal. Since `Option<T>` is
-    /// transparent in miniconf (`None` → `ValueError::Absent`, `Some(v)` → inner value),
-    /// we can iterate Delta's schema and skip absent fields:
+    /// **For structs:** Uses per-field generated code. Each field in the delta is
+    /// checked for `Some(value)`, and if present, both the local state and KV storage
+    /// are updated:
     ///
     /// ```ignore
-    /// for path in Self::Delta::SCHEMA.nodes::<KeyPath<128>, { Self::MAX_DEPTH }>() {
-    ///     match miniconf::postcard::get_by_key(delta, &path, buf) {
-    ///         Ok(bytes) => {
-    ///             miniconf::postcard::set_by_key(self, &path, bytes)?;
-    ///             kv.store(&make_key(prefix, &path), bytes).await?;
-    ///         }
-    ///         Err(SerdeError::Value(ValueError::Absent)) => continue,
-    ///         Err(e) => return Err(e.into()),
-    ///     }
+    /// if let Some(ref timeout) = delta.timeout {
+    ///     self.timeout = *timeout;
+    ///     let bytes = postcard::to_slice(&self.timeout, buf)?;
+    ///     kv.store(&make_key(prefix, "/timeout"), bytes).await?;
+    /// }
+    /// if let Some(ref config) = delta.config {
+    ///     // Nested ShadowNode: delegate to inner apply_and_persist
+    ///     self.config.apply_and_persist(config, &make_key(prefix, "/config"), kv, buf).await?;
     /// }
     /// ```
     ///
@@ -444,31 +416,72 @@ pub trait ShadowNode:
     fn apply_field_default(&mut self, field_path: &str) -> bool;
 
     // =========================================================================
-    // Enum Handling (with defaults for non-enum types)
+    // KV Persistence Methods (generated by derive macro)
     // =========================================================================
 
-    /// Get metadata about enum fields in this type.
+    /// Load this type's state from KV storage.
     ///
-    /// Returns empty slice for types with no enum fields.
-    fn enum_fields() -> &'static [EnumFieldMeta] {
-        &[]
-    }
-
-    /// Set the active variant for an enum field.
+    /// For enums: reads `_variant` key first, constructs the variant, then loads inner fields.
+    /// For structs: recursively calls `load_from_kv()` on each field.
     ///
-    /// The variant is constructed with default field values.
-    fn set_enum_variant(
+    /// KEY_LEN is propagated from root to ensure buffer size matches full key paths.
+    ///
+    /// ## Implementation
+    ///
+    /// Generated per-field by the derive macro:
+    /// - **Leaf fields**: Fetch from KV, deserialize via postcard, apply default if missing
+    /// - **Nested ShadowNode**: Delegate to inner type's `load_from_kv()`
+    /// - **Enums**: Read `_variant` key, construct variant, load inner fields
+    fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
         &mut self,
-        _field_path: &str,
-        _variant: &str,
-    ) -> Result<(), EnumFieldError> {
-        Err(EnumFieldError::NotAnEnumField)
-    }
+        prefix: &str,
+        kv: &K,
+        buf: &mut [u8],
+    ) -> impl core::future::Future<Output = Result<LoadFieldResult, KvError<K::Error>>>;
 
-    /// Get the active variant name for an enum field.
-    fn get_enum_variant(&self, _field_path: &str) -> Result<&'static str, EnumFieldError> {
-        Err(EnumFieldError::NotAnEnumField)
-    }
+    /// Load this type's state from KV storage with migration support.
+    ///
+    /// Same as `load_from_kv()` but tries migration sources when primary key is missing.
+    fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
+        &mut self,
+        prefix: &str,
+        kv: &K,
+        buf: &mut [u8],
+    ) -> impl core::future::Future<Output = Result<LoadFieldResult, KvError<K::Error>>>;
+
+    /// Persist this type's state to KV storage.
+    ///
+    /// For enums: writes `_variant` key, then inner fields.
+    /// For structs: recursively calls `persist_to_kv()` on each field.
+    ///
+    /// KEY_LEN is propagated from root to ensure buffer size matches full key paths.
+    ///
+    /// ## Implementation
+    ///
+    /// Generated per-field by the derive macro:
+    /// - **Leaf fields**: Serialize via postcard, store to KV
+    /// - **Nested ShadowNode**: Delegate to inner type's `persist_to_kv()`
+    /// - **Enums**: Write `_variant` key as UTF-8, persist active variant's fields
+    fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
+        &self,
+        prefix: &str,
+        kv: &K,
+        buf: &mut [u8],
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>>;
+
+    /// Collect all valid key paths for this type.
+    ///
+    /// Used by `commit()` for garbage collection. Enums report ALL variant fields
+    /// (not just active), since inactive variant fields are valid keys that should
+    /// not be removed.
+    ///
+    /// ## Implementation
+    ///
+    /// Generated per-field by the derive macro:
+    /// - **Leaf fields**: Add `prefix + /field_name` to set
+    /// - **Nested ShadowNode**: Delegate to inner type's `collect_valid_keys()`
+    /// - **Enums**: Add `_variant` key, then collect from ALL variants
+    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str));
 }
 
 /// Trait for top-level shadow state types.

@@ -31,7 +31,7 @@ use transform::validate_no_optional_fields;
 ///
 /// # Field Attributes
 ///
-/// - `#[shadow_attr(leaf)]` - Mark field as a leaf (primitive-like, won't recursively patch)
+/// - `#[shadow_attr(opaque)]` - Mark field as opaque (primitive-like, won't recursively patch)
 /// - `#[shadow_attr(report_only)]` - Field only appears in Reported type, not in Delta
 ///
 /// # Example
@@ -41,7 +41,7 @@ use transform::validate_no_optional_fields;
 /// struct DeviceState {
 ///     pub temperature: f32,
 ///
-///     #[shadow_attr(leaf)]
+///     #[shadow_attr(opaque)]
 ///     pub status: String,
 ///
 ///     #[shadow_attr(report_only)]
@@ -95,7 +95,7 @@ pub fn shadow_patch(
 /// This macro generates:
 /// - `ShadowRoot` trait implementation (includes the shadow name)
 /// - `ShadowNode` trait implementation (persistence support)
-/// - `Delta{Name}` struct with miniconf::Tree derives
+/// - `Delta{Name}` struct for applying partial updates
 /// - `Reported{Name}` struct with serde skip_serializing_if
 /// - `ReportedUnionFields` implementation
 ///
@@ -105,9 +105,8 @@ pub fn shadow_patch(
 ///
 /// # Field Attributes
 ///
-/// - `#[shadow_attr(leaf)]` - Mark field as a leaf (primitive-like)
+/// - `#[shadow_attr(opaque)]` - Mark field as opaque (primitive-like, won't recursively patch)
 /// - `#[shadow_attr(report_only)]` - Field only appears in Reported type
-/// - `#[shadow_attr(opaque)]` - Treat as leaf, requires MaxSize bound
 /// - `#[shadow_attr(migrate(from = "old_key"))]` - Migration from old key
 /// - `#[shadow_attr(migrate(from = "old_key", convert = fn))]` - Migration with conversion
 /// - `#[shadow_attr(default = value)]` - Custom default value
@@ -116,7 +115,7 @@ pub fn shadow_patch(
 ///
 /// ```ignore
 /// #[shadow_root(name = "device")]
-/// #[derive(Clone, Default, miniconf::Tree)]
+/// #[derive(Clone, Default)]
 /// struct DeviceShadow {
 ///     pub config: Config,
 ///     pub version: u32,
@@ -136,35 +135,34 @@ pub fn shadow_root(
 ///
 /// This macro generates:
 /// - `ShadowNode` trait implementation (persistence support)
-/// - `Delta{Name}` struct/enum with miniconf::Tree derives
+/// - `Delta{Name}` struct/enum for applying partial updates
 /// - `Reported{Name}` struct/enum with serde skip_serializing_if
 /// - `ReportedUnionFields` implementation
 ///
 /// # Field Attributes
 ///
-/// - `#[shadow_attr(leaf)]` - Mark field as a leaf (primitive-like)
+/// - `#[shadow_attr(opaque)]` - Mark field as opaque (primitive-like, won't recursively patch)
 /// - `#[shadow_attr(report_only)]` - Field only appears in Reported type
-/// - `#[shadow_attr(opaque)]` - Treat as leaf, requires MaxSize bound
 /// - `#[shadow_attr(migrate(from = "old_key"))]` - Migration from old key
 /// - `#[shadow_attr(default = value)]` - Custom default value
 ///
 /// # Supported Types
 ///
 /// - Structs with named fields
-/// - Enums with unit or newtype variants (miniconf limitation)
+/// - Enums with unit or newtype variants
 ///
 /// # Example
 ///
 /// ```ignore
 /// #[shadow_node]
-/// #[derive(Clone, Default, miniconf::Tree)]
+/// #[derive(Clone, Default)]
 /// struct Config {
 ///     pub timeout: u32,
 ///     pub retries: u8,
 /// }
 ///
 /// #[shadow_node]
-/// #[derive(Clone, miniconf::Tree)]
+/// #[derive(Clone)]
 /// enum IpSettings {
 ///     #[default]
 ///     Dhcp,
@@ -439,7 +437,7 @@ fn generate_struct_apply_patch_body(input: &DeriveInput) -> syn::Result<TokenStr
                 quote! { #idx }
             });
 
-        let is_leaf = attrs.leaf || is_primitive(&field.ty);
+        let is_leaf = attrs.opaque || is_primitive(&field.ty);
 
         let statement = if is_leaf {
             quote! {
