@@ -9,6 +9,7 @@ pub mod hash;
 pub mod kv_shadow;
 pub mod kv_store;
 pub mod migration;
+pub mod opaque;
 pub mod scan;
 
 pub use rustot_derive;
@@ -54,6 +55,8 @@ impl LoadFieldResult {
 
 // Re-export hash functions (for derive macro use)
 pub use hash::{fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64, FNV1A_INIT};
+
+// The impl_opaque! macro is exported at crate root via #[macro_export]
 
 // Re-export new error types
 pub use error::{KvError, ScanError};

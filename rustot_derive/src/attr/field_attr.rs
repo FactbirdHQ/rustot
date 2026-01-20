@@ -78,11 +78,6 @@ impl FieldAttrs {
 
         result
     }
-
-    /// Check if this field is a leaf (primitive-like, no recursive patching)
-    pub fn is_leaf(&self) -> bool {
-        self.opaque
-    }
 }
 
 /// Parsed arguments from #[shadow_attr(...)]
@@ -403,7 +398,6 @@ mod tests {
         let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque)])];
         let field_attrs = FieldAttrs::from_attrs(&attrs);
         assert!(field_attrs.opaque);
-        assert!(field_attrs.is_leaf());
         assert!(!field_attrs.report_only);
     }
 

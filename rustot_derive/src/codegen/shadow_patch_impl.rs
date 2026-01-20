@@ -7,7 +7,6 @@ use syn::{
 
 use crate::attr::{get_attr, FieldAttrs, CFG_ATTR};
 use crate::transform::borrow_fields;
-use crate::types::is_primitive;
 
 /// Generate the ShadowPatch trait implementation for a struct or enum
 pub fn generate_shadow_patch_impl(
@@ -77,7 +76,9 @@ fn generate_struct_apply_patch(data_struct: &DataStruct) -> syn::Result<TokenStr
                 quote! { #idx }
             });
 
-        let is_leaf = attrs.opaque || is_primitive(&field.ty);
+        // Only explicit opaque marking makes a field a leaf.
+        // Primitives now implement ShadowPatch with Delta = Self.
+        let is_leaf = attrs.opaque;
 
         let statement = if is_leaf {
             quote! {
@@ -119,7 +120,9 @@ fn generate_struct_into_reported(
             .unwrap_or_default();
 
         let ident = field.ident.as_ref().expect("Struct fields must be named");
-        let is_leaf = attrs.opaque || is_primitive(&field.ty);
+        // Only explicit opaque marking makes a field a leaf.
+        // Primitives now implement ShadowPatch with Delta = Self.
+        let is_leaf = attrs.opaque;
 
         let init = if attrs.report_only {
             // report_only fields are initialized to None
@@ -275,7 +278,9 @@ fn variables_and_actions<'a>(
                 .unwrap_or_else(|| format_ident!("{}", (b'a' + i as u8) as char));
 
             let attrs = FieldAttrs::from_attrs(&field.attrs);
-            let is_leaf = attrs.opaque || is_primitive(&field.ty);
+            // Only explicit opaque marking makes a field a leaf.
+            // Primitives now implement ShadowPatch with Delta = Self.
+            let is_leaf = attrs.opaque;
 
             let action = if is_leaf {
                 quote! { Some(#var_ident) }
@@ -334,7 +339,9 @@ impl PatchImpl {
 
             let attrs = FieldAttrs::from_attrs(&field.attrs);
             let field_ty = &field.ty;
-            let is_leaf = attrs.opaque || is_primitive(field_ty);
+            // Only explicit opaque marking makes a field a leaf.
+            // Primitives now implement ShadowPatch with Delta = Self.
+            let is_leaf = attrs.opaque;
 
             let (default_action, assign_action) = if is_leaf {
                 (
