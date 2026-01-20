@@ -101,16 +101,6 @@ pub struct EnumFieldMeta {
     pub variants: &'static [&'static str],
 }
 
-/// Specifies which key set to return from `ShadowNode::keys()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeySet {
-    /// Current schema keys only
-    Schema,
-
-    /// Schema keys plus migration source keys
-    WithMigrations,
-}
-
 impl From<ShadowError> for Error {
     fn from(e: ShadowError) -> Self {
         Self::ShadowError(e)

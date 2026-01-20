@@ -1,7 +1,11 @@
 mod field_attr;
 mod shadow_attr;
 
-pub use field_attr::{get_attr, has_default_attr, FieldAttrs, CFG_ATTR, SHADOW_ATTR};
+pub use field_attr::{
+    apply_rename_all, get_attr, get_serde_rename, get_serde_rename_all, get_serde_tag_content,
+    get_variant_serde_name, has_default_attr, DefaultValue, FieldAttrs, CFG_ATTR, SHADOW_ATTR,
+};
 pub use shadow_attr::{
-    ShadowParams, ShadowPatchParams, DEFAULT_MAX_PAYLOAD_SIZE, DEFAULT_TOPIC_PREFIX,
+    ShadowNodeParams, ShadowParams, ShadowPatchParams, ShadowRootParams, DEFAULT_MAX_PAYLOAD_SIZE,
+    DEFAULT_TOPIC_PREFIX,
 };

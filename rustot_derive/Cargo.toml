@@ -15,6 +15,7 @@ proc-macro = true
 syn = "2"
 quote = "1"
 proc-macro2 = "1"
+proc-macro-crate = "3"
 
 [dev-dependencies]
 rustot = { path = ".." }

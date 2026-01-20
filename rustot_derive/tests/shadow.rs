@@ -379,3 +379,10 @@ fn enum_leaf() {
 //         a: A,
 //     }
 // }
+
+// =========================================================================
+// Adjacently-Tagged Enum Tests (shadow_node)
+// =========================================================================
+//
+// These tests are in the main crate's kv_shadow.rs file where miniconf/postcard
+// dependencies are available. See src/shadows/kv_shadow.rs for the tests.
