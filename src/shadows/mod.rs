@@ -5,11 +5,11 @@ pub mod topics;
 // KV-based shadow storage modules
 pub mod commit;
 pub mod hash;
-pub mod kv_shadow;
 pub mod kv_store;
 pub mod migration;
 pub mod opaque;
 pub mod scan;
+pub mod shadow;
 
 pub use rustot_derive;
 
@@ -20,8 +20,8 @@ pub use kv_store::KVStore;
 pub use kv_store::NoPersist;
 pub use kv_store::SequentialKVStore;
 
-// Re-export KvShadow
-pub use kv_shadow::KvShadow;
+// Re-export Shadow
+pub use shadow::Shadow;
 
 // Re-export migration types
 pub use migration::{LoadResult, MigrationError, MigrationSource};
