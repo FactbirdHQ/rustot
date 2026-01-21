@@ -1,13 +1,7 @@
 use syn::{
     parse::{Parse, ParseStream},
-    Ident, LitStr, Token,
+    Ident, LitInt, LitStr, Token,
 };
-
-/// Default AWS IoT topic prefix
-pub const DEFAULT_TOPIC_PREFIX: &str = "$aws";
-
-/// Default maximum payload size in bytes
-pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = 512;
 
 // =============================================================================
 // KV-based shadow macros (Phase 8)
@@ -21,6 +15,10 @@ pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = 512;
 pub struct ShadowRootParams {
     /// Shadow name (required for named shadows, None for classic)
     pub name: Option<LitStr>,
+    /// Topic prefix for MQTT topics (e.g., "$aws" for AWS IoT)
+    pub topic_prefix: Option<LitStr>,
+    /// Maximum payload size for shadow documents
+    pub max_payload_len: Option<LitInt>,
 }
 
 impl Parse for ShadowRootParams {
@@ -34,6 +32,12 @@ impl Parse for ShadowRootParams {
             match ident.to_string().as_str() {
                 "name" => {
                     params.name = Some(input.parse()?);
+                }
+                "topic_prefix" => {
+                    params.topic_prefix = Some(input.parse()?);
+                }
+                "max_payload_len" => {
+                    params.max_payload_len = Some(input.parse()?);
                 }
                 unknown => {
                     return Err(syn::Error::new(
@@ -86,6 +90,45 @@ mod tests {
     fn test_parse_shadow_root_params_empty() {
         let params: ShadowRootParams = syn::parse2(quote::quote!()).unwrap();
         assert!(params.name.is_none());
+        assert!(params.topic_prefix.is_none());
+        assert!(params.max_payload_len.is_none());
+    }
+
+    #[test]
+    fn test_parse_shadow_root_params_with_topic_prefix() {
+        let params: ShadowRootParams =
+            syn::parse2(quote::quote!(name = "device", topic_prefix = "$aws")).unwrap();
+        assert_eq!(params.name.unwrap().value(), "device");
+        assert_eq!(params.topic_prefix.unwrap().value(), "$aws");
+        assert!(params.max_payload_len.is_none());
+    }
+
+    #[test]
+    fn test_parse_shadow_root_params_with_max_payload_len() {
+        let params: ShadowRootParams =
+            syn::parse2(quote::quote!(name = "device", max_payload_len = 1024)).unwrap();
+        assert_eq!(params.name.unwrap().value(), "device");
+        assert!(params.topic_prefix.is_none());
+        assert_eq!(
+            params.max_payload_len.unwrap().base10_parse::<usize>().unwrap(),
+            1024
+        );
+    }
+
+    #[test]
+    fn test_parse_shadow_root_params_all() {
+        let params: ShadowRootParams = syn::parse2(quote::quote!(
+            name = "device",
+            topic_prefix = "$custom",
+            max_payload_len = 2048
+        ))
+        .unwrap();
+        assert_eq!(params.name.unwrap().value(), "device");
+        assert_eq!(params.topic_prefix.unwrap().value(), "$custom");
+        assert_eq!(
+            params.max_payload_len.unwrap().base10_parse::<usize>().unwrap(),
+            2048
+        );
     }
 
     #[test]

@@ -39,6 +39,10 @@ pub struct ShadowNodeConfig {
     pub is_root: bool,
     /// The shadow name (for ShadowRoot types)
     pub name: Option<String>,
+    /// Topic prefix for MQTT topics (e.g., "$aws" for AWS IoT)
+    pub topic_prefix: Option<String>,
+    /// Maximum payload size for shadow documents
+    pub max_payload_len: Option<usize>,
 }
 
 /// Generate all code for a shadow node type
@@ -78,9 +82,19 @@ pub fn generate_shadow_node(
             None => quote! { None },
         };
 
+        let prefix_const = config.topic_prefix.as_ref().map(|p| {
+            quote! { const PREFIX: &'static str = #p; }
+        });
+
+        let max_payload_const = config.max_payload_len.map(|s| {
+            quote! { const MAX_PAYLOAD_SIZE: usize = #s; }
+        });
+
         quote! {
             impl #krate::shadows::ShadowRoot for #name {
                 const NAME: Option<&'static str> = #name_value;
+                #prefix_const
+                #max_payload_const
             }
         }
     } else {

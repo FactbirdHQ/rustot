@@ -112,6 +112,10 @@ fn shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
     let config = ShadowNodeConfig {
         is_root: true,
         name: params.name.map(|s| s.value()),
+        topic_prefix: params.topic_prefix.map(|s| s.value()),
+        max_payload_len: params
+            .max_payload_len
+            .map(|l| l.base10_parse().unwrap()),
     };
 
     let shadow_code = generate_shadow_node(&derive_input, &config)?;
@@ -133,6 +137,8 @@ fn shadow_node_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
     let config = ShadowNodeConfig {
         is_root: false,
         name: None,
+        topic_prefix: None,
+        max_payload_len: None,
     };
 
     let shadow_code = generate_shadow_node(&derive_input, &config)?;
