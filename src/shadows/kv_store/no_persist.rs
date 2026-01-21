@@ -15,7 +15,7 @@ use super::KVStore;
 ///
 /// ```ignore
 /// // Non-persisted shadow for testing or volatile state
-/// let mut shadow = KvShadow::<DeviceShadow>::new_in_memory();
+/// let mut shadow = Shadow::<DeviceShadow, _, NoPersist>::new_in_memory(&mqtt);
 /// shadow.load().await?;  // Initializes with defaults, nothing persisted
 /// ```
 pub struct NoPersist;
