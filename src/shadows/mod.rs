@@ -2,22 +2,27 @@ pub mod data_types;
 pub mod error;
 pub mod topics;
 
-// KV-based shadow storage modules
+// Shadow storage modules
 pub mod commit;
 pub mod hash;
-pub mod kv_store;
 pub mod migration;
 pub mod opaque;
 pub mod shadow;
+pub mod store;
 
 pub use rustot_derive;
 
-// Re-export KVStore trait and implementations
-#[cfg(feature = "std")]
-pub use kv_store::FileKVStore;
-pub use kv_store::KVStore;
-pub use kv_store::NoPersist;
-pub use kv_store::SequentialKVStore;
+// Re-export StateStore trait and implementations
+pub use store::InMemory;
+pub use store::StateStore;
+
+// Re-export KVStore (feature-gated) - KVPersist is defined in this module
+#[cfg(feature = "shadows_kv_persist")]
+pub use store::KVStore;
+#[cfg(feature = "shadows_kv_persist")]
+pub use store::SequentialKVStore;
+#[cfg(all(feature = "std", feature = "shadows_kv_persist"))]
+pub use store::FileKVStore;
 
 // Re-export Shadow
 pub use shadow::Shadow;
@@ -32,6 +37,7 @@ pub use commit::CommitStats;
 ///
 /// Returned by `load_from_kv()` to indicate how many fields were loaded,
 /// defaulted, or migrated.
+#[cfg(feature = "shadows_kv_persist")]
 #[derive(Debug, Default, Clone)]
 pub struct LoadFieldResult {
     /// Number of fields loaded from KV storage.
@@ -42,6 +48,7 @@ pub struct LoadFieldResult {
     pub migrated: usize,
 }
 
+#[cfg(feature = "shadows_kv_persist")]
 impl LoadFieldResult {
     /// Merge another result into this one.
     pub fn merge(&mut self, other: LoadFieldResult) {
@@ -120,7 +127,7 @@ pub fn serialize_null_fields<S: serde::ser::SerializeMap>(
     Ok(())
 }
 
-/// Trait for types that can be patched from a delta and persisted to KV storage.
+/// Core shadow type trait - clean, no KV awareness.
 ///
 /// Implemented by both top-level shadow structs (`#[shadow_root]`) and nested
 /// patchable types (`#[shadow_node]`).
@@ -144,12 +151,9 @@ pub fn serialize_null_fields<S: serde::ser::SerializeMap>(
 /// ```
 ///
 /// This ensures that changes to nested types propagate to parent hashes.
-/// Only the top-level `ShadowRoot::SCHEMA_HASH` is actually stored in KV.
+/// Only the top-level `ShadowRoot::SCHEMA_HASH` is actually stored.
 pub trait ShadowNode: Default + Clone + Sized {
     /// Delta type for partial updates (fields wrapped in Option).
-    ///
-    /// Used by the generated `apply_and_persist()` method to update state
-    /// and persist changed fields in a single pass.
     ///
     /// ## Trait Bounds
     ///
@@ -183,8 +187,6 @@ pub trait ShadowNode: Default + Clone + Sized {
     ///     config: Option<DeltaPortModeConfig>,
     /// }
     /// ```
-    /// This allows `{"config": {"polarity": "npn"}}` to update config without
-    /// changing the variant.
     type Delta: Default + Serialize + serde::de::DeserializeOwned;
 
     /// Reported type for serialization to cloud.
@@ -197,20 +199,51 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// All `Reported` types must implement `ReportedUnionFields`, which provides:
     /// - `Serialize` (as a supertrait)
     /// - `serialize_into_map()` for flat union serialization
-    ///
-    /// **Why universal?** At macro expansion time, we don't know if a type will be
-    /// used as an inner type of an adjacently-tagged enum. So all `#[shadow_node]`
-    /// types generate `ReportedUnionFields` defensively.
-    ///
-    /// ## Generation Requirements
-    ///
-    /// All `Option` fields in the generated Reported type must have:
-    /// ```ignore
-    /// #[serde(skip_serializing_if = "Option::is_none")]
-    /// ```
-    /// This ensures `None` fields are omitted from JSON rather than serialized as `null`.
     type Reported: ReportedUnionFields;
 
+    /// Compile-time hash of this type's schema structure.
+    ///
+    /// For nested `ShadowNode` fields, this includes their `SCHEMA_HASH`.
+    /// For primitive fields, this includes the field name and type name.
+    /// For fields with migrations, this includes the migration source keys.
+    ///
+    /// **Note**: This hash is used for composition. Only the top-level
+    /// `ShadowRoot` hash is stored for change detection.
+    const SCHEMA_HASH: u64;
+
+    // =========================================================================
+    // Core Methods
+    // =========================================================================
+
+    /// Apply delta to state (pure mutation, no storage, no serialization).
+    ///
+    /// This method updates self with delta values. It does NOT persist
+    /// to storage - that's the responsibility of the `StateStore`.
+    ///
+    /// ## Why `&Self::Delta` (by reference)?
+    ///
+    /// Taking delta by reference (not by value) allows callers to retain the
+    /// delta after applying, which is needed for patterns like `wait_delta()`
+    /// that return the delta to the caller.
+    fn apply_delta(&mut self, delta: &Self::Delta);
+
+    /// Convert this state into its reported representation.
+    fn into_reported(self) -> Self::Reported;
+}
+
+// =============================================================================
+// KV Persistence Trait (feature-gated)
+// =============================================================================
+
+/// Field-level persistence operations for KV storage.
+///
+/// This trait is only available with the `shadows_kv_persist` feature and
+/// provides methods for field-level KV persistence with migration support.
+///
+/// Types implementing `KVPersist` can be stored in field-level KV stores
+/// like `SequentialKVStore` and `FileKVStore`.
+#[cfg(feature = "shadows_kv_persist")]
+pub trait KVPersist: ShadowNode {
     // =========================================================================
     // KV Storage Constants
     // =========================================================================
@@ -234,96 +267,9 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// for leaf types. Opaque field types must implement `MaxSize`.
     const MAX_VALUE_LEN: usize;
 
-    /// Compile-time hash of this type's schema structure.
-    ///
-    /// For nested `ShadowNode` fields, this includes their `SCHEMA_HASH`.
-    /// For primitive fields, this includes the field name and type name.
-    /// For fields with migrations, this includes the migration source keys.
-    ///
-    /// **Note**: This hash is used for composition. Only the top-level
-    /// `ShadowRoot` hash is stored in KV for change detection.
-    const SCHEMA_HASH: u64;
-
     // =========================================================================
-    // Core Methods
+    // Migration Support
     // =========================================================================
-
-    /// Apply delta to state AND persist changed fields to KV in one pass.
-    ///
-    /// This method updates self with delta values AND persists those values
-    /// to KV storage in a single traversal.
-    ///
-    /// ## Why `&Self::Delta` (by reference)?
-    ///
-    /// Taking delta by reference (not by value) allows callers to retain the
-    /// delta after applying, which is needed for patterns like `wait_delta()`
-    /// that return the delta to the caller:
-    ///
-    /// ```ignore
-    /// if let Some(ref delta) = received_delta {
-    ///     shadow.apply_and_persist(delta, prefix, kv, &mut buf).await?;
-    ///     // delta still available to return to caller
-    /// }
-    /// Ok((state, received_delta))
-    /// ```
-    ///
-    /// This eliminates the need for `Clone` on Delta.
-    ///
-    /// ## Why `&K` (shared reference for KVStore)?
-    ///
-    /// KVStore uses interior mutability (`Mutex`), so methods take `&self`.
-    /// This allows multiple shadows to share a single KVStore via `&'a K`
-    /// references without requiring `alloc`.
-    ///
-    /// ## Implementation Strategy
-    ///
-    /// **For structs:** Uses per-field generated code. Each field in the delta is
-    /// checked for `Some(value)`, and if present, both the local state and KV storage
-    /// are updated:
-    ///
-    /// ```ignore
-    /// if let Some(ref timeout) = delta.timeout {
-    ///     self.timeout = *timeout;
-    ///     let bytes = postcard::to_slice(&self.timeout, buf)?;
-    ///     kv.store(&make_key(prefix, "/timeout"), bytes).await?;
-    /// }
-    /// if let Some(ref config) = delta.config {
-    ///     // Nested ShadowNode: delegate to inner apply_and_persist
-    ///     self.config.apply_and_persist(config, &make_key(prefix, "/config"), kv, buf).await?;
-    /// }
-    /// ```
-    ///
-    /// **For enums:** Uses custom generated code for variant switching, then
-    /// delegates to inner type's `apply_and_persist`. Matching on `&Delta`
-    /// yields references to inner data:
-    ///
-    /// ```ignore
-    /// match delta {  // delta: &DeltaIpSettings
-    ///     DeltaIpSettings::Static(delta_inner) => {  // delta_inner: &DeltaStaticConfig
-    ///         if !matches!(self, IpSettings::Static(_)) {
-    ///             *self = IpSettings::Static(StaticConfig::default());
-    ///             kv.store(&make_key(prefix, "/_variant"), b"Static").await?;
-    ///         }
-    ///         if let IpSettings::Static(ref mut inner) = self {
-    ///             inner.apply_and_persist(delta_inner, &make_key(prefix, "/Static"), kv, buf).await?;
-    ///         }
-    ///     }
-    ///     // ... other variants
-    /// }
-    /// ```
-    ///
-    /// For adjacently-tagged enums (`#[serde(tag = "mode", content = "config")]`),
-    /// the JSON `mode`/`config` structure is translated to KV `/_variant` + paths.
-    fn apply_and_persist<K: KVStore>(
-        &mut self,
-        delta: &Self::Delta,
-        prefix: &str,
-        kv: &K,
-        buf: &mut [u8],
-    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>>;
-
-    /// Convert this state into its reported representation.
-    fn into_reported(self) -> Self::Reported;
 
     /// Get migration sources for a field path.
     ///
@@ -347,31 +293,6 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// migration source. It allows setting non-trivial defaults for primitive
     /// types without needing newtype wrappers.
     ///
-    /// ## Why This Exists
-    ///
-    /// Rust's `Default` trait always returns the type's inherent default
-    /// (e.g., `0` for `u32`, `false` for `bool`). But shadow fields often
-    /// need different defaults:
-    ///
-    /// ```ignore
-    /// #[shadow_node]
-    /// struct Config {
-    ///     #[shadow_attr(default = 5000)]
-    ///     timeout_ms: u32,  // Default::default() would give 0, but we want 5000
-    ///
-    ///     #[shadow_attr(default = true)]
-    ///     enabled: bool,    // Default::default() would give false
-    /// }
-    /// ```
-    ///
-    /// Without `apply_field_default()`, users would need newtype wrappers:
-    /// ```ignore
-    /// struct Timeout(u32);
-    /// impl Default for Timeout {
-    ///     fn default() -> Self { Timeout(5000) }
-    /// }
-    /// ```
-    ///
     /// ## Return Value
     ///
     /// - `true`: A custom default was applied to the field at `field_path`
@@ -379,7 +300,7 @@ pub trait ShadowNode: Default + Clone + Sized {
     fn apply_field_default(&mut self, field_path: &str) -> bool;
 
     // =========================================================================
-    // KV Persistence Methods (generated by derive macro)
+    // KV Persistence Methods
     // =========================================================================
 
     /// Load this type's state from KV storage.
@@ -388,13 +309,6 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// For structs: recursively calls `load_from_kv()` on each field.
     ///
     /// KEY_LEN is propagated from root to ensure buffer size matches full key paths.
-    ///
-    /// ## Implementation
-    ///
-    /// Generated per-field by the derive macro:
-    /// - **Leaf fields**: Fetch from KV, deserialize via postcard, apply default if missing
-    /// - **Nested ShadowNode**: Delegate to inner type's `load_from_kv()`
-    /// - **Enums**: Read `_variant` key, construct variant, load inner fields
     fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
         &mut self,
         prefix: &str,
@@ -412,23 +326,26 @@ pub trait ShadowNode: Default + Clone + Sized {
         buf: &mut [u8],
     ) -> impl core::future::Future<Output = Result<LoadFieldResult, KvError<K::Error>>>;
 
-    /// Persist this type's state to KV storage.
+    /// Persist this type's entire state to KV storage (all fields).
     ///
     /// For enums: writes `_variant` key, then inner fields.
     /// For structs: recursively calls `persist_to_kv()` on each field.
-    ///
-    /// KEY_LEN is propagated from root to ensure buffer size matches full key paths.
-    ///
-    /// ## Implementation
-    ///
-    /// Generated per-field by the derive macro:
-    /// - **Leaf fields**: Serialize via postcard, store to KV
-    /// - **Nested ShadowNode**: Delegate to inner type's `persist_to_kv()`
-    /// - **Enums**: Write `_variant` key as UTF-8, persist active variant's fields
     fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
         prefix: &str,
         kv: &K,
+        buf: &mut [u8],
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>>;
+
+    /// Persist only delta fields to KV storage (efficient partial update).
+    ///
+    /// - Structs: NO LOAD NEEDED - direct write of changed fields
+    /// - Regular enums: NO LOAD NEEDED - unconditionally write `_variant`
+    /// - Adjacently-tagged enums: NO LOAD NEEDED - only write `_variant` if `mode.is_some()`
+    fn persist_delta<K: KVStore, const KEY_LEN: usize>(
+        delta: &Self::Delta,
+        kv: &K,
+        prefix: &str,
         buf: &mut [u8],
     ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>>;
 
@@ -437,13 +354,6 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// Used by `commit()` for garbage collection. Enums report ALL variant fields
     /// (not just active), since inactive variant fields are valid keys that should
     /// not be removed.
-    ///
-    /// ## Implementation
-    ///
-    /// Generated per-field by the derive macro:
-    /// - **Leaf fields**: Add `prefix + /field_name` to set
-    /// - **Nested ShadowNode**: Delegate to inner type's `collect_valid_keys()`
-    /// - **Enums**: Add `_variant` key, then collect from ALL variants
     fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str));
 }
 

@@ -11,7 +11,14 @@ use heapless::String;
 use sequential_storage::cache::{KeyCacheImpl, NoCache};
 use sequential_storage::map::{MapConfig, MapStorage};
 
-use super::KVStore;
+use super::{KVStore, StateStore};
+use crate::shadows::commit::CommitStats;
+use crate::shadows::error::KvError;
+use crate::shadows::migration::LoadResult;
+use crate::shadows::KVPersist;
+
+/// Suffix for schema hash keys.
+const SCHEMA_HASH_SUFFIX: &str = "/__schema_hash__";
 
 /// KVStore error type for sequential storage
 #[derive(Debug)]
@@ -52,11 +59,6 @@ impl<E> From<sequential_storage::Error<E>> for SequentialKVStoreError<E> {
 /// | `NoopRawMutex` | Single async executor, no preemption |
 /// | `CriticalSectionRawMutex` | ISR/task interaction possible |
 /// | `ThreadModeRawMutex` | Only accessed from thread mode |
-///
-/// ## Design Note
-///
-/// This type is intentionally "dumb" - it provides raw KV operations only.
-/// Shadow-aware operations belong on the `Shadow` struct.
 pub struct SequentialKVStore<
     S: NorFlash,
     M: RawMutex,
@@ -106,6 +108,10 @@ impl<S: NorFlash, M: RawMutex, C: KeyCacheImpl<String<MAX_KEY_LEN>>, const MAX_K
     }
 }
 
+// =============================================================================
+// KVStore Implementation (byte-level operations)
+// =============================================================================
+
 impl<
         S: NorFlash + MultiwriteNorFlash,
         M: RawMutex,
@@ -154,7 +160,6 @@ impl<
         let mut removed = 0;
 
         // Use 4-key buffer with loop for correctness (handles any number of orphans)
-        // In practice, orphans are rare (0-1 typically after OTA)
         loop {
             let mut to_remove: heapless::Vec<String<MAX_KEY_LEN>, 4> = heapless::Vec::new();
 
@@ -164,7 +169,6 @@ impl<
                 let mut buf = [0u8; 512];
 
                 // Track seen keys since iterator returns duplicates (old versions)
-                // Only the last occurrence is the active value
                 let mut seen = heapless::FnvIndexSet::<String<MAX_KEY_LEN>, 64>::new();
 
                 // Use fetch_all_items to iterate
@@ -200,6 +204,210 @@ impl<
         }
 
         Ok(removed)
+    }
+}
+
+// =============================================================================
+// StateStore Implementation (state-level operations)
+// =============================================================================
+
+impl<
+        St: KVPersist,
+        S: NorFlash + MultiwriteNorFlash,
+        M: RawMutex,
+        C: KeyCacheImpl<String<MAX_KEY_LEN>>,
+        const MAX_KEY_LEN: usize,
+    > StateStore<St> for SequentialKVStore<S, M, C, MAX_KEY_LEN>
+{
+    type Error = SequentialKVStoreError<S::Error>;
+
+    async fn get_state(&self, prefix: &str) -> Result<St, Self::Error> {
+        let mut state = St::default();
+        let mut buf = [0u8; 512];
+        // Use KVPersist's load_from_kv to reconstruct state from storage
+        let _ = state
+            .load_from_kv::<Self, MAX_KEY_LEN>(prefix, self, &mut buf)
+            .await
+            .map_err(|e| match e {
+                KvError::Kv(kv_err) => kv_err,
+                _ => SequentialKVStoreError::KeyTooLong,
+            })?;
+        Ok(state)
+    }
+
+    async fn set_state(&self, prefix: &str, state: &St) -> Result<(), Self::Error> {
+        let mut buf = [0u8; 512];
+        state
+            .persist_to_kv::<Self, MAX_KEY_LEN>(prefix, self, &mut buf)
+            .await
+            .map_err(|e| match e {
+                KvError::Kv(kv_err) => kv_err,
+                _ => SequentialKVStoreError::KeyTooLong,
+            })
+    }
+
+    async fn apply_delta(&self, prefix: &str, delta: &St::Delta) -> Result<St, Self::Error> {
+        let mut buf = [0u8; 512];
+        // Direct delta persist - no load first!
+        St::persist_delta::<Self, MAX_KEY_LEN>(delta, self, prefix, &mut buf)
+            .await
+            .map_err(|e| match e {
+                KvError::Kv(kv_err) => kv_err,
+                _ => SequentialKVStoreError::KeyTooLong,
+            })?;
+        // Load full state to return
+        self.get_state(prefix).await
+    }
+
+    async fn load(
+        &self,
+        prefix: &str,
+        hash: u64,
+    ) -> Result<LoadResult<St>, KvError<Self::Error>> {
+        // Build hash key: prefix + SCHEMA_HASH_SUFFIX
+        let mut hash_key: heapless::String<128> = heapless::String::new();
+        hash_key.push_str(prefix).map_err(|_| KvError::KeyTooLong)?;
+        hash_key
+            .push_str(SCHEMA_HASH_SUFFIX)
+            .map_err(|_| KvError::KeyTooLong)?;
+
+        let mut hash_buf = [0u8; 8];
+        match self
+            .fetch(&hash_key, &mut hash_buf)
+            .await
+            .map_err(KvError::Kv)?
+        {
+            None => {
+                // First boot - no hash exists
+                let state = St::default();
+                self.set_state(prefix, &state).await.map_err(KvError::Kv)?;
+
+                // Write schema hash
+                self.store(&hash_key, &hash.to_le_bytes())
+                    .await
+                    .map_err(KvError::Kv)?;
+
+                // Count fields
+                let mut total_fields = 0usize;
+                St::collect_valid_keys::<128>(prefix, &mut |_| {
+                    total_fields += 1;
+                });
+
+                Ok(LoadResult {
+                    state,
+                    first_boot: true,
+                    schema_changed: false,
+                    fields_loaded: 0,
+                    fields_migrated: 0,
+                    fields_defaulted: total_fields,
+                })
+            }
+            Some(slice) if slice.len() == 8 => {
+                let stored_hash = u64::from_le_bytes(slice.try_into().unwrap());
+                if stored_hash == hash {
+                    // Hash matches - normal load
+                    let mut state = St::default();
+                    let mut buf = [0u8; 512];
+                    let field_result = state
+                        .load_from_kv::<Self, MAX_KEY_LEN>(prefix, self, &mut buf)
+                        .await?;
+
+                    Ok(LoadResult {
+                        state,
+                        first_boot: false,
+                        schema_changed: false,
+                        fields_loaded: field_result.loaded,
+                        fields_migrated: 0,
+                        fields_defaulted: field_result.defaulted,
+                    })
+                } else {
+                    // Hash mismatch - migration needed
+                    let mut state = St::default();
+                    let mut buf = [0u8; 512];
+                    let field_result = state
+                        .load_from_kv_with_migration::<Self, MAX_KEY_LEN>(prefix, self, &mut buf)
+                        .await?;
+
+                    Ok(LoadResult {
+                        state,
+                        first_boot: false,
+                        schema_changed: true,
+                        fields_loaded: field_result.loaded,
+                        fields_migrated: field_result.migrated,
+                        fields_defaulted: field_result.defaulted,
+                    })
+                }
+            }
+            Some(_) => {
+                // Invalid hash length - treat as first boot
+                let state = St::default();
+                self.set_state(prefix, &state).await.map_err(KvError::Kv)?;
+
+                self.store(&hash_key, &hash.to_le_bytes())
+                    .await
+                    .map_err(KvError::Kv)?;
+
+                let mut total_fields = 0usize;
+                St::collect_valid_keys::<128>(prefix, &mut |_| {
+                    total_fields += 1;
+                });
+
+                Ok(LoadResult {
+                    state,
+                    first_boot: true,
+                    schema_changed: false,
+                    fields_loaded: 0,
+                    fields_migrated: 0,
+                    fields_defaulted: total_fields,
+                })
+            }
+        }
+    }
+
+    async fn commit(
+        &self,
+        prefix: &str,
+        hash: u64,
+    ) -> Result<CommitStats, KvError<Self::Error>> {
+        // Build set of valid keys for O(1) lookup during GC
+        let mut valid: heapless::FnvIndexSet<heapless::String<128>, 128> =
+            heapless::FnvIndexSet::new();
+
+        // Collect all valid keys using per-field codegen
+        St::collect_valid_keys::<128>(prefix, &mut |key| {
+            // Strip prefix to get relative key for comparison
+            let rel_key = key.strip_prefix(prefix).unwrap_or(key);
+            let mut hs: heapless::String<128> = heapless::String::new();
+            let _ = hs.push_str(rel_key);
+            let _ = valid.insert(hs);
+        });
+
+        // Remove orphaned keys using KVStore::remove_if
+        let orphans_removed = self
+            .remove_if(prefix, |key| {
+                let rel_key = key.strip_prefix(prefix).unwrap_or(key);
+                let mut rel_key_string: heapless::String<128> = heapless::String::new();
+                let _ = rel_key_string.push_str(rel_key);
+                !valid.contains(&rel_key_string) && !rel_key.starts_with("/__")
+            })
+            .await
+            .map_err(KvError::Kv)?;
+
+        // Update schema hash to current
+        let mut hash_key: heapless::String<128> = heapless::String::new();
+        hash_key.push_str(prefix).map_err(|_| KvError::KeyTooLong)?;
+        hash_key
+            .push_str(SCHEMA_HASH_SUFFIX)
+            .map_err(|_| KvError::KeyTooLong)?;
+
+        self.store(&hash_key, &hash.to_le_bytes())
+            .await
+            .map_err(KvError::Kv)?;
+
+        Ok(CommitStats {
+            orphans_removed,
+            schema_hash_updated: true,
+        })
     }
 }
 

@@ -65,19 +65,17 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     let mut variant_names = Vec::new(); // Serde names for all variants
     let mut variant_idents = Vec::new(); // Rust idents for all variants
 
-    // For apply_and_persist - mode switching
+    // For apply_delta - mode switching
     let mut mode_switch_arms = Vec::new();
 
-    // For apply_and_persist - config application
+    // For apply_delta - config application
     let mut config_apply_arms = Vec::new();
 
     // For into_reported
     let mut into_reported_arms = Vec::new();
 
-    // For set/get_enum_variant
-    let mut set_variant_arms = Vec::new();
-    let mut get_variant_arms = Vec::new();
-    let mut variant_name_arms = Vec::new(); // Simple arms that return &str (not Result)
+    // For variant name matching
+    let mut variant_name_arms = Vec::new();
 
     // For schema hash
     let mut schema_hash_code = Vec::new();
@@ -86,15 +84,16 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     let mut max_value_len_items = Vec::new();
 
     // For custom Serialize - flat union
-    let mut serialize_match_arms = Vec::new();
     let mut inactive_variant_field_nulls = Vec::new(); // field names to null when not active
 
     // Track which variants have data (for DeltaConfig enum)
     let mut variants_with_data: Vec<(&syn::Variant, String)> = Vec::new();
 
-    // New codegen collections for load_from_kv, persist_to_kv, collect_valid_keys
+    // KVPersist-specific codegen (feature-gated)
     let mut load_from_kv_variant_arms = Vec::new();
     let mut persist_to_kv_variant_arms = Vec::new();
+    let mut persist_delta_mode_arms = Vec::new();
+    let mut persist_delta_config_arms = Vec::new();
     let mut collect_valid_keys_arms = Vec::new();
     let mut max_depth_items = Vec::new();
     let mut max_key_len_items = Vec::new();
@@ -117,17 +116,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 // Unit variant - no data
                 reported_variants.push(quote! { #variant_ident, });
 
-                set_variant_arms.push(quote! {
-                    #serde_name => {
-                        *self = Self::#variant_ident;
-                        Ok(())
-                    }
-                });
-
-                get_variant_arms.push(quote! {
-                    Self::#variant_ident => Ok(#serde_name),
-                });
-
                 variant_name_arms.push(quote! {
                     Self::#variant_ident => #serde_name,
                 });
@@ -135,7 +123,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 mode_switch_arms.push(quote! {
                     #variant_enum_name::#variant_ident => {
                         *self = Self::#variant_ident;
-                        kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
                     }
                 });
 
@@ -149,15 +136,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     h = #krate::shadows::fnv1a_bytes(h, &[#(#variant_bytes),*]);
                 });
 
-                // Serialize arm - just the mode field, null out all data variant fields
-                serialize_match_arms.push(quote! {
-                    Self::#variant_ident => {
-                        map.serialize_entry(#tag_key, #serde_name)?;
-                    }
-                });
-
                 // =====================================================================
-                // New codegen: load_from_kv, persist_to_kv, collect_valid_keys for unit variant
+                // KVPersist codegen for unit variant
                 // =====================================================================
 
                 // MAX_DEPTH: unit variants contribute 0
@@ -177,245 +157,123 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     }
                 });
 
-                // collect_valid_keys: unit variants have no extra keys
+                // persist_delta mode arm: write _variant key
+                persist_delta_mode_arms.push(quote! {
+                    #variant_enum_name::#variant_ident => {
+                        kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
+                    }
+                });
             }
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 // Newtype variant - has data
                 let inner_ty = &fields.unnamed[0].ty;
-                // All types now implement ShadowNode (primitives have Delta = Self),
-                // so we always use the ShadowNode delegation pattern
-                let is_leaf = false;
 
                 variants_with_data.push((variant, serde_name.clone()));
 
-                if is_leaf {
-                    let delta_inner_ty = quote! { #inner_ty };
-                    let reported_inner_ty = quote! { #inner_ty };
+                // Nested ShadowNode
+                let delta_inner_ty =
+                    quote! { <#inner_ty as #krate::shadows::ShadowNode>::Delta };
+                let reported_inner_ty =
+                    quote! { <#inner_ty as #krate::shadows::ShadowNode>::Reported };
 
-                    delta_config_variants.push(quote! { #variant_ident(#delta_inner_ty), });
-                    reported_variants.push(quote! { #variant_ident(#reported_inner_ty), });
+                delta_config_variants.push(quote! { #variant_ident(#delta_inner_ty), });
+                reported_variants.push(quote! { #variant_ident(#reported_inner_ty), });
 
-                    set_variant_arms.push(quote! {
-                        #serde_name => {
-                            *self = Self::#variant_ident(Default::default());
-                            Ok(())
-                        }
-                    });
+                variant_name_arms.push(quote! {
+                    Self::#variant_ident(_) => #serde_name,
+                });
 
-                    get_variant_arms.push(quote! {
-                        Self::#variant_ident(_) => Ok(#serde_name),
-                    });
+                mode_switch_arms.push(quote! {
+                    #variant_enum_name::#variant_ident => {
+                        *self = Self::#variant_ident(Default::default());
+                    }
+                });
 
-                    variant_name_arms.push(quote! {
-                        Self::#variant_ident(_) => #serde_name,
-                    });
+                config_apply_arms.push(quote! {
+                    (Self::#variant_ident(ref mut inner), #delta_config_name::#variant_ident(ref delta_inner)) => {
+                        inner.apply_delta(delta_inner);
+                    }
+                });
 
-                    mode_switch_arms.push(quote! {
-                        #variant_enum_name::#variant_ident => {
-                            *self = Self::#variant_ident(Default::default());
-                            kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
-                        }
-                    });
+                into_reported_arms.push(quote! {
+                    Self::#variant_ident(inner) => Self::Reported::#variant_ident(inner.into_reported()),
+                });
 
-                    config_apply_arms.push(quote! {
-                        (Self::#variant_ident(ref mut inner), #delta_config_name::#variant_ident(ref delta_inner)) => {
-                            *inner = delta_inner.clone();
-                            // Serialize and persist the entire inner value
-                            let mut full_key: ::heapless::String<256> = ::heapless::String::new();
-                            let _ = full_key.push_str(prefix);
-                            let _ = full_key.push_str("/");
-                            let _ = full_key.push_str(#serde_name);
-                            match ::postcard::to_slice(delta_inner, buf) {
-                                Ok(bytes) => {
-                                    kv.store(&full_key, bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                                }
-                                Err(_) => return Err(#krate::shadows::KvError::Serialization),
-                            }
-                        }
-                    });
+                max_value_len_items.push(quote! {
+                    <#inner_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
+                });
 
-                    into_reported_arms.push(quote! {
-                        Self::#variant_ident(inner) => Self::Reported::#variant_ident(inner),
-                    });
-
-                    max_value_len_items.push(quote! {
-                        <#inner_ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
-                    });
-
-                    // For flat union serialize - leaf types just get serialized directly
-                    serialize_match_arms.push(quote! {
-                        Self::#variant_ident(ref config) => {
-                            map.serialize_entry(#tag_key, #serde_name)?;
-                            map.serialize_entry(#content_key, config)?;
-                        }
-                    });
-
-                    // =====================================================================
-                    // New codegen: load_from_kv, persist_to_kv, collect_valid_keys for leaf newtype
-                    // =====================================================================
-                    let variant_path = format!("/{}", serde_name);
-                    let variant_path_len = variant_path.len();
-
-                    // MAX_DEPTH: leaf variants contribute 0
-                    max_depth_items.push(quote! { 0 });
-
-                    // MAX_KEY_LEN: "/VariantName" for the leaf value
-                    max_key_len_items.push(quote! { #variant_path_len });
-
-                    // load_from_kv arm: construct variant, load inner value
-                    load_from_kv_variant_arms.push(quote! {
-                        #serde_name => {
-                            *self = Self::#variant_ident(Default::default());
-                            // Load the inner leaf value
-                            let mut inner_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                            let _ = inner_key.push_str(prefix);
-                            let _ = inner_key.push_str(#variant_path);
-                            if let Some(data) = kv.fetch(&inner_key, buf).await.map_err(#krate::shadows::KvError::Kv)? {
-                                if let Self::#variant_ident(ref mut inner) = self {
-                                    *inner = ::postcard::from_bytes(data).map_err(|_| #krate::shadows::KvError::Serialization)?;
-                                    result.loaded += 1;
-                                }
-                            } else {
-                                result.defaulted += 1;
-                            }
-                        }
-                    });
-
-                    // persist_to_kv arm: persist the inner leaf value
-                    persist_to_kv_variant_arms.push(quote! {
-                        Self::#variant_ident(ref inner) => {
-                            let mut inner_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                            let _ = inner_key.push_str(prefix);
-                            let _ = inner_key.push_str(#variant_path);
-                            match ::postcard::to_slice(inner, buf) {
-                                Ok(bytes) => kv.store(&inner_key, bytes).await.map_err(#krate::shadows::KvError::Kv)?,
-                                Err(_) => return Err(#krate::shadows::KvError::Serialization),
-                            }
-                        }
-                    });
-
-                    // collect_valid_keys: add the inner key path
-                    collect_valid_keys_arms.push(quote! {
-                        {
-                            let mut key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                            let _ = key.push_str(prefix);
-                            let _ = key.push_str(#variant_path);
-                            keys(&key);
-                        }
-                    });
-                } else {
-                    // Nested ShadowNode
-                    let delta_inner_ty =
-                        quote! { <#inner_ty as #krate::shadows::ShadowNode>::Delta };
-                    let reported_inner_ty =
-                        quote! { <#inner_ty as #krate::shadows::ShadowNode>::Reported };
-
-                    delta_config_variants.push(quote! { #variant_ident(#delta_inner_ty), });
-                    reported_variants.push(quote! { #variant_ident(#reported_inner_ty), });
-
-                    set_variant_arms.push(quote! {
-                        #serde_name => {
-                            *self = Self::#variant_ident(Default::default());
-                            Ok(())
-                        }
-                    });
-
-                    get_variant_arms.push(quote! {
-                        Self::#variant_ident(_) => Ok(#serde_name),
-                    });
-
-                    variant_name_arms.push(quote! {
-                        Self::#variant_ident(_) => #serde_name,
-                    });
-
-                    mode_switch_arms.push(quote! {
-                        #variant_enum_name::#variant_ident => {
-                            *self = Self::#variant_ident(Default::default());
-                            kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
-                        }
-                    });
-
-                    config_apply_arms.push(quote! {
-                        (Self::#variant_ident(ref mut inner), #delta_config_name::#variant_ident(ref delta_inner)) => {
-                            let mut nested_prefix: ::heapless::String<256> = ::heapless::String::new();
-                            let _ = nested_prefix.push_str(prefix);
-                            let _ = nested_prefix.push_str("/");
-                            let _ = nested_prefix.push_str(#serde_name);
-                            inner.apply_and_persist(delta_inner, &nested_prefix, kv, buf).await?;
-                        }
-                    });
-
-                    into_reported_arms.push(quote! {
-                        Self::#variant_ident(inner) => Self::Reported::#variant_ident(inner.into_reported()),
-                    });
-
-                    max_value_len_items.push(quote! {
-                        <#inner_ty as #krate::shadows::ShadowNode>::MAX_VALUE_LEN
-                    });
-
-                    // For flat union serialize - use ReportedUnionFields
-                    // Collect field names from the inner type for nulling inactive variants
-                    inactive_variant_field_nulls.push((variant_ident.clone(), inner_ty.clone()));
-
-                    serialize_match_arms.push(quote! {
-                        Self::#variant_ident(ref config) => {
-                            map.serialize_entry(#tag_key, #serde_name)?;
-                            config.serialize_into_map(&mut map)?;
-                        }
-                    });
-
-                    // =====================================================================
-                    // New codegen: load_from_kv, persist_to_kv, collect_valid_keys for nested ShadowNode
-                    // =====================================================================
-                    let variant_path = format!("/{}", serde_name);
-                    let variant_path_len = variant_path.len();
-
-                    // MAX_DEPTH: 1 + nested depth
-                    max_depth_items.push(quote! { <#inner_ty as #krate::shadows::ShadowNode>::MAX_DEPTH });
-
-                    // MAX_KEY_LEN: "/VariantName" + nested MAX_KEY_LEN
-                    max_key_len_items.push(quote! { #variant_path_len + <#inner_ty as #krate::shadows::ShadowNode>::MAX_KEY_LEN });
-
-                    // load_from_kv arm: construct variant, delegate to inner
-                    load_from_kv_variant_arms.push(quote! {
-                        #serde_name => {
-                            *self = Self::#variant_ident(Default::default());
-                            if let Self::#variant_ident(ref mut inner) = self {
-                                let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                                let _ = inner_prefix.push_str(prefix);
-                                let _ = inner_prefix.push_str(#variant_path);
-                                let inner_result = inner.load_from_kv::<K, KEY_LEN>(&inner_prefix, kv, buf).await?;
-                                result.merge(inner_result);
-                            }
-                        }
-                    });
-
-                    // persist_to_kv arm: delegate to inner
-                    persist_to_kv_variant_arms.push(quote! {
-                        Self::#variant_ident(ref inner) => {
-                            let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                            let _ = inner_prefix.push_str(prefix);
-                            let _ = inner_prefix.push_str(#variant_path);
-                            inner.persist_to_kv::<K, KEY_LEN>(&inner_prefix, kv, buf).await?;
-                        }
-                    });
-
-                    // collect_valid_keys: delegate to inner (all variants, not just active)
-                    collect_valid_keys_arms.push(quote! {
-                        {
-                            let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                            let _ = inner_prefix.push_str(prefix);
-                            let _ = inner_prefix.push_str(#variant_path);
-                            <#inner_ty as #krate::shadows::ShadowNode>::collect_valid_keys::<KEY_LEN>(&inner_prefix, keys);
-                        }
-                    });
-                }
+                // For flat union serialize - use ReportedUnionFields
+                inactive_variant_field_nulls.push((variant_ident.clone(), inner_ty.clone()));
 
                 // Schema hash for newtype variant
                 let variant_bytes = serde_name.as_bytes();
                 schema_hash_code.push(quote! {
                     h = #krate::shadows::fnv1a_bytes(h, &[#(#variant_bytes),*]);
                     h = #krate::shadows::fnv1a_u64(h, <#inner_ty as #krate::shadows::ShadowNode>::SCHEMA_HASH);
+                });
+
+                // =====================================================================
+                // KVPersist codegen for newtype variant
+                // =====================================================================
+                let variant_path = format!("/{}", serde_name);
+                let variant_path_len = variant_path.len();
+
+                // MAX_DEPTH: 1 + nested depth
+                max_depth_items.push(quote! { <#inner_ty as #krate::shadows::KVPersist>::MAX_DEPTH });
+
+                // MAX_KEY_LEN: "/VariantName" + nested MAX_KEY_LEN
+                max_key_len_items.push(quote! { #variant_path_len + <#inner_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN });
+
+                // load_from_kv arm: construct variant, delegate to inner
+                load_from_kv_variant_arms.push(quote! {
+                    #serde_name => {
+                        *self = Self::#variant_ident(Default::default());
+                        if let Self::#variant_ident(ref mut inner) = self {
+                            let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                            let _ = inner_prefix.push_str(prefix);
+                            let _ = inner_prefix.push_str(#variant_path);
+                            let inner_result = <#inner_ty as #krate::shadows::KVPersist>::load_from_kv::<K, KEY_LEN>(inner, &inner_prefix, kv, buf).await?;
+                            result.merge(inner_result);
+                        }
+                    }
+                });
+
+                // persist_to_kv arm: delegate to inner
+                persist_to_kv_variant_arms.push(quote! {
+                    Self::#variant_ident(ref inner) => {
+                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                        let _ = inner_prefix.push_str(prefix);
+                        let _ = inner_prefix.push_str(#variant_path);
+                        <#inner_ty as #krate::shadows::KVPersist>::persist_to_kv::<K, KEY_LEN>(inner, &inner_prefix, kv, buf).await?;
+                    }
+                });
+
+                // persist_delta mode arm: write _variant key
+                persist_delta_mode_arms.push(quote! {
+                    #variant_enum_name::#variant_ident => {
+                        kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
+                    }
+                });
+
+                // persist_delta config arm: delegate to inner
+                persist_delta_config_arms.push(quote! {
+                    #delta_config_name::#variant_ident(ref inner_delta) => {
+                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                        let _ = inner_prefix.push_str(prefix);
+                        let _ = inner_prefix.push_str(#variant_path);
+                        <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &inner_prefix, buf).await?;
+                    }
+                });
+
+                // collect_valid_keys: delegate to inner (all variants, not just active)
+                collect_valid_keys_arms.push(quote! {
+                    {
+                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                        let _ = inner_prefix.push_str(prefix);
+                        let _ = inner_prefix.push_str(#variant_path);
+                        <#inner_ty as #krate::shadows::KVPersist>::collect_valid_keys::<KEY_LEN>(&inner_prefix, keys);
+                    }
                 });
             }
             _ => {
@@ -591,7 +449,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     };
 
     // Build serialize match arms with null fields for inactive variants integrated
-    // We need to regenerate these arms with the null handling code inside the body
     let combined_serialize_arms: Vec<TokenStream> = variant_idents
         .iter()
         .enumerate()
@@ -634,20 +491,13 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     })
                     .unwrap();
 
-                // Use runtime check on FIELD_NAMES.is_empty() to determine serialization strategy.
-                // Primitives have FIELD_NAMES = &[] and need serialize_entry for the content.
-                // Nested types have fields to flatten with serialize_into_map.
-                // The const check will be optimized away by the compiler.
                 quote! {
                     Self::#variant_ident(ref config) => {
                         map.serialize_entry(#tag_key, #serde_name)?;
-                        // Check if this is a leaf type (empty FIELD_NAMES) at compile time
                         if <<#inner_ty as #krate::shadows::ShadowNode>::Reported
                             as #krate::shadows::ReportedUnionFields>::FIELD_NAMES.is_empty() {
-                            // Leaf type - serialize as named content field
                             map.serialize_entry(#content_key, config)?;
                         } else {
-                            // Nested ShadowNode - flatten fields into parent map
                             config.serialize_into_map(&mut map)?;
                         }
                         #(#nulls)*
@@ -666,7 +516,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         .collect();
 
     // Compute total field count at compile time for serialize_map
-    // = 1 (mode field) + sum of all data variant field counts
     let field_count_arms: Vec<TokenStream> = inactive_variant_field_nulls
         .iter()
         .map(|(_, inner_ty)| {
@@ -718,7 +567,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     };
 
     // =========================================================================
-    // 5. Generate ShadowNode Implementation
+    // 5. Generate ShadowNode Implementation (always available)
     // =========================================================================
 
     // Config apply handling - if no config variants, no config handling needed
@@ -729,7 +578,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             if let Some(ref config) = delta.config {
                 match (self, config) {
                     #(#config_apply_arms)*
-                    _ => return Err(#krate::shadows::KvError::VariantMismatch),
+                    _ => { /* Variant mismatch - ignore config if variant doesn't match */ }
                 }
             }
         }
@@ -740,36 +589,18 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             type Delta = #delta_name;
             type Reported = #reported_name;
 
-            const MAX_DEPTH: usize = #max_depth_expr;
-            const MAX_KEY_LEN: usize = #max_key_len_expr;
-            const MAX_VALUE_LEN: usize = #max_value_len_expr;
             const SCHEMA_HASH: u64 = #schema_hash_const;
 
-            fn apply_and_persist<K: #krate::shadows::KVStore>(
-                &mut self,
-                delta: &Self::Delta,
-                prefix: &str,
-                kv: &K,
-                buf: &mut [u8],
-            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
-                async move {
-                    // Build variant key path
-                    let mut variant_key: ::heapless::String<256> = ::heapless::String::new();
-                    let _ = variant_key.push_str(prefix);
-                    let _ = variant_key.push_str("/_variant");
-
-                    // Handle mode (variant switch)
-                    if let Some(ref new_mode) = delta.mode {
-                        match new_mode {
-                            #(#mode_switch_arms)*
-                        }
+            fn apply_delta(&mut self, delta: &Self::Delta) {
+                // Handle mode (variant switch)
+                if let Some(ref new_mode) = delta.mode {
+                    match new_mode {
+                        #(#mode_switch_arms)*
                     }
-
-                    // Handle config (variant content)
-                    #config_apply_code
-
-                    Ok(())
                 }
+
+                // Handle config (variant content)
+                #config_apply_code
             }
 
             fn into_reported(self) -> Self::Reported {
@@ -777,6 +608,14 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     #(#into_reported_arms)*
                 }
             }
+        }
+
+        // KVPersist impl (feature-gated)
+        #[cfg(feature = "shadows_kv_persist")]
+        impl #krate::shadows::KVPersist for #name {
+            const MAX_DEPTH: usize = #max_depth_expr;
+            const MAX_KEY_LEN: usize = #max_key_len_expr;
+            const MAX_VALUE_LEN: usize = #max_value_len_expr;
 
             fn migration_sources(_field_path: &str) -> &'static [#krate::shadows::MigrationSource] {
                 &[]
@@ -829,7 +668,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 kv: &K,
                 buf: &mut [u8],
             ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
-                // Enums don't have migration support at this level
+                // Adjacently-tagged enums don't have migration support at this level
                 self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
             }
 
@@ -845,15 +684,46 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     let _ = variant_key.push_str(prefix);
                     let _ = variant_key.push_str("/_variant");
 
-                    match self {
-                        #(#persist_to_kv_variant_arms)*
-                    }
-
                     // Write variant name
                     let variant_name: &str = match self {
                         #(#variant_name_arms)*
                     };
                     kv.store(&variant_key, variant_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
+
+                    // Persist inner fields
+                    match self {
+                        #(#persist_to_kv_variant_arms)*
+                    }
+
+                    Ok(())
+                }
+            }
+
+            fn persist_delta<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                delta: &Self::Delta,
+                kv: &K,
+                prefix: &str,
+                buf: &mut [u8],
+            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
+                async move {
+                    // Build variant key path
+                    let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                    let _ = variant_key.push_str(prefix);
+                    let _ = variant_key.push_str("/_variant");
+
+                    // Handle mode (variant switch) - only write if mode is Some
+                    if let Some(ref new_mode) = delta.mode {
+                        match new_mode {
+                            #(#persist_delta_mode_arms)*
+                        }
+                    }
+
+                    // Handle config (variant content)
+                    if let Some(ref config) = delta.config {
+                        match config {
+                            #(#persist_delta_config_arms)*
+                        }
+                    }
 
                     Ok(())
                 }

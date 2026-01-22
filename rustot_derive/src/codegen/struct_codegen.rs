@@ -35,19 +35,20 @@ pub(crate) fn generate_struct_code(
     let mut delta_fields = Vec::new();
     let mut reported_fields = Vec::new();
     let mut field_names = Vec::new();
-    let mut migration_arms = Vec::new();
-    let mut default_arms = Vec::new();
-    let mut apply_persist_arms = Vec::new();
+    let mut apply_delta_arms = Vec::new();
     let mut into_reported_arms = Vec::new();
     let mut schema_hash_code = Vec::new();
-    let mut max_value_len_items = Vec::new();
     let mut reported_serialize_arms = Vec::new();
     let mut opaque_field_types: Vec<syn::Type> = Vec::new();
 
-    // New codegen collections for load_from_kv, persist_to_kv, collect_valid_keys
+    // KVPersist-specific codegen (feature-gated)
+    let mut migration_arms = Vec::new();
+    let mut default_arms = Vec::new();
+    let mut max_value_len_items = Vec::new();
     let mut load_from_kv_arms = Vec::new();
     let mut load_from_kv_migration_arms = Vec::new();
     let mut persist_to_kv_arms = Vec::new();
+    let mut persist_delta_arms = Vec::new();
     let mut collect_valid_keys_arms = Vec::new();
     let mut max_depth_items = Vec::new();
     let mut max_key_len_items = Vec::new();
@@ -64,14 +65,6 @@ pub(crate) fn generate_struct_code(
         field_names.push(serde_name.clone());
 
         // Check if this is a leaf type for KV operations.
-        // A field is a leaf if:
-        // 1. It's explicitly marked as opaque, OR
-        // 2. It has migration attributes (migration must be handled at struct level)
-        //
-        // Primitives now implement ShadowNode with Delta = Self, so they
-        // don't need special handling for Delta types - <u32 as ShadowNode>::Delta = u32
-        // However, if a primitive field has migration attributes, we need to handle
-        // the migration inline rather than delegating to the primitive's ShadowNode impl.
         let has_migration = !attrs.migrate_from.is_empty();
         let is_leaf = attrs.opaque || has_migration;
 
@@ -129,6 +122,72 @@ pub(crate) fn generate_struct_code(
             }
         }
 
+        // Apply delta (non-report_only fields)
+        if !attrs.report_only {
+            if is_leaf {
+                apply_delta_arms.push(quote! {
+                    if let Some(ref val) = delta.#field_name {
+                        self.#field_name = val.clone();
+                    }
+                });
+            } else {
+                // Nested ShadowNode - delegate
+                apply_delta_arms.push(quote! {
+                    if let Some(ref inner_delta) = delta.#field_name {
+                        self.#field_name.apply_delta(inner_delta);
+                    }
+                });
+            }
+        }
+
+        // Into reported
+        if is_leaf {
+            into_reported_arms.push(quote! {
+                #field_name: Some(self.#field_name),
+            });
+        } else {
+            into_reported_arms.push(quote! {
+                #field_name: Some(self.#field_name.into_reported()),
+            });
+        }
+
+        // Schema hash
+        let field_name_bytes = serde_name.as_bytes();
+        if is_leaf {
+            let ty_name = quote!(#field_ty).to_string();
+            let ty_bytes = ty_name.as_bytes();
+            schema_hash_code.push(quote! {
+                h = #krate::shadows::fnv1a_bytes(h, &[#(#field_name_bytes),*]);
+                h = #krate::shadows::fnv1a_bytes(h, &[#(#ty_bytes),*]);
+            });
+
+            // MAX_VALUE_LEN for leaf types (KVPersist)
+            max_value_len_items.push(quote! {
+                <#field_ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
+            });
+        } else {
+            schema_hash_code.push(quote! {
+                h = #krate::shadows::fnv1a_bytes(h, &[#(#field_name_bytes),*]);
+                h = #krate::shadows::fnv1a_u64(h, <#field_ty as #krate::shadows::ShadowNode>::SCHEMA_HASH);
+            });
+
+            // MAX_VALUE_LEN for nested types (KVPersist)
+            max_value_len_items.push(quote! {
+                <#field_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
+            });
+        }
+
+        // ReportedUnionFields serialize_into_map
+        reported_serialize_arms.push(quote! {
+            if let Some(ref val) = self.#field_name {
+                map.serialize_entry(#serde_name, val)?;
+            }
+        });
+
+        // =====================================================================
+        // KVPersist-specific codegen
+        // =====================================================================
+
         // Migration sources
         if !attrs.migrate_from.is_empty() {
             let from_keys: Vec<_> = attrs.migrate_from.iter().collect();
@@ -165,90 +224,10 @@ pub(crate) fn generate_struct_code(
             });
         }
 
-        // Apply and persist (non-report_only fields)
-        if !attrs.report_only {
-            if is_leaf {
-                apply_persist_arms.push(quote! {
-                    if let Some(ref val) = delta.#field_name {
-                        self.#field_name = val.clone();
-                        // Serialize and persist
-                        let path_str = #field_path;
-                        let mut full_key: ::heapless::String<256> = ::heapless::String::new();
-                        let _ = full_key.push_str(prefix);
-                        let _ = full_key.push_str(path_str);
-                        match ::postcard::to_slice(val, buf) {
-                            Ok(bytes) => {
-                                kv.store(&full_key, bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                            }
-                            Err(_) => return Err(#krate::shadows::KvError::Serialization),
-                        }
-                    }
-                });
-            } else {
-                // Nested ShadowNode - delegate
-                apply_persist_arms.push(quote! {
-                    if let Some(ref inner_delta) = delta.#field_name {
-                        let mut nested_prefix: ::heapless::String<256> = ::heapless::String::new();
-                        let _ = nested_prefix.push_str(prefix);
-                        let _ = nested_prefix.push_str(#field_path);
-                        self.#field_name.apply_and_persist(inner_delta, &nested_prefix, kv, buf).await?;
-                    }
-                });
-            }
-        }
-
-        // Into reported
-        if is_leaf {
-            into_reported_arms.push(quote! {
-                #field_name: Some(self.#field_name),
-            });
-        } else {
-            into_reported_arms.push(quote! {
-                #field_name: Some(self.#field_name.into_reported()),
-            });
-        }
-
-        // Schema hash
-        let field_name_bytes = serde_name.as_bytes();
-        if is_leaf {
-            let ty_name = quote!(#field_ty).to_string();
-            let ty_bytes = ty_name.as_bytes();
-            schema_hash_code.push(quote! {
-                h = #krate::shadows::fnv1a_bytes(h, &[#(#field_name_bytes),*]);
-                h = #krate::shadows::fnv1a_bytes(h, &[#(#ty_bytes),*]);
-            });
-
-            // MAX_VALUE_LEN for leaf types
-            max_value_len_items.push(quote! {
-                <#field_ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
-            });
-        } else {
-            schema_hash_code.push(quote! {
-                h = #krate::shadows::fnv1a_bytes(h, &[#(#field_name_bytes),*]);
-                h = #krate::shadows::fnv1a_u64(h, <#field_ty as #krate::shadows::ShadowNode>::SCHEMA_HASH);
-            });
-
-            // MAX_VALUE_LEN for nested types
-            max_value_len_items.push(quote! {
-                <#field_ty as #krate::shadows::ShadowNode>::MAX_VALUE_LEN
-            });
-        }
-
-        // ReportedUnionFields serialize_into_map
-        reported_serialize_arms.push(quote! {
-            if let Some(ref val) = self.#field_name {
-                map.serialize_entry(#serde_name, val)?;
-            }
-        });
-
-        // =====================================================================
-        // New codegen: load_from_kv, persist_to_kv, collect_valid_keys, MAX_DEPTH, MAX_KEY_LEN
-        // =====================================================================
-
         let field_path_len = field_path.len(); // "/field_name".len()
 
         if is_leaf {
-            // Leaf field: direct KV fetch/store
+            // Leaf field: direct KV operations
 
             // MAX_DEPTH: leaf fields contribute 0
             max_depth_items.push(quote! { 0 });
@@ -266,7 +245,7 @@ pub(crate) fn generate_struct_code(
                         self.#field_name = ::postcard::from_bytes(data).map_err(|_| #krate::shadows::KvError::Serialization)?;
                         result.loaded += 1;
                     } else {
-                        Self::apply_field_default(self, #field_path);
+                        <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
                         result.defaulted += 1;
                     }
                 }
@@ -277,7 +256,7 @@ pub(crate) fn generate_struct_code(
             let migration_code = if migrate_from_keys.is_empty() {
                 quote! {
                     // No migration sources, apply default
-                    Self::apply_field_default(self, #field_path);
+                    <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
                     result.defaulted += 1;
                 }
             } else {
@@ -321,7 +300,7 @@ pub(crate) fn generate_struct_code(
                         }
                     }
                     if !migrated {
-                        Self::apply_field_default(self, #field_path);
+                        <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
                         result.defaulted += 1;
                     }
                 }
@@ -361,6 +340,21 @@ pub(crate) fn generate_struct_code(
                 }
             });
 
+            // persist_delta (for non-report_only fields)
+            if !attrs.report_only {
+                persist_delta_arms.push(quote! {
+                    if let Some(ref val) = delta.#field_name {
+                        let mut full_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                        let _ = full_key.push_str(prefix);
+                        let _ = full_key.push_str(#field_path);
+                        match ::postcard::to_slice(val, buf) {
+                            Ok(bytes) => kv.store(&full_key, bytes).await.map_err(#krate::shadows::KvError::Kv)?,
+                            Err(_) => return Err(#krate::shadows::KvError::Serialization),
+                        }
+                    }
+                });
+            }
+
             // collect_valid_keys
             collect_valid_keys_arms.push(quote! {
                 {
@@ -374,10 +368,10 @@ pub(crate) fn generate_struct_code(
             // Nested ShadowNode field: delegate
 
             // MAX_DEPTH: 1 + nested depth
-            max_depth_items.push(quote! { <#field_ty as #krate::shadows::ShadowNode>::MAX_DEPTH });
+            max_depth_items.push(quote! { <#field_ty as #krate::shadows::KVPersist>::MAX_DEPTH });
 
             // MAX_KEY_LEN: "/field_name".len() + nested MAX_KEY_LEN
-            max_key_len_items.push(quote! { #field_path_len + <#field_ty as #krate::shadows::ShadowNode>::MAX_KEY_LEN });
+            max_key_len_items.push(quote! { #field_path_len + <#field_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN });
 
             // load_from_kv
             load_from_kv_arms.push(quote! {
@@ -385,7 +379,7 @@ pub(crate) fn generate_struct_code(
                     let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                     let _ = nested_prefix.push_str(prefix);
                     let _ = nested_prefix.push_str(#field_path);
-                    let inner = self.#field_name.load_from_kv::<K, KEY_LEN>(&nested_prefix, kv, buf).await?;
+                    let inner = <#field_ty as #krate::shadows::KVPersist>::load_from_kv::<K, KEY_LEN>(&mut self.#field_name, &nested_prefix, kv, buf).await?;
                     result.merge(inner);
                 }
             });
@@ -396,7 +390,7 @@ pub(crate) fn generate_struct_code(
                     let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                     let _ = nested_prefix.push_str(prefix);
                     let _ = nested_prefix.push_str(#field_path);
-                    let inner = self.#field_name.load_from_kv_with_migration::<K, KEY_LEN>(&nested_prefix, kv, buf).await?;
+                    let inner = <#field_ty as #krate::shadows::KVPersist>::load_from_kv_with_migration::<K, KEY_LEN>(&mut self.#field_name, &nested_prefix, kv, buf).await?;
                     result.merge(inner);
                 }
             });
@@ -407,9 +401,21 @@ pub(crate) fn generate_struct_code(
                     let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                     let _ = nested_prefix.push_str(prefix);
                     let _ = nested_prefix.push_str(#field_path);
-                    self.#field_name.persist_to_kv::<K, KEY_LEN>(&nested_prefix, kv, buf).await?;
+                    <#field_ty as #krate::shadows::KVPersist>::persist_to_kv::<K, KEY_LEN>(&self.#field_name, &nested_prefix, kv, buf).await?;
                 }
             });
+
+            // persist_delta (for non-report_only fields)
+            if !attrs.report_only {
+                persist_delta_arms.push(quote! {
+                    if let Some(ref inner_delta) = delta.#field_name {
+                        let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                        let _ = nested_prefix.push_str(prefix);
+                        let _ = nested_prefix.push_str(#field_path);
+                        <#field_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &nested_prefix, buf).await?;
+                    }
+                });
+            }
 
             // collect_valid_keys
             collect_valid_keys_arms.push(quote! {
@@ -417,7 +423,7 @@ pub(crate) fn generate_struct_code(
                     let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                     let _ = nested_prefix.push_str(prefix);
                     let _ = nested_prefix.push_str(#field_path);
-                    <#field_ty as #krate::shadows::ShadowNode>::collect_valid_keys::<KEY_LEN>(&nested_prefix, keys);
+                    <#field_ty as #krate::shadows::KVPersist>::collect_valid_keys::<KEY_LEN>(&nested_prefix, keys);
                 }
             });
         }
@@ -536,28 +542,16 @@ pub(crate) fn generate_struct_code(
         quote! { where #(#bounds),* }
     };
 
-    // Generate ShadowNode impl
+    // Generate ShadowNode impl (always available)
     let shadow_node_impl = quote! {
         impl #krate::shadows::ShadowNode for #name #where_clause {
             type Delta = #delta_name;
             type Reported = #reported_name;
 
-            const MAX_DEPTH: usize = #max_depth_expr;
-            const MAX_KEY_LEN: usize = #max_key_len_expr;
-            const MAX_VALUE_LEN: usize = #max_value_len_expr;
             const SCHEMA_HASH: u64 = #schema_hash_const;
 
-            fn apply_and_persist<K: #krate::shadows::KVStore>(
-                &mut self,
-                delta: &Self::Delta,
-                prefix: &str,
-                kv: &K,
-                buf: &mut [u8],
-            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
-                async move {
-                    #(#apply_persist_arms)*
-                    Ok(())
-                }
+            fn apply_delta(&mut self, delta: &Self::Delta) {
+                #(#apply_delta_arms)*
             }
 
             fn into_reported(self) -> Self::Reported {
@@ -565,6 +559,14 @@ pub(crate) fn generate_struct_code(
                     #(#into_reported_arms)*
                 }
             }
+        }
+
+        // KVPersist impl (feature-gated)
+        #[cfg(feature = "shadows_kv_persist")]
+        impl #krate::shadows::KVPersist for #name #where_clause {
+            const MAX_DEPTH: usize = #max_depth_expr;
+            const MAX_KEY_LEN: usize = #max_key_len_expr;
+            const MAX_VALUE_LEN: usize = #max_value_len_expr;
 
             fn migration_sources(field_path: &str) -> &'static [#krate::shadows::MigrationSource] {
                 match field_path {
@@ -619,6 +621,18 @@ pub(crate) fn generate_struct_code(
             ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
                 async move {
                     #(#persist_to_kv_arms)*
+                    Ok(())
+                }
+            }
+
+            fn persist_delta<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                delta: &Self::Delta,
+                kv: &K,
+                prefix: &str,
+                buf: &mut [u8],
+            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
+                async move {
+                    #(#persist_delta_arms)*
                     Ok(())
                 }
             }
