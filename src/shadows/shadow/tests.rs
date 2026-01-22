@@ -598,15 +598,31 @@ async fn test_commit_removes_truly_orphaned_keys() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
 async fn test_commit_preserves_inactive_enum_variant_fields() {
-    // Inactive variant fields are NOT orphans
-    let _kv = setup_kv(&[
+    // Inactive variant fields are NOT orphans - they should be preserved during commit
+    let kv = setup_kv(&[
+        (
+            "wifi/__schema_hash__",
+            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
+        ),
         ("wifi/ip/_variant", b"Dhcp"),
         ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
         ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
     ])
     .await;
+
+    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    shadow.load().await.unwrap();
+
+    // Verify state is Dhcp
+    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+
+    // Commit should NOT remove the Static variant fields
+    shadow.commit().await.unwrap();
+
+    // Static fields should still exist (they're valid keys, not orphans)
+    assert!(kv_has_key(&kv, "wifi/ip/Static/address").await);
+    assert!(kv_has_key(&kv, "wifi/ip/Static/gateway").await);
 }
 
 #[tokio::test]
@@ -747,38 +763,116 @@ async fn test_enum_first_boot_writes_variant_key_as_utf8() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Phase 8 derive macro support for WifiConfig and Phase 7 apply_and_save"]
 async fn test_enum_apply_and_save_writes_variant_key_as_utf8() {
     // Use apply_and_save to change variant and verify UTF-8 storage
-    let _kv = empty_kv();
+    let kv = empty_kv();
+
+    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    shadow.load().await.unwrap(); // First boot - sets Dhcp
+
+    // Apply delta to change to Static variant
+    let delta = DeltaWifiCfg {
+        ip: Some(DeltaIpSettingsCfg::Static(DeltaStaticIpCfg {
+            address: Some([10, 0, 0, 1]),
+            gateway: Some([10, 0, 0, 254]),
+        })),
+    };
+    shadow.apply_and_save(&delta).await.unwrap();
+
+    // Verify variant key is plain UTF-8, not postcard
+    let variant = kv_fetch_raw(&kv, "wifi/ip/_variant").await;
+    assert_eq!(variant, b"Static");
 }
 
 #[tokio::test]
-#[ignore = "Requires Phase 8 derive macro support for WifiConfig and Phase 7 apply_and_save"]
 async fn test_enum_variant_switch_preserves_inactive_fields() {
     // Was Static, apply_and_save to Dhcp - Static fields should be PRESERVED
     // (they are valid keys, not orphans)
-    let _kv = setup_kv(&[
-        ("wifi/__schema_hash__", &0u64.to_le_bytes()), // placeholder hash
+    let kv = setup_kv(&[
+        (
+            "wifi/__schema_hash__",
+            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
+        ),
         ("wifi/ip/_variant", b"Static"),
         ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
         ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
     ])
     .await;
+
+    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    shadow.load().await.unwrap();
+
+    // Verify we loaded Static variant
+    match &shadow.state().await.unwrap().ip {
+        IpSettingsCfg::Static(cfg) => {
+            assert_eq!(cfg.address, [192, 168, 1, 100]);
+        }
+        _ => panic!("Expected Static variant"),
+    }
+
+    // Switch to Dhcp
+    let delta = DeltaWifiCfg {
+        ip: Some(DeltaIpSettingsCfg::Dhcp),
+    };
+    shadow.apply_and_save(&delta).await.unwrap();
+
+    // Verify state is now Dhcp
+    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+
+    // Static fields should still be in KV (preserved for future switch back)
+    assert!(kv_has_key(&kv, "wifi/ip/Static/address").await);
+    assert!(kv_has_key(&kv, "wifi/ip/Static/gateway").await);
 }
 
 #[tokio::test]
-#[ignore = "Requires Phase 8 derive macro support for WifiConfig and Phase 7 apply_and_save"]
 async fn test_enum_variant_switch_and_back_restores_values_on_reload() {
     // Design decision: Switching variants at runtime uses defaults from delta,
     // but preserved KV values are restored on RELOAD (e.g., after reboot).
-    let _kv = setup_kv(&[
-        ("wifi/__schema_hash__", &0u64.to_le_bytes()), // placeholder hash
+    let kv = setup_kv(&[
+        (
+            "wifi/__schema_hash__",
+            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
+        ),
         ("wifi/ip/_variant", b"Static"),
         ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
         ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
     ])
     .await;
+
+    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    shadow.load().await.unwrap();
+
+    // Switch to Dhcp
+    let delta = DeltaWifiCfg {
+        ip: Some(DeltaIpSettingsCfg::Dhcp),
+    };
+    shadow.apply_and_save(&delta).await.unwrap();
+    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+
+    // Switch back to Static (without providing address/gateway in delta)
+    let delta = DeltaWifiCfg {
+        ip: Some(DeltaIpSettingsCfg::Static(DeltaStaticIpCfg {
+            address: None, // Not providing new values
+            gateway: None,
+        })),
+    };
+    shadow.apply_and_save(&delta).await.unwrap();
+
+    // At runtime, we get defaults (since delta didn't provide values)
+    // But on reload, we should get the preserved KV values
+
+    // Simulate reboot by creating new shadow instance
+    let shadow2 = Shadow::<WifiCfg, _>::new(&kv);
+    shadow2.load().await.unwrap();
+
+    // After reload, original values should be restored from KV
+    match &shadow2.state().await.unwrap().ip {
+        IpSettingsCfg::Static(cfg) => {
+            assert_eq!(cfg.address, [192, 168, 1, 100]);
+            assert_eq!(cfg.gateway, [192, 168, 1, 1]);
+        }
+        _ => panic!("Expected Static variant after reload"),
+    }
 }
 
 // =========================================================================
@@ -846,9 +940,45 @@ async fn test_apply_and_save_only_persists_some_fields() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Phase 8 derive macro support for WifiConfig"]
 async fn test_apply_and_save_enum_variant_change() {
-    // Delta changes to Static variant
+    // Delta changes enum variant from Dhcp to Static
+    let kv = setup_kv(&[
+        (
+            "wifi/__schema_hash__",
+            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
+        ),
+        ("wifi/ip/_variant", b"Dhcp"),
+    ])
+    .await;
+
+    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    shadow.load().await.unwrap();
+    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+
+    // Apply delta that changes to Static variant with values
+    let delta = DeltaWifiCfg {
+        ip: Some(DeltaIpSettingsCfg::Static(DeltaStaticIpCfg {
+            address: Some([10, 0, 0, 50]),
+            gateway: Some([10, 0, 0, 1]),
+        })),
+    };
+    shadow.apply_and_save(&delta).await.unwrap();
+
+    // Verify state changed
+    match &shadow.state().await.unwrap().ip {
+        IpSettingsCfg::Static(cfg) => {
+            assert_eq!(cfg.address, [10, 0, 0, 50]);
+            assert_eq!(cfg.gateway, [10, 0, 0, 1]);
+        }
+        _ => panic!("Expected Static variant"),
+    }
+
+    // Verify KV was updated
+    let variant = kv_fetch_raw(&kv, "wifi/ip/_variant").await;
+    assert_eq!(variant, b"Static");
+
+    let addr: [u8; 4] = kv_fetch_decode(&kv, "wifi/ip/Static/address").await;
+    assert_eq!(addr, [10, 0, 0, 50]);
 }
 
 #[tokio::test]
