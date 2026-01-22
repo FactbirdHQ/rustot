@@ -13,23 +13,29 @@
 //! it works transparently for both primitives and nested `ShadowNode` types,
 //! eliminating the need for `is_primitive()` checks in the derive macro.
 
-use crate::shadows::{
-    fnv1a_hash, KVStore, KvError, LoadFieldResult, MigrationSource, ReportedUnionFields,
-    ShadowNode,
-};
+use crate::shadows::{fnv1a_hash, ReportedUnionFields, ShadowNode};
+use serde::ser::SerializeMap;
+
+#[cfg(feature = "shadows_kv_persist")]
+use crate::shadows::{KVPersist, KVStore, KvError, LoadFieldResult, MigrationSource};
+#[cfg(feature = "shadows_kv_persist")]
 use core::future::Future;
+#[cfg(feature = "shadows_kv_persist")]
 use postcard::experimental::max_size::MaxSize;
-use serde::{de::DeserializeOwned, ser::SerializeMap, Serialize};
+#[cfg(feature = "shadows_kv_persist")]
+use serde::{de::DeserializeOwned, Serialize};
 
 /// Implement ShadowNode for opaque/leaf types.
 ///
 /// This macro generates ShadowNode implementations where:
 /// - `Delta = Self` (the type is its own delta)
 /// - `Reported = Self` (the type is its own reported form)
+/// - `SCHEMA_HASH = fnv1a_hash(type_name)` (type identity)
+///
+/// With `shadows_kv_persist` feature, also generates KVPersist impl:
 /// - `MAX_DEPTH = 0` (leaf node)
 /// - `MAX_KEY_LEN = 0` (no sub-keys)
 /// - `MAX_VALUE_LEN = POSTCARD_MAX_SIZE` (serialized size)
-/// - `SCHEMA_HASH = fnv1a_hash(type_name)` (type identity)
 ///
 /// # Example
 ///
@@ -43,29 +49,33 @@ macro_rules! impl_opaque {
             type Delta = $ty;
             type Reported = $ty;
 
-            const MAX_DEPTH: usize = 0;
-            const MAX_KEY_LEN: usize = 0;
-            const MAX_VALUE_LEN: usize = <$ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE;
             const SCHEMA_HASH: u64 = $crate::shadows::fnv1a_hash(stringify!($ty).as_bytes());
 
-            fn apply_and_persist<K: $crate::shadows::KVStore>(
-                &mut self,
-                delta: &Self::Delta,
-                prefix: &str,
-                kv: &K,
-                buf: &mut [u8],
-            ) -> impl ::core::future::Future<Output = Result<(), $crate::shadows::KvError<K::Error>>> {
-                async move {
-                    *self = delta.clone();
-                    let bytes = ::postcard::to_slice(self, buf)
-                        .map_err(|_| $crate::shadows::KvError::Serialization)?;
-                    kv.store(prefix, bytes).await.map_err($crate::shadows::KvError::Kv)
-                }
+            fn apply_delta(&mut self, delta: &Self::Delta) {
+                *self = delta.clone();
             }
 
             fn into_reported(self) -> Self::Reported {
                 self
             }
+        }
+
+        impl $crate::shadows::ReportedUnionFields for $ty {
+            const FIELD_NAMES: &'static [&'static str] = &[];
+
+            fn serialize_into_map<S: ::serde::ser::SerializeMap>(
+                &self,
+                _map: &mut S,
+            ) -> Result<(), S::Error> {
+                Ok(())
+            }
+        }
+
+        #[cfg(feature = "shadows_kv_persist")]
+        impl $crate::shadows::KVPersist for $ty {
+            const MAX_DEPTH: usize = 0;
+            const MAX_KEY_LEN: usize = 0;
+            const MAX_VALUE_LEN: usize = <$ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE;
 
             fn migration_sources(_field_path: &str) -> &'static [$crate::shadows::MigrationSource] {
                 &[]
@@ -122,19 +132,22 @@ macro_rules! impl_opaque {
                 }
             }
 
+            fn persist_delta<K: $crate::shadows::KVStore, const KEY_LEN: usize>(
+                delta: &Self::Delta,
+                kv: &K,
+                prefix: &str,
+                buf: &mut [u8],
+            ) -> impl ::core::future::Future<Output = Result<(), $crate::shadows::KvError<K::Error>>> {
+                async move {
+                    // For leaf types, Delta = Self, so just persist the value
+                    let bytes = ::postcard::to_slice(delta, buf)
+                        .map_err(|_| $crate::shadows::KvError::Serialization)?;
+                    kv.store(prefix, bytes).await.map_err($crate::shadows::KvError::Kv)
+                }
+            }
+
             fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
                 keys(prefix);
-            }
-        }
-
-        impl $crate::shadows::ReportedUnionFields for $ty {
-            const FIELD_NAMES: &'static [&'static str] = &[];
-
-            fn serialize_into_map<S: ::serde::ser::SerializeMap>(
-                &self,
-                _map: &mut S,
-            ) -> Result<(), S::Error> {
-                Ok(())
             }
         }
     )*};
@@ -157,84 +170,14 @@ impl<const N: usize> ShadowNode for heapless::String<N> {
     type Delta = heapless::String<N>;
     type Reported = heapless::String<N>;
 
-    const MAX_DEPTH: usize = 0;
-    const MAX_KEY_LEN: usize = 0;
-    // heapless::String<N> serializes as a string with max N bytes + length prefix
-    const MAX_VALUE_LEN: usize = N + 5; // +5 for postcard length encoding overhead
     const SCHEMA_HASH: u64 = fnv1a_hash(b"heapless::String");
 
-    fn apply_and_persist<K: KVStore>(
-        &mut self,
-        delta: &Self::Delta,
-        prefix: &str,
-        kv: &K,
-        buf: &mut [u8],
-    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-        async move {
-            *self = delta.clone();
-            let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
-            kv.store(prefix, bytes).await.map_err(KvError::Kv)
-        }
+    fn apply_delta(&mut self, delta: &Self::Delta) {
+        *self = delta.clone();
     }
 
     fn into_reported(self) -> Self::Reported {
         self
-    }
-
-    fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
-        &[]
-    }
-
-    fn all_migration_keys() -> impl Iterator<Item = &'static str> {
-        core::iter::empty()
-    }
-
-    fn apply_field_default(&mut self, _field_path: &str) -> bool {
-        false
-    }
-
-    fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
-        &mut self,
-        prefix: &str,
-        kv: &K,
-        buf: &mut [u8],
-    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-        async move {
-            let mut result = LoadFieldResult::default();
-            match kv.fetch(prefix, buf).await.map_err(KvError::Kv)? {
-                Some(data) => {
-                    *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
-                    result.loaded += 1;
-                }
-                None => result.defaulted += 1,
-            }
-            Ok(result)
-        }
-    }
-
-    fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
-        &mut self,
-        prefix: &str,
-        kv: &K,
-        buf: &mut [u8],
-    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
-    }
-
-    fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
-        &self,
-        prefix: &str,
-        kv: &K,
-        buf: &mut [u8],
-    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-        async move {
-            let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
-            kv.store(prefix, bytes).await.map_err(KvError::Kv)
-        }
-    }
-
-    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-        keys(prefix);
     }
 }
 
@@ -246,36 +189,12 @@ impl<const N: usize> ReportedUnionFields for heapless::String<N> {
     }
 }
 
-impl<T, const N: usize> ShadowNode for heapless::Vec<T, N>
-where
-    T: Clone + Default + Serialize + DeserializeOwned + MaxSize,
-{
-    type Delta = heapless::Vec<T, N>;
-    type Reported = heapless::Vec<T, N>;
-
+#[cfg(feature = "shadows_kv_persist")]
+impl<const N: usize> KVPersist for heapless::String<N> {
     const MAX_DEPTH: usize = 0;
     const MAX_KEY_LEN: usize = 0;
-    // Vec<T, N> serializes as: length prefix + N * T::MAX_SIZE
-    const MAX_VALUE_LEN: usize = 5 + N * T::POSTCARD_MAX_SIZE;
-    const SCHEMA_HASH: u64 = fnv1a_hash(b"heapless::Vec");
-
-    fn apply_and_persist<K: KVStore>(
-        &mut self,
-        delta: &Self::Delta,
-        prefix: &str,
-        kv: &K,
-        buf: &mut [u8],
-    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-        async move {
-            *self = delta.clone();
-            let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
-            kv.store(prefix, bytes).await.map_err(KvError::Kv)
-        }
-    }
-
-    fn into_reported(self) -> Self::Reported {
-        self
-    }
+    // heapless::String<N> serializes as a string with max N bytes + length prefix
+    const MAX_VALUE_LEN: usize = N + 5; // +5 for postcard length encoding overhead
 
     fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
         &[]
@@ -329,19 +248,128 @@ where
         }
     }
 
+    fn persist_delta<K: KVStore, const KEY_LEN: usize>(
+        delta: &Self::Delta,
+        kv: &K,
+        prefix: &str,
+        buf: &mut [u8],
+    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
+        async move {
+            let bytes = postcard::to_slice(delta, buf).map_err(|_| KvError::Serialization)?;
+            kv.store(prefix, bytes).await.map_err(KvError::Kv)
+        }
+    }
+
     fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
         keys(prefix);
     }
 }
 
+impl<T, const N: usize> ShadowNode for heapless::Vec<T, N>
+where
+    T: Clone + Default + serde::Serialize + serde::de::DeserializeOwned,
+{
+    type Delta = heapless::Vec<T, N>;
+    type Reported = heapless::Vec<T, N>;
+
+    const SCHEMA_HASH: u64 = fnv1a_hash(b"heapless::Vec");
+
+    fn apply_delta(&mut self, delta: &Self::Delta) {
+        *self = delta.clone();
+    }
+
+    fn into_reported(self) -> Self::Reported {
+        self
+    }
+}
+
 impl<T, const N: usize> ReportedUnionFields for heapless::Vec<T, N>
 where
-    T: Clone + Default + Serialize + DeserializeOwned + MaxSize,
+    T: Clone + Default + serde::Serialize + serde::de::DeserializeOwned,
 {
     const FIELD_NAMES: &'static [&'static str] = &[];
 
     fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
         Ok(())
+    }
+}
+
+#[cfg(feature = "shadows_kv_persist")]
+impl<T, const N: usize> KVPersist for heapless::Vec<T, N>
+where
+    T: Clone + Default + Serialize + DeserializeOwned + MaxSize,
+{
+    const MAX_DEPTH: usize = 0;
+    const MAX_KEY_LEN: usize = 0;
+    // Vec<T, N> serializes as: length prefix + N * T::MAX_SIZE
+    const MAX_VALUE_LEN: usize = 5 + N * T::POSTCARD_MAX_SIZE;
+
+    fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
+        &[]
+    }
+
+    fn all_migration_keys() -> impl Iterator<Item = &'static str> {
+        core::iter::empty()
+    }
+
+    fn apply_field_default(&mut self, _field_path: &str) -> bool {
+        false
+    }
+
+    fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
+        &mut self,
+        prefix: &str,
+        kv: &K,
+        buf: &mut [u8],
+    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
+        async move {
+            let mut result = LoadFieldResult::default();
+            match kv.fetch(prefix, buf).await.map_err(KvError::Kv)? {
+                Some(data) => {
+                    *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
+                    result.loaded += 1;
+                }
+                None => result.defaulted += 1,
+            }
+            Ok(result)
+        }
+    }
+
+    fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
+        &mut self,
+        prefix: &str,
+        kv: &K,
+        buf: &mut [u8],
+    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
+        self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
+    }
+
+    fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
+        &self,
+        prefix: &str,
+        kv: &K,
+        buf: &mut [u8],
+    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
+        async move {
+            let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
+            kv.store(prefix, bytes).await.map_err(KvError::Kv)
+        }
+    }
+
+    fn persist_delta<K: KVStore, const KEY_LEN: usize>(
+        delta: &Self::Delta,
+        kv: &K,
+        prefix: &str,
+        buf: &mut [u8],
+    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
+        async move {
+            let bytes = postcard::to_slice(delta, buf).map_err(|_| KvError::Serialization)?;
+            kv.store(prefix, bytes).await.map_err(KvError::Kv)
+        }
+    }
+
+    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
+        keys(prefix);
     }
 }
 
@@ -359,84 +387,14 @@ mod std_impls {
         type Delta = String;
         type Reported = String;
 
-        const MAX_DEPTH: usize = 0;
-        const MAX_KEY_LEN: usize = 0;
-        // std::String has unbounded size, use a reasonable max
-        const MAX_VALUE_LEN: usize = 1024;
         const SCHEMA_HASH: u64 = fnv1a_hash(b"String");
 
-        fn apply_and_persist<K: KVStore>(
-            &mut self,
-            delta: &Self::Delta,
-            prefix: &str,
-            kv: &K,
-            buf: &mut [u8],
-        ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-            async move {
-                *self = delta.clone();
-                let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
-                kv.store(prefix, bytes).await.map_err(KvError::Kv)
-            }
+        fn apply_delta(&mut self, delta: &Self::Delta) {
+            *self = delta.clone();
         }
 
         fn into_reported(self) -> Self::Reported {
             self
-        }
-
-        fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
-            &[]
-        }
-
-        fn all_migration_keys() -> impl Iterator<Item = &'static str> {
-            core::iter::empty()
-        }
-
-        fn apply_field_default(&mut self, _field_path: &str) -> bool {
-            false
-        }
-
-        fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
-            &mut self,
-            prefix: &str,
-            kv: &K,
-            buf: &mut [u8],
-        ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-            async move {
-                let mut result = LoadFieldResult::default();
-                match kv.fetch(prefix, buf).await.map_err(KvError::Kv)? {
-                    Some(data) => {
-                        *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
-                        result.loaded += 1;
-                    }
-                    None => result.defaulted += 1,
-                }
-                Ok(result)
-            }
-        }
-
-        fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
-            &mut self,
-            prefix: &str,
-            kv: &K,
-            buf: &mut [u8],
-        ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-            self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
-        }
-
-        fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
-            &self,
-            prefix: &str,
-            kv: &K,
-            buf: &mut [u8],
-        ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-            async move {
-                let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
-                kv.store(prefix, bytes).await.map_err(KvError::Kv)
-            }
-        }
-
-        fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-            keys(prefix);
         }
     }
 
@@ -448,36 +406,12 @@ mod std_impls {
         }
     }
 
-    impl<T> ShadowNode for Vec<T>
-    where
-        T: Clone + Default + Serialize + DeserializeOwned,
-    {
-        type Delta = Vec<T>;
-        type Reported = Vec<T>;
-
+    #[cfg(feature = "shadows_kv_persist")]
+    impl KVPersist for String {
         const MAX_DEPTH: usize = 0;
         const MAX_KEY_LEN: usize = 0;
-        // std::Vec has unbounded size, use a reasonable max
-        const MAX_VALUE_LEN: usize = 4096;
-        const SCHEMA_HASH: u64 = fnv1a_hash(b"Vec");
-
-        fn apply_and_persist<K: KVStore>(
-            &mut self,
-            delta: &Self::Delta,
-            prefix: &str,
-            kv: &K,
-            buf: &mut [u8],
-        ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-            async move {
-                *self = delta.clone();
-                let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
-                kv.store(prefix, bytes).await.map_err(KvError::Kv)
-            }
-        }
-
-        fn into_reported(self) -> Self::Reported {
-            self
-        }
+        // std::String has unbounded size, use a reasonable max
+        const MAX_VALUE_LEN: usize = 1024;
 
         fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
             &[]
@@ -531,19 +465,128 @@ mod std_impls {
             }
         }
 
+        fn persist_delta<K: KVStore, const KEY_LEN: usize>(
+            delta: &Self::Delta,
+            kv: &K,
+            prefix: &str,
+            buf: &mut [u8],
+        ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
+            async move {
+                let bytes = postcard::to_slice(delta, buf).map_err(|_| KvError::Serialization)?;
+                kv.store(prefix, bytes).await.map_err(KvError::Kv)
+            }
+        }
+
         fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
             keys(prefix);
         }
     }
 
+    impl<T> ShadowNode for Vec<T>
+    where
+        T: Clone + Default + serde::Serialize + serde::de::DeserializeOwned,
+    {
+        type Delta = Vec<T>;
+        type Reported = Vec<T>;
+
+        const SCHEMA_HASH: u64 = fnv1a_hash(b"Vec");
+
+        fn apply_delta(&mut self, delta: &Self::Delta) {
+            *self = delta.clone();
+        }
+
+        fn into_reported(self) -> Self::Reported {
+            self
+        }
+    }
+
     impl<T> ReportedUnionFields for Vec<T>
     where
-        T: Clone + Default + Serialize + DeserializeOwned,
+        T: Clone + Default + serde::Serialize + serde::de::DeserializeOwned,
     {
         const FIELD_NAMES: &'static [&'static str] = &[];
 
         fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
             Ok(())
+        }
+    }
+
+    #[cfg(feature = "shadows_kv_persist")]
+    impl<T> KVPersist for Vec<T>
+    where
+        T: Clone + Default + Serialize + DeserializeOwned,
+    {
+        const MAX_DEPTH: usize = 0;
+        const MAX_KEY_LEN: usize = 0;
+        // std::Vec has unbounded size, use a reasonable max
+        const MAX_VALUE_LEN: usize = 4096;
+
+        fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
+            &[]
+        }
+
+        fn all_migration_keys() -> impl Iterator<Item = &'static str> {
+            core::iter::empty()
+        }
+
+        fn apply_field_default(&mut self, _field_path: &str) -> bool {
+            false
+        }
+
+        fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
+            &mut self,
+            prefix: &str,
+            kv: &K,
+            buf: &mut [u8],
+        ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
+            async move {
+                let mut result = LoadFieldResult::default();
+                match kv.fetch(prefix, buf).await.map_err(KvError::Kv)? {
+                    Some(data) => {
+                        *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
+                        result.loaded += 1;
+                    }
+                    None => result.defaulted += 1,
+                }
+                Ok(result)
+            }
+        }
+
+        fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
+            &mut self,
+            prefix: &str,
+            kv: &K,
+            buf: &mut [u8],
+        ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
+            self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
+        }
+
+        fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
+            &self,
+            prefix: &str,
+            kv: &K,
+            buf: &mut [u8],
+        ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
+            async move {
+                let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
+                kv.store(prefix, bytes).await.map_err(KvError::Kv)
+            }
+        }
+
+        fn persist_delta<K: KVStore, const KEY_LEN: usize>(
+            delta: &Self::Delta,
+            kv: &K,
+            prefix: &str,
+            buf: &mut [u8],
+        ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
+            async move {
+                let bytes = postcard::to_slice(delta, buf).map_err(|_| KvError::Serialization)?;
+                kv.store(prefix, bytes).await.map_err(KvError::Kv)
+            }
+        }
+
+        fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
+            keys(prefix);
         }
     }
 }
@@ -570,14 +613,6 @@ mod tests {
     }
 
     #[test]
-    fn test_max_depth_zero() {
-        // All opaque types have MAX_DEPTH = 0
-        assert_eq!(<u32 as ShadowNode>::MAX_DEPTH, 0);
-        assert_eq!(<bool as ShadowNode>::MAX_DEPTH, 0);
-        assert_eq!(<f64 as ShadowNode>::MAX_DEPTH, 0);
-    }
-
-    #[test]
     fn test_into_reported_identity() {
         // into_reported should return self for primitives
         let x: u32 = 42;
@@ -585,5 +620,16 @@ mod tests {
 
         let b: bool = true;
         assert_eq!(ShadowNode::into_reported(b), true);
+    }
+
+    #[test]
+    fn test_apply_delta() {
+        let mut x: u32 = 0;
+        ShadowNode::apply_delta(&mut x, &42);
+        assert_eq!(x, 42);
+
+        let mut b: bool = false;
+        ShadowNode::apply_delta(&mut b, &true);
+        assert!(b);
     }
 }

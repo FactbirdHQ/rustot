@@ -7,9 +7,11 @@ use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPaylo
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::shadows::{
-    data_types::{AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState},
+    data_types::{
+        AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
+    },
     error::{Error, ShadowError},
-    kv_store::KVStore,
+    store::StateStore,
     topics::Topic,
     ShadowRoot,
 };
@@ -23,7 +25,7 @@ const MAX_TOPIC_LEN: usize = 128;
 const PARTIAL_REQUEST_OVERHEAD: usize = 64;
 
 /// Default name for classic/unnamed shadows.
-const CLASSIC_SHADOW: &str = "Classic";
+const CLASSIC_SHADOW: &str = "classic";
 
 // =============================================================================
 // Cloud Communication Methods (MQTT)
@@ -35,7 +37,7 @@ where
     S::Delta: Serialize + DeserializeOwned + Default,
     S::Reported: Serialize + Default,
     M: RawMutex,
-    K: KVStore,
+    K: StateStore<S>,
 {
     // =========================================================================
     // Private MQTT Helper Methods (ported from ShadowHandler)
@@ -165,9 +167,7 @@ where
                     }
 
                     return Err(Error::ShadowError(
-                        error_response
-                            .try_into()
-                            .unwrap_or(ShadowError::NotFound),
+                        error_response.try_into().unwrap_or(ShadowError::NotFound),
                     ));
                 }
                 _ => {
@@ -213,9 +213,7 @@ where
                 }
 
                 Err(Error::ShadowError(
-                    error_response
-                        .try_into()
-                        .unwrap_or(ShadowError::NotFound),
+                    error_response.try_into().unwrap_or(ShadowError::NotFound),
                 ))
             }
             _ => {
@@ -232,9 +230,7 @@ where
         // Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
-        let mut sub = self
-            .publish_and_subscribe(Topic::Delete, b"")
-            .await?;
+        let mut sub = self.publish_and_subscribe(Topic::Delete, b"").await?;
 
         let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
@@ -247,13 +243,13 @@ where
                         .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
 
                 Err(Error::ShadowError(
-                    error_response
-                        .try_into()
-                        .unwrap_or(ShadowError::NotFound),
+                    error_response.try_into().unwrap_or(ShadowError::NotFound),
                 ))
             }
             _ => {
-                error!("Expected Topic name DeleteRejected or DeleteAccepted but got something else");
+                error!(
+                    "Expected Topic name DeleteRejected or DeleteAccepted but got something else"
+                );
                 Err(Error::WrongShadowName)
             }
         }
@@ -337,7 +333,7 @@ where
     /// 1. Subscribes to the delta topic (on first call)
     /// 2. Waits for a delta message from the cloud
     /// 3. Applies the delta to local state
-    /// 4. Persists changed fields to KV storage
+    /// 4. Persists changed fields to storage
     /// 5. Acknowledges the update to the cloud
     ///
     /// Returns the current state and the delta that was applied (if any).
@@ -352,23 +348,35 @@ where
     ///     }
     /// }
     /// ```
-    pub async fn wait_delta(&mut self) -> Result<(&S, Option<S::Delta>), Error> {
+    pub async fn wait_delta(&self) -> Result<(S, Option<S::Delta>), Error> {
         let delta = self.handle_delta().await?;
 
-        if let Some(ref delta) = delta {
+        let state = if let Some(ref delta) = delta {
             debug!(
                 "[{:?}] Delta reports new desired value. Changing local value...",
                 S::NAME.unwrap_or(CLASSIC_SHADOW),
             );
 
-            // Apply and persist to KV in one pass
-            self.apply_and_save(delta).await.map_err(|_| Error::DaoWrite)?;
+            // Apply and persist using StateStore
+            let state = self
+                .apply_and_save(delta)
+                .await
+                .map_err(|_| Error::DaoWrite)?;
 
             // Acknowledge to cloud
-            self.update_shadow(None, Some(self.state.clone().into_reported())).await?;
-        }
+            self.update_shadow(None, Some(state.clone().into_reported()))
+                .await?;
 
-        Ok((&self.state, delta))
+            state
+        } else {
+            // No delta, just get current state
+            self.store
+                .get_state(Self::prefix())
+                .await
+                .map_err(|_| Error::DaoWrite)?
+        };
+
+        Ok((state, delta))
     }
 
     /// Report state changes to the cloud.
@@ -388,17 +396,25 @@ where
     ///     reported.timeout = Some(state.timeout);
     /// }).await?;
     /// ```
-    pub async fn update<F>(&mut self, f: F) -> Result<(), Error>
+    pub async fn update<F>(&self, f: F) -> Result<(), Error>
     where
         F: FnOnce(&S, &mut S::Reported),
     {
+        let state = self
+            .store
+            .get_state(Self::prefix())
+            .await
+            .map_err(|_| Error::DaoWrite)?;
+
         let mut reported = S::Reported::default();
-        f(&self.state, &mut reported);
+        f(&state, &mut reported);
 
         let response = self.update_shadow(None, Some(reported)).await?;
 
         if let Some(delta) = response.delta {
-            self.apply_and_save(&delta).await.map_err(|_| Error::DaoWrite)?;
+            self.apply_and_save(&delta)
+                .await
+                .map_err(|_| Error::DaoWrite)?;
         }
 
         Ok(())
@@ -421,7 +437,7 @@ where
     ///     delta.timeout = Some(5000);
     /// }).await?;
     /// ```
-    pub async fn update_desired<F>(&mut self, f: F) -> Result<(), Error>
+    pub async fn update_desired<F>(&self, f: F) -> Result<(), Error>
     where
         F: FnOnce(&mut S::Delta),
     {
@@ -431,7 +447,9 @@ where
         let response = self.update_shadow(Some(desired), None).await?;
 
         if let Some(delta) = response.delta {
-            self.apply_and_save(&delta).await.map_err(|_| Error::DaoWrite)?;
+            self.apply_and_save(&delta)
+                .await
+                .map_err(|_| Error::DaoWrite)?;
         }
 
         Ok(())
@@ -446,43 +464,51 @@ where
     /// ## Example
     ///
     /// ```ignore
-    /// shadow.load().await?;  // Load from KV
-    /// shadow.sync_shadow().await?;  // Sync with cloud
+    /// shadow.load().await?;  // Load from storage
+    /// let state = shadow.sync_shadow().await?;  // Sync with cloud
     /// ```
-    pub async fn sync_shadow(&mut self) -> Result<&S, Error> {
+    pub async fn sync_shadow(&self) -> Result<S, Error> {
         let delta_state = self.get_shadow_from_cloud().await?;
 
-        if let Some(delta) = delta_state.delta {
-            self.apply_and_save(&delta).await.map_err(|_| Error::DaoWrite)?;
-            self.update_shadow(None, Some(self.state.clone().into_reported())).await?;
-        }
+        let state = if let Some(delta) = delta_state.delta {
+            let state = self
+                .apply_and_save(&delta)
+                .await
+                .map_err(|_| Error::DaoWrite)?;
+            self.update_shadow(None, Some(state.clone().into_reported()))
+                .await?;
+            state
+        } else {
+            self.store
+                .get_state(Self::prefix())
+                .await
+                .map_err(|_| Error::DaoWrite)?
+        };
 
-        Ok(&self.state)
+        Ok(state)
     }
 
-    /// Delete the shadow from the cloud AND clear all KV keys.
+    /// Delete the shadow from the cloud and reset local state to defaults.
     ///
-    /// This completely removes the shadow state from both the cloud and
-    /// local storage. The local state is reset to defaults.
+    /// This removes the shadow from the cloud and resets the local state
+    /// to defaults in storage.
     ///
     /// ## Example
     ///
     /// ```ignore
-    /// shadow.delete_shadow().await?;  // Gone from cloud and KV
+    /// shadow.delete_shadow().await?;  // Gone from cloud, local reset to defaults
     /// ```
-    pub async fn delete_shadow(&mut self) -> Result<(), Error> {
+    pub async fn delete_shadow(&self) -> Result<(), Error> {
         // Delete from cloud
         self.delete_from_cloud().await?;
 
-        // Clear all KV keys for this shadow prefix
+        // Reset state to default in storage
         let prefix = Self::prefix();
-        self.kv_store
-            .remove_if(prefix, |_| true)
+        let state = S::default();
+        self.store
+            .set_state(prefix, &state)
             .await
             .map_err(|_| Error::DaoWrite)?;
-
-        // Reset state to default
-        self.state = S::default();
 
         Ok(())
     }

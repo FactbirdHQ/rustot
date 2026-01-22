@@ -42,19 +42,22 @@ pub enum MigrationError {
     InvalidSourceFormat,
 }
 
-/// Result of a Shadow::load() operation.
+/// Result of a `StateStore::load()` operation.
 ///
 /// Provides detailed information about what happened during load,
 /// useful for logging and diagnostics.
-#[derive(Debug, Default, Clone)]
-pub struct LoadResult {
-    /// Number of fields loaded from KV storage
+#[derive(Debug, Clone)]
+pub struct LoadResult<S> {
+    /// The loaded state
+    pub state: S,
+
+    /// Number of fields loaded from storage
     pub fields_loaded: usize,
 
     /// Number of fields migrated from old keys
     pub fields_migrated: usize,
 
-    /// Number of fields using default values (not in KV)
+    /// Number of fields using default values (not in storage)
     pub fields_defaulted: usize,
 
     /// Whether the schema hash changed (requires migration check)
@@ -64,15 +67,43 @@ pub struct LoadResult {
     pub first_boot: bool,
 }
 
-impl LoadResult {
+impl<S: Default> Default for LoadResult<S> {
+    fn default() -> Self {
+        Self {
+            state: S::default(),
+            fields_loaded: 0,
+            fields_migrated: 0,
+            fields_defaulted: 0,
+            schema_changed: false,
+            first_boot: false,
+        }
+    }
+}
+
+impl<S: Default> LoadResult<S> {
     /// Create a result for first boot (all defaults)
     pub fn first_boot(total_fields: usize) -> Self {
         Self {
+            state: S::default(),
             fields_loaded: 0,
             fields_migrated: 0,
             fields_defaulted: total_fields,
             schema_changed: false,
             first_boot: true,
+        }
+    }
+}
+
+impl<S> LoadResult<S> {
+    /// Create a result with the given state
+    pub fn with_state(state: S) -> Self {
+        Self {
+            state,
+            fields_loaded: 0,
+            fields_migrated: 0,
+            fields_defaulted: 0,
+            schema_changed: false,
+            first_boot: false,
         }
     }
 

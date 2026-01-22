@@ -1,35 +1,10 @@
 //! Tests for Shadow KV persistence
 
-use super::ShadowKvOnly;
-use crate::shadows::error::KvError;
-use crate::shadows::kv_store::{FileKVStore, KVStore, NoPersist};
+use super::ShadowTestOnly;
+use crate::shadows::store::{FileKVStore, InMemory, KVStore};
 
-// Use ShadowKvOnly for KV-only testing (doesn't require MQTT)
-type Shadow<'a, S, K> = ShadowKvOnly<'a, S, K>;
-
-// =========================================================================
-// Infrastructure Tests (run now)
-// =========================================================================
-
-#[tokio::test]
-async fn test_no_persist_always_returns_none() {
-    // This test validates the NoPersist KVStore behavior
-    let kv = NoPersist;
-    let mut buf = [0u8; 8];
-
-    // fetch always returns None
-    let result = kv.fetch("test/__schema_hash__", &mut buf).await.unwrap();
-    assert!(result.is_none());
-
-    // store is a no-op
-    kv.store("test/__schema_hash__", &[1, 2, 3, 4, 5, 6, 7, 8])
-        .await
-        .unwrap();
-
-    // still returns None after store
-    let result = kv.fetch("test/__schema_hash__", &mut buf).await.unwrap();
-    assert!(result.is_none());
-}
+// Use ShadowTestOnly for storage-only testing (doesn't require MQTT)
+type Shadow<'a, S, K> = ShadowTestOnly<'a, S, K>;
 
 // =========================================================================
 // Phase 8 Tests - Test fixtures using proc macros
@@ -270,7 +245,7 @@ async fn test_load_detects_schema_change() {
     .await;
 
     // Shadow borrows KVStore via & reference (interior mutability)
-    let mut shadow = Shadow::<SimpleConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
     let result = shadow.load().await.unwrap();
 
     assert!(!result.first_boot); // Not first boot - hash existed
@@ -288,12 +263,12 @@ async fn test_load_no_schema_change_when_hash_matches() {
     ])
     .await;
 
-    let mut shadow = Shadow::<SimpleConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
     let result = shadow.load().await.unwrap();
 
     assert!(!result.first_boot);
     assert!(!result.schema_changed);
-    assert_eq!(shadow.state.value, 42);
+    assert_eq!(shadow.state().await.unwrap().value, 42);
 }
 
 #[tokio::test]
@@ -301,7 +276,7 @@ async fn test_first_boot_initializes_and_persists() {
     // Empty store = first boot
     let kv = empty_kv();
 
-    let mut shadow = Shadow::<SimpleConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
     let result = shadow.load().await.unwrap();
 
     assert!(result.first_boot); // First boot detected
@@ -322,14 +297,14 @@ async fn test_first_boot_then_normal_boot() {
 
     // First boot
     {
-        let mut shadow1 = Shadow::<SimpleConfig, _>::new_persistent(&kv);
+        let shadow1 = Shadow::<SimpleConfig, _>::new(&kv);
         let result1 = shadow1.load().await.unwrap();
         assert!(result1.first_boot);
     }
 
     // Second boot - should be normal load
     {
-        let mut shadow2 = Shadow::<SimpleConfig, _>::new_persistent(&kv);
+        let shadow2 = Shadow::<SimpleConfig, _>::new(&kv);
         let result2 = shadow2.load().await.unwrap();
         assert!(!result2.first_boot);
         assert!(!result2.schema_changed);
@@ -346,8 +321,8 @@ async fn test_multiple_shadows_share_kvstore() {
 
     // Multiple shadows can share the same KVStore via & references
     // This is the key benefit of interior mutability
-    let mut device = Shadow::<SimpleConfig, _>::new_persistent(&kv);
-    let mut network = Shadow::<NetworkShadow, _>::new_persistent(&kv);
+    let mut device = Shadow::<SimpleConfig, _>::new(&kv);
+    let mut network = Shadow::<NetworkShadow, _>::new(&kv);
 
     // Both initialize on first boot (different prefixes, same KVStore)
     device.load().await.unwrap();
@@ -361,56 +336,73 @@ async fn test_multiple_shadows_share_kvstore() {
     network.apply_and_save(&delta).await.unwrap();
 
     // Reload fresh - still sharing the same KVStore
-    let mut device2 = Shadow::<SimpleConfig, _>::new_persistent(&kv);
-    let mut network2 = Shadow::<NetworkShadow, _>::new_persistent(&kv);
+    let mut device2 = Shadow::<SimpleConfig, _>::new(&kv);
+    let mut network2 = Shadow::<NetworkShadow, _>::new(&kv);
 
     device2.load().await.unwrap();
     network2.load().await.unwrap();
 
-    assert_eq!(device2.state.value, 42);
-    assert_eq!(network2.state.value, 99);
+    assert_eq!(device2.state().await.unwrap().value, 42);
+    assert_eq!(network2.state().await.unwrap().value, 99);
 }
 
 // =========================================================================
-// Non-Persisted Shadow (NoPersist) Tests
+// Non-Persisted Shadow (InMemory) Tests
 // =========================================================================
 
 #[tokio::test]
 async fn test_in_memory_shadow_initializes_defaults() {
-    // Non-persisted shadow using NoPersist KVStore
-    let mut shadow = Shadow::<SimpleConfig, NoPersist>::new_in_memory();
+    // Non-persisted shadow using InMemory KVStore
+    let kv = InMemory::<SimpleConfig>::new();
+    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
     let result = shadow.load().await.unwrap();
 
-    // Always "first boot" since nothing is persisted
+    // First boot since InMemory starts with defaults
     assert!(result.first_boot);
-    assert_eq!(shadow.state, SimpleConfig::default());
+    assert_eq!(shadow.state().await.unwrap(), SimpleConfig::default());
 }
 
 #[tokio::test]
 async fn test_in_memory_shadow_apply_and_save_updates_state() {
-    let mut shadow = Shadow::<SimpleConfig, NoPersist>::new_in_memory();
+    let kv = InMemory::<SimpleConfig>::new();
+    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
     shadow.load().await.unwrap();
 
     let delta = DeltaSimpleConfig { value: Some(42) };
     shadow.apply_and_save(&delta).await.unwrap();
 
-    // State updated (but not persisted anywhere)
-    assert_eq!(shadow.state.value, 42);
+    // State updated in InMemory
+    assert_eq!(shadow.state().await.unwrap().value, 42);
 }
 
 #[tokio::test]
-async fn test_in_memory_shadow_reload_resets_to_defaults() {
-    let mut shadow = Shadow::<SimpleConfig, NoPersist>::new_in_memory();
-    shadow.load().await.unwrap();
+async fn test_in_memory_shadow_persists_across_shadow_instances() {
+    // InMemory now persists state within the same KVStore instance
+    let kv = InMemory::<SimpleConfig>::new();
 
-    let delta = DeltaSimpleConfig { value: Some(42) };
-    shadow.apply_and_save(&delta).await.unwrap();
+    {
+        let shadow = Shadow::<SimpleConfig, _>::new(&kv);
+        shadow.load().await.unwrap();
 
-    // Create new shadow - state should be default (not persisted)
-    let mut shadow2 = Shadow::<SimpleConfig, NoPersist>::new_in_memory();
+        let delta = DeltaSimpleConfig { value: Some(42) };
+        shadow.apply_and_save(&delta).await.unwrap();
+    }
+
+    // Create new shadow pointing to same KVStore - state persists
+    let shadow2 = Shadow::<SimpleConfig, _>::new(&kv);
     shadow2.load().await.unwrap();
 
-    assert_eq!(shadow2.state.value, SimpleConfig::default().value);
+    assert_eq!(shadow2.state().await.unwrap().value, 42);
+}
+
+#[tokio::test]
+async fn test_new_in_memory_kvstore_has_default_state() {
+    // New InMemory KVStore starts with default state
+    let kv = InMemory::<SimpleConfig>::new();
+    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
+    shadow.load().await.unwrap();
+
+    assert_eq!(shadow.state().await.unwrap().value, SimpleConfig::default().value);
 }
 
 // =========================================================================
@@ -434,10 +426,10 @@ async fn test_migration_prefers_primary_key_over_old() {
     ])
     .await;
 
-    let mut shadow = Shadow::<MigratedConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<MigratedConfig, _>::new(&kv);
     shadow.load().await.unwrap();
 
-    assert_eq!(shadow.state.timeout, 5000); // NOT 9999
+    assert_eq!(shadow.state().await.unwrap().timeout, 5000); // NOT 9999
 }
 
 #[tokio::test]
@@ -451,10 +443,10 @@ async fn test_migration_multiple_sources_tried_in_order() {
     ])
     .await;
 
-    let mut shadow = Shadow::<MultiSourceConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<MultiSourceConfig, _>::new(&kv);
     shadow.load().await.unwrap();
 
-    assert_eq!(shadow.state.current_value, 42);
+    assert_eq!(shadow.state().await.unwrap().current_value, 42);
 }
 
 #[tokio::test]
@@ -467,10 +459,10 @@ async fn test_migration_type_conversion_when_new_type_fails_deserialize() {
     ])
     .await;
 
-    let mut shadow = Shadow::<TypeMigratedConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<TypeMigratedConfig, _>::new(&kv);
     shadow.load().await.unwrap();
 
-    assert_eq!(shadow.state.precision, 42u16); // converted
+    assert_eq!(shadow.state().await.unwrap().precision, 42u16); // converted
 }
 
 // =========================================================================
@@ -486,7 +478,7 @@ async fn test_load_writes_new_key_but_preserves_old() {
     ])
     .await;
 
-    let mut shadow = Shadow::<MigratedConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<MigratedConfig, _>::new(&kv);
     let result = shadow.load().await.unwrap();
 
     assert_eq!(result.fields_migrated, 1);
@@ -506,7 +498,7 @@ async fn test_commit_removes_old_keys_only_after_explicit_call() {
     ])
     .await;
 
-    let mut shadow = Shadow::<MigratedConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<MigratedConfig, _>::new(&kv);
     shadow.load().await.unwrap();
 
     // Old key still there
@@ -535,10 +527,10 @@ async fn test_rollback_scenario_old_firmware_reads_old_keys() {
     .await;
 
     // "Old firmware" only knows about old_timeout
-    let mut old_shadow = Shadow::<OldConfig, _>::new_persistent(&kv);
+    let mut old_shadow = Shadow::<OldConfig, _>::new(&kv);
     old_shadow.load().await.unwrap();
 
-    assert_eq!(old_shadow.state.old_timeout, 5000); // Works!
+    assert_eq!(old_shadow.state().await.unwrap().old_timeout, 5000); // Works!
 }
 
 // =========================================================================
@@ -555,10 +547,10 @@ async fn test_conversion_function_receives_correct_bytes() {
     ])
     .await;
 
-    let mut shadow = Shadow::<MsToSecsConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<MsToSecsConfig, _>::new(&kv);
     shadow.load().await.unwrap();
 
-    assert_eq!(shadow.state.timeout_secs, 5); // 5000ms -> 5s
+    assert_eq!(shadow.state().await.unwrap().timeout_secs, 5); // 5000ms -> 5s
 }
 
 #[tokio::test]
@@ -570,7 +562,7 @@ async fn test_conversion_failure_propagates_error() {
     ])
     .await;
 
-    let mut shadow = Shadow::<FailingConversionConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<FailingConversionConfig, _>::new(&kv);
     let result = shadow.load().await;
 
     assert!(result.is_err());
@@ -594,7 +586,7 @@ async fn test_commit_removes_truly_orphaned_keys() {
     ])
     .await;
 
-    let mut shadow = Shadow::<CurrentConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<CurrentConfig, _>::new(&kv);
     shadow.load().await.unwrap();
     shadow.commit().await.unwrap();
 
@@ -630,7 +622,7 @@ async fn test_commit_does_not_affect_other_shadow_prefixes() {
     ])
     .await;
 
-    let mut shadow = Shadow::<CurrentConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<CurrentConfig, _>::new(&kv);
     shadow.load().await.unwrap();
     shadow.commit().await.unwrap();
 
@@ -692,10 +684,11 @@ async fn test_enum_load_sets_variant_before_reading_fields() {
     ])
     .await;
 
-    let mut shadow = Shadow::<WifiCfg, _>::new_persistent(&kv);
+    let shadow = Shadow::<WifiCfg, _>::new(&kv);
     shadow.load().await.unwrap();
 
-    match &shadow.state.ip {
+    let state = shadow.state().await.unwrap();
+    match &state.ip {
         IpSettingsCfg::Static(cfg) => {
             assert_eq!(cfg.address, [192, 168, 1, 100]);
         }
@@ -708,10 +701,10 @@ async fn test_enum_load_missing_variant_uses_default() {
     // No _variant key -> use #[default] variant
     let kv = empty_kv();
 
-    let mut shadow = Shadow::<WifiCfg, _>::new_persistent(&kv);
+    let shadow = Shadow::<WifiCfg, _>::new(&kv);
     shadow.load().await.unwrap(); // First boot - initializes defaults
 
-    assert!(matches!(shadow.state.ip, IpSettingsCfg::Dhcp));
+    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
 }
 
 #[tokio::test]
@@ -728,10 +721,10 @@ async fn test_enum_load_ignores_inactive_variant_fields() {
     ])
     .await;
 
-    let mut shadow = Shadow::<WifiCfg, _>::new_persistent(&kv);
+    let shadow = Shadow::<WifiCfg, _>::new(&kv);
     shadow.load().await.unwrap(); // Should not fail
 
-    assert!(matches!(shadow.state.ip, IpSettingsCfg::Dhcp));
+    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
 }
 
 // =========================================================================
@@ -743,7 +736,7 @@ async fn test_enum_first_boot_writes_variant_key_as_utf8() {
     // First boot (empty KV) persists defaults including _variant keys
     let kv = empty_kv();
 
-    let mut shadow = Shadow::<WifiCfg, _>::new_persistent(&kv);
+    let shadow = Shadow::<WifiCfg, _>::new(&kv);
     let result = shadow.load().await.unwrap();
 
     assert!(result.first_boot);
@@ -804,10 +797,10 @@ async fn test_enum_serde_rename_affects_variant_key() {
     ])
     .await;
 
-    let mut shadow = Shadow::<AuthConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<AuthConfig, _>::new(&kv);
     shadow.load().await.unwrap();
 
-    assert!(matches!(shadow.state.auth, WifiAuth::Open));
+    assert!(matches!(shadow.state().await.unwrap().auth, WifiAuth::Open));
 }
 
 // =========================================================================
@@ -828,7 +821,7 @@ async fn test_apply_and_save_only_persists_some_fields() {
     ])
     .await;
 
-    let mut shadow = Shadow::<TestConfig, _>::new_persistent(&kv);
+    let shadow = Shadow::<TestConfig, _>::new(&kv);
     shadow.load().await.unwrap();
 
     // Delta only changes timeout
@@ -841,7 +834,7 @@ async fn test_apply_and_save_only_persists_some_fields() {
     // delta still available if needed
 
     // State updated
-    assert_eq!(shadow.state.timeout, 5000);
+    assert_eq!(shadow.state().await.unwrap().timeout, 5000);
 
     // Only timeout written to KV (check write count or value)
     // enabled and retries should have original values
@@ -871,7 +864,7 @@ async fn test_apply_and_save_nested_struct_fields() {
     ])
     .await;
 
-    let mut shadow = Shadow::<DeviceShadow, _>::new_persistent(&kv);
+    let shadow = Shadow::<DeviceShadow, _>::new(&kv);
     shadow.load().await.unwrap();
 
     // Delta changes only nested timeout
@@ -1092,22 +1085,18 @@ mod adjacently_tagged {
         assert!(json.contains("\"polarity\""));
     }
 
-    #[tokio::test]
-    async fn test_adjacently_tagged_apply_mode_only() {
+    #[test]
+    fn test_adjacently_tagged_apply_mode_only() {
+        use crate::shadows::ShadowNode;
         // Test applying a mode-only delta
-        let kv = NoPersist;
         let mut port_mode = PortMode::Inactive;
-        let mut buf = [0u8; 256];
 
         let delta = DeltaPortMode {
             mode: Some(PortModeVariant::Sio),
             config: None,
         };
 
-        port_mode
-            .apply_and_persist(&delta, "/test", &kv, &mut buf)
-            .await
-            .unwrap();
+        port_mode.apply_delta(&delta);
 
         // Variant should change to Sio with default config
         match port_mode {
@@ -1118,12 +1107,11 @@ mod adjacently_tagged {
         }
     }
 
-    #[tokio::test]
-    async fn test_adjacently_tagged_apply_config_only_matching_variant() {
+    #[test]
+    fn test_adjacently_tagged_apply_config_only_matching_variant() {
+        use crate::shadows::ShadowNode;
         // Test applying config-only delta when variant matches
-        let kv = NoPersist;
         let mut port_mode = PortMode::Sio(SioConfig { polarity: false });
-        let mut buf = [0u8; 256];
 
         let delta = DeltaPortMode {
             mode: None,
@@ -1132,10 +1120,7 @@ mod adjacently_tagged {
             })),
         };
 
-        port_mode
-            .apply_and_persist(&delta, "/test", &kv, &mut buf)
-            .await
-            .unwrap();
+        port_mode.apply_delta(&delta);
 
         // Config should update
         match port_mode {
@@ -1146,12 +1131,11 @@ mod adjacently_tagged {
         }
     }
 
-    #[tokio::test]
-    async fn test_adjacently_tagged_apply_config_only_wrong_variant() {
+    #[test]
+    fn test_adjacently_tagged_apply_config_only_wrong_variant() {
+        use crate::shadows::ShadowNode;
         // Test applying config-only delta when variant doesn't match
-        let kv = NoPersist;
         let mut port_mode = PortMode::Inactive;
-        let mut buf = [0u8; 256];
 
         let delta = DeltaPortMode {
             mode: None,
@@ -1160,20 +1144,18 @@ mod adjacently_tagged {
             })),
         };
 
-        let result = port_mode
-            .apply_and_persist(&delta, "/test", &kv, &mut buf)
-            .await;
+        port_mode.apply_delta(&delta);
 
-        // Should return VariantMismatch error
-        assert!(matches!(result, Err(KvError::VariantMismatch)));
+        // With new design, mismatched config is ignored (no error)
+        // Variant should remain Inactive
+        assert!(matches!(port_mode, PortMode::Inactive));
     }
 
-    #[tokio::test]
-    async fn test_adjacently_tagged_apply_mode_and_config() {
+    #[test]
+    fn test_adjacently_tagged_apply_mode_and_config() {
+        use crate::shadows::ShadowNode;
         // Test applying both mode and config in one delta
-        let kv = NoPersist;
         let mut port_mode = PortMode::Inactive;
-        let mut buf = [0u8; 256];
 
         let delta = DeltaPortMode {
             mode: Some(PortModeVariant::IoLink),
@@ -1182,10 +1164,7 @@ mod adjacently_tagged {
             })),
         };
 
-        port_mode
-            .apply_and_persist(&delta, "/test", &kv, &mut buf)
-            .await
-            .unwrap();
+        port_mode.apply_delta(&delta);
 
         // Variant should change and config should update
         match port_mode {
