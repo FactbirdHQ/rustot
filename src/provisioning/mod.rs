@@ -4,8 +4,7 @@ pub mod topics;
 
 use core::future::Future;
 
-use embassy_sync::blocking_mutex::raw::RawMutex;
-use mqttrust::{DeferredPayload, EncodingError, Publish, Subscribe, SubscribeTopic, Subscription};
+use crate::mqtt::{DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub use error::Error;
@@ -36,15 +35,14 @@ pub struct Credentials<'a> {
 pub struct FleetProvisioner;
 
 impl FleetProvisioner {
-    pub fn provision<'a, 'b, C, M: RawMutex, P: Serialize + 'b, H: CredentialHandler + 'b>(
-        mqtt: &'b mqttrust::MqttClient<'a, M>,
-        template_name: &'b str,
-        parameters: Option<P>,
-        credential_handler: &'b mut H,
-    ) -> impl Future<Output = Result<Option<C>, Error>> + 'b + use<'b, 'a, C, M, P, H>
+    pub async fn provision<'m, Cfg, M: MqttClient>(
+        mqtt: &'m M,
+        template_name: &str,
+        parameters: Option<impl Serialize>,
+        credential_handler: &mut impl CredentialHandler,
+    ) -> Result<Option<Cfg>, Error>
     where
-        C: DeserializeOwned + 'b,
-        'a: 'b,
+        Cfg: DeserializeOwned,
     {
         Self::provision_inner(
             mqtt,
@@ -56,16 +54,15 @@ impl FleetProvisioner {
         )
     }
 
-    pub fn provision_csr<'a, 'b, C, M: RawMutex, P: Serialize + 'b, H: CredentialHandler + 'b>(
-        mqtt: &'b mqttrust::MqttClient<'a, M>,
-        template_name: &'b str,
-        parameters: Option<P>,
-        csr: &'b str,
-        credential_handler: &'b mut H,
-    ) -> impl Future<Output = Result<Option<C>, Error>> + 'b + use<'b, 'a, C, M, P, H>
+    pub async fn provision_csr<'m, Cfg, M: MqttClient>(
+        mqtt: &'m M,
+        template_name: &str,
+        parameters: Option<impl Serialize>,
+        csr: &str,
+        credential_handler: &mut impl CredentialHandler,
+    ) -> Result<Option<Cfg>, Error>
     where
-        C: DeserializeOwned + 'b,
-        'a: 'b,
+        Cfg: DeserializeOwned,
     {
         Self::provision_inner(
             mqtt,
@@ -78,15 +75,14 @@ impl FleetProvisioner {
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub fn provision_cbor<'a, 'b, C, M: RawMutex, P: Serialize + 'b, H: CredentialHandler + 'b>(
-        mqtt: &'b mqttrust::MqttClient<'a, M>,
-        template_name: &'b str,
-        parameters: Option<P>,
-        credential_handler: &'b mut H,
-    ) -> impl Future<Output = Result<Option<C>, Error>> + 'b + use<'b, 'a, C, M, P, H>
+    pub async fn provision_cbor<'m, Cfg, M: MqttClient>(
+        mqtt: &'m M,
+        template_name: &str,
+        parameters: Option<impl Serialize>,
+        credential_handler: &mut impl CredentialHandler,
+    ) -> Result<Option<Cfg>, Error>
     where
-        C: DeserializeOwned + 'b,
-        'a: 'b,
+        Cfg: DeserializeOwned,
     {
         Self::provision_inner(
             mqtt,
@@ -99,23 +95,15 @@ impl FleetProvisioner {
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub fn provision_csr_cbor<
-        'a,
-        'b,
-        C,
-        M: RawMutex,
-        P: Serialize + 'b,
-        H: CredentialHandler + 'b,
-    >(
-        mqtt: &'b mqttrust::MqttClient<'a, M>,
-        template_name: &'b str,
-        parameters: Option<P>,
-        csr: &'b str,
-        credential_handler: &'b mut H,
-    ) -> impl Future<Output = Result<Option<C>, Error>> + 'b + use<'b, 'a, C, M, P, H>
+    pub async fn provision_csr_cbor<'m, Cfg, M: MqttClient>(
+        mqtt: &'m M,
+        template_name: &str,
+        parameters: Option<impl Serialize>,
+        csr: &str,
+        credential_handler: &mut impl CredentialHandler,
+    ) -> Result<Option<Cfg>, Error>
     where
-        C: DeserializeOwned + 'b,
-        'a: 'b,
+        Cfg: DeserializeOwned,
     {
         Self::provision_inner(
             mqtt,
@@ -127,16 +115,16 @@ impl FleetProvisioner {
         )
     }
 
-    async fn provision_inner<'a, C, M: RawMutex>(
-        mqtt: &mqttrust::MqttClient<'a, M>,
+    async fn provision_inner<'m, Cfg, M: MqttClient>(
+        mqtt: &'m M,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: Option<&str>,
         credential_handler: &mut impl CredentialHandler,
         payload_format: PayloadFormat,
-    ) -> Result<Option<C>, Error>
+    ) -> Result<Option<Cfg>, Error>
     where
-        C: DeserializeOwned,
+        Cfg: DeserializeOwned,
     {
         let mut create_subscription = Self::begin(mqtt, csr, payload_format).await?;
         let mut message = create_subscription
@@ -146,8 +134,10 @@ impl FleetProvisioner {
 
         let ownership_token = match Topic::from_str(message.topic_name()) {
             Some(Topic::CreateKeysAndCertificateAccepted(format)) => {
-                let response =
-                    Self::deserialize::<CreateKeysAndCertificateResponse>(format, &mut message)?;
+                let response = Self::deserialize::<CreateKeysAndCertificateResponse>(
+                    format,
+                    message.payload_mut(),
+                )?;
 
                 credential_handler
                     .store_credentials(Credentials {
@@ -204,20 +194,20 @@ impl FleetProvisioner {
         };
 
         let payload = DeferredPayload::new(
-            |buf| {
+            |buf: &mut [u8]| {
                 Ok(match payload_format {
                     #[cfg(feature = "provision_cbor")]
                     PayloadFormat::Cbor => {
                         let mut serializer = minicbor_serde::Serializer::new(
-                            minicbor::encode::write::Cursor::new(buf),
+                            minicbor::encode::write::Cursor::new(&mut *buf),
                         );
                         register_request
                             .serialize(&mut serializer)
-                            .map_err(|_| EncodingError::BufferSize)?;
+                            .map_err(|_| PayloadError::EncodingFailed)?;
                         serializer.into_encoder().writer().position()
                     }
                     PayloadFormat::Json => serde_json_core::to_slice(&register_request, buf)
-                        .map_err(|_| EncodingError::BufferSize)?,
+                        .map_err(|_| PayloadError::BufferSize)?,
                 })
             },
             1024,
@@ -225,40 +215,22 @@ impl FleetProvisioner {
 
         debug!("Starting RegisterThing");
 
+        let register_accepted_topic =
+            Topic::RegisterThingAccepted(template_name, payload_format).format::<150>()?;
+        let register_rejected_topic =
+            Topic::RegisterThingRejected(template_name, payload_format).format::<150>()?;
         let mut register_subscription = mqtt
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                Topic::RegisterThingAccepted(template_name, payload_format)
-                                    .format::<150>()?
-                                    .as_str(),
-                            )
-                            .build(),
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                Topic::RegisterThingRejected(template_name, payload_format)
-                                    .format::<150>()?
-                                    .as_str(),
-                            )
-                            .build(),
-                    ])
-                    .build(),
-            )
-            .await?;
+            .subscribe::<2>(&[
+                (register_accepted_topic.as_str(), QoS::AtMostOnce),
+                (register_rejected_topic.as_str(), QoS::AtMostOnce),
+            ])
+            .await
+            .map_err(|_| Error::Mqtt)?;
 
-        mqtt.publish(
-            Publish::builder()
-                .topic_name(
-                    Topic::RegisterThing(template_name, payload_format)
-                        .format::<69>()?
-                        .as_str(),
-                )
-                .payload(payload)
-                .build(),
-        )
-        .await?;
+        let publish_topic = Topic::RegisterThing(template_name, payload_format).format::<69>()?;
+        mqtt.publish(publish_topic.as_str(), payload)
+            .await
+            .map_err(|_| Error::Mqtt)?;
 
         let mut message = register_subscription
             .next_message()
@@ -267,7 +239,7 @@ impl FleetProvisioner {
 
         match Topic::from_str(message.topic_name()) {
             Some(Topic::RegisterThingAccepted(_, format)) => {
-                let response = Self::deserialize::<RegisterThingResponse<'_, C>>(
+                let response = Self::deserialize::<RegisterThingResponse<'_, Cfg>>(
                     format,
                     message.payload_mut(),
                 )?;
@@ -288,107 +260,73 @@ impl FleetProvisioner {
         }
     }
 
-    async fn begin<'a, 'b, M: RawMutex>(
-        mqtt: &'b mqttrust::MqttClient<'a, M>,
+    async fn begin<'m, M: MqttClient>(
+        mqtt: &'m M,
         csr: Option<&str>,
         payload_format: PayloadFormat,
-    ) -> Result<Subscription<'a, 'b, M, 2>, Error> {
+    ) -> Result<M::Subscription<'m, 2>, Error> {
         if let Some(csr) = csr {
+            let rejected_topic =
+                Topic::CreateCertificateFromCsrRejected(payload_format).format::<47>()?;
+            let accepted_topic =
+                Topic::CreateCertificateFromCsrAccepted(payload_format).format::<47>()?;
+
             let subscription = mqtt
-                .subscribe(
-                    Subscribe::builder()
-                        .topics(&[
-                            SubscribeTopic::builder()
-                                .topic_path(
-                                    Topic::CreateCertificateFromCsrRejected(payload_format)
-                                        .format::<47>()?
-                                        .as_str(),
-                                )
-                                .build(),
-                            SubscribeTopic::builder()
-                                .topic_path(
-                                    Topic::CreateCertificateFromCsrAccepted(payload_format)
-                                        .format::<47>()?
-                                        .as_str(),
-                                )
-                                .build(),
-                        ])
-                        .build(),
-                )
-                .await?;
+                .subscribe(&[
+                    (rejected_topic.as_str(), QoS::AtMostOnce),
+                    (accepted_topic.as_str(), QoS::AtMostOnce),
+                ])
+                .await
+                .map_err(|_| Error::Mqtt)?;
 
             let request = CreateCertificateFromCsrRequest {
                 certificate_signing_request: csr,
             };
 
             let payload = DeferredPayload::new(
-                |buf| {
+                |buf: &mut [u8]| {
                     Ok(match payload_format {
                         #[cfg(feature = "provision_cbor")]
                         PayloadFormat::Cbor => {
                             let mut serializer = minicbor_serde::Serializer::new(
-                                minicbor::encode::write::Cursor::new(buf),
+                                minicbor::encode::write::Cursor::new(&mut *buf),
                             );
                             request
                                 .serialize(&mut serializer)
-                                .map_err(|_| EncodingError::BufferSize)?;
+                                .map_err(|_| PayloadError::EncodingFailed)?;
                             serializer.into_encoder().writer().position()
                         }
                         PayloadFormat::Json => serde_json_core::to_slice(&request, buf)
-                            .map_err(|_| EncodingError::BufferSize)?,
+                            .map_err(|_| PayloadError::BufferSize)?,
                     })
                 },
                 csr.len() + 32,
             );
 
-            mqtt.publish(
-                Publish::builder()
-                    .topic_name(
-                        Topic::CreateCertificateFromCsr(payload_format)
-                            .format::<40>()?
-                            .as_str(),
-                    )
-                    .payload(payload)
-                    .build(),
-            )
-            .await?;
+            let publish_topic = Topic::CreateCertificateFromCsr(payload_format).format::<40>()?;
+            mqtt.publish(publish_topic.as_str(), payload)
+                .await
+                .map_err(|_| Error::Mqtt)?;
 
             Ok(subscription)
         } else {
-            let subscription = mqtt
-                .subscribe(
-                    Subscribe::builder()
-                        .topics(&[
-                            SubscribeTopic::builder()
-                                .topic_path(
-                                    Topic::CreateKeysAndCertificateAccepted(payload_format)
-                                        .format::<38>()?
-                                        .as_str(),
-                                )
-                                .build(),
-                            SubscribeTopic::builder()
-                                .topic_path(
-                                    Topic::CreateKeysAndCertificateRejected(payload_format)
-                                        .format::<38>()?
-                                        .as_str(),
-                                )
-                                .build(),
-                        ])
-                        .build(),
-                )
-                .await?;
+            let accepted_topic =
+                Topic::CreateKeysAndCertificateAccepted(payload_format).format::<38>()?;
+            let rejected_topic =
+                Topic::CreateKeysAndCertificateRejected(payload_format).format::<38>()?;
 
-            mqtt.publish(
-                Publish::builder()
-                    .topic_name(
-                        Topic::CreateKeysAndCertificate(payload_format)
-                            .format::<29>()?
-                            .as_str(),
-                    )
-                    .payload(b"")
-                    .build(),
-            )
-            .await?;
+            let subscription = mqtt
+                .subscribe(&[
+                    (accepted_topic.as_str(), QoS::AtMostOnce),
+                    (rejected_topic.as_str(), QoS::AtMostOnce),
+                ])
+                .await
+                .map_err(|_| Error::Mqtt)?;
+
+            let publish_topic = Topic::CreateKeysAndCertificate(payload_format).format::<29>()?;
+            mqtt.publish(publish_topic.as_str(), b"".as_slice())
+                .await
+                .map_err(|_| Error::Mqtt)?;
 
             Ok(subscription)
         }

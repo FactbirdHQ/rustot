@@ -5,7 +5,7 @@ pub enum Error {
     Overflow,
     InvalidPayload,
     InvalidState,
-    Mqtt(mqttrust::Error),
+    Mqtt,
     DeserializeJson(#[cfg_attr(feature = "defmt", defmt(Debug2Format))] serde_json_core::de::Error),
     DeserializeCbor,
     CertificateStorage,
@@ -31,8 +31,3 @@ impl From<minicbor_serde::error::DecodeError> for Error {
     }
 }
 
-impl From<mqttrust::Error> for Error {
-    fn from(e: mqttrust::Error) -> Self {
-        Self::Mqtt(e)
-    }
-}
