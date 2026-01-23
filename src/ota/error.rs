@@ -21,7 +21,7 @@ pub enum OtaError {
         #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
         embedded_storage_async::nor_flash::NorFlashErrorKind,
     ),
-    Mqtt(mqttrust::Error),
+    Mqtt,
     Encoding,
     Pal,
     Timeout,
@@ -30,12 +30,6 @@ pub enum OtaError {
 impl OtaError {
     pub fn is_retryable(&self) -> bool {
         matches!(self, Self::Encoding | Self::Timeout)
-    }
-}
-
-impl From<mqttrust::Error> for OtaError {
-    fn from(e: mqttrust::Error) -> Self {
-        Self::Mqtt(e)
     }
 }
 
@@ -50,7 +44,7 @@ impl From<JobError> for OtaError {
         match e {
             JobError::Overflow => Self::Overflow,
             JobError::Encoding => Self::Encoding,
-            JobError::Mqtt(e) => Self::Mqtt(e),
+            JobError::Mqtt(_) => Self::Mqtt,
         }
     }
 }

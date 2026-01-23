@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::jobs::JobTopic;
+use crate::mqtt::{PayloadError, ToPayload};
 
 use super::{JobError, MAX_CLIENT_TOKEN_LEN, MAX_THING_NAME_LEN};
 
@@ -34,20 +35,27 @@ impl<'a> GetPending<'a> {
         }
     }
 
-    pub fn topic_payload(
-        self,
+    pub fn topic(
+        &self,
         client_id: &str,
-        buf: &mut [u8],
-    ) -> Result<(heapless::String<{ MAX_THING_NAME_LEN + 21 }>, usize), JobError> {
-        let payload_len = serde_json_core::to_slice(
-            &&GetPendingJobExecutionsRequest {
+    ) -> Result<heapless::String<{ MAX_THING_NAME_LEN + 21 }>, JobError> {
+        JobTopic::GetPending.format(client_id)
+    }
+}
+
+impl ToPayload for GetPending<'_> {
+    fn max_size(&self) -> usize {
+        256
+    }
+
+    fn encode(&self, buf: &mut [u8]) -> Result<usize, PayloadError> {
+        serde_json_core::to_slice(
+            &GetPendingJobExecutionsRequest {
                 client_token: self.client_token,
             },
             buf,
         )
-        .map_err(|_| JobError::Encoding)?;
-
-        Ok((JobTopic::GetPending.format(client_id)?, payload_len))
+        .map_err(|_| PayloadError::BufferSize)
     }
 }
 
@@ -68,15 +76,16 @@ mod test {
     }
 
     #[test]
-    fn topic_payload() {
-        let mut buf = [0u8; 512];
-        let (topic, payload_len) = GetPending::new()
-            .client_token("test_client:token_pending")
-            .topic_payload("test_client", &mut buf)
-            .unwrap();
+    fn topic_and_payload() {
+        let get_pending = GetPending::new().client_token("test_client:token_pending");
+
+        let topic = get_pending.topic("test_client").unwrap();
+
+        let mut buf = [0u8; 256];
+        let len = get_pending.encode(&mut buf).unwrap();
 
         assert_eq!(
-            &buf[..payload_len],
+            &buf[..len],
             br#"{"clientToken":"test_client:token_pending"}"#
         );
 
