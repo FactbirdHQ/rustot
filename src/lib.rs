@@ -9,6 +9,7 @@ pub(crate) mod fmt;
 
 pub mod defender_metrics;
 pub mod jobs;
+pub mod mqtt;
 #[cfg(any(feature = "ota_mqtt_data", feature = "ota_http_data"))]
 pub mod ota;
 pub mod provisioning;
