@@ -1,8 +1,8 @@
-use crate::shadows::Error;
+use crate::mqtt::{
+    DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS, ToPayload,
+};
 use data_types::Metric;
-use embassy_sync::blocking_mutex::raw::RawMutex;
 use errors::{ErrorResponse, MetricError};
-use mqttrust::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 #[cfg(feature = "metric_cbor")]
 use serde::Deserialize;
 use serde::Serialize;
@@ -13,18 +13,18 @@ pub mod data_types;
 pub mod errors;
 pub mod topics;
 
-pub struct MetricHandler<'a, 'm, M: RawMutex> {
-    mqtt: &'m mqttrust::MqttClient<'a, M>,
+pub struct MetricHandler<'m, C: MqttClient> {
+    mqtt: &'m C,
 }
 
-impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
-    pub fn new(mqtt: &'m mqttrust::MqttClient<'a, M>) -> Self {
+impl<'m, C: MqttClient> MetricHandler<'m, C> {
+    pub fn new(mqtt: &'m C) -> Self {
         Self { mqtt }
     }
 
-    pub async fn publish_metric<'c, C: Serialize>(
+    pub async fn publish_metric<'c, S: Serialize>(
         &self,
-        metric: Metric<'c, C>,
+        metric: Metric<'c, S>,
         max_payload_size: usize,
     ) -> Result<(), MetricError> {
         //Wait for mqtt to connect
@@ -42,7 +42,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
                         Ok(_) => {}
                         Err(_) => {
                             error!("An error happened when serializing metric with cbor");
-                            return Err(mqttrust::EncodingError::BufferSize);
+                            return Err(PayloadError::EncodingFailed);
                         }
                     };
 
@@ -52,7 +52,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
                 #[cfg(not(feature = "metric_cbor"))]
                 {
                     serde_json_core::to_slice(&metric, buf)
-                        .map_err(|_| mqttrust::EncodingError::BufferSize)
+                        .map_err(|_| PayloadError::BufferSize)
                 }
             },
             max_payload_size,
@@ -68,7 +68,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
 
     async fn await_metric_response(
         &self,
-        subscription: &mut mqttrust::Subscription<'a, '_, M, 2>,
+        subscription: &mut C::Subscription<'_, 2>,
     ) -> Result<(), MetricError> {
         loop {
             let message = subscription
@@ -105,52 +105,28 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
     async fn publish_and_subscribe(
         &self,
         payload: impl ToPayload,
-    ) -> Result<mqttrust::Subscription<'a, '_, M, 2>, Error> {
+    ) -> Result<C::Subscription<'_, 2>, MetricError> {
+        let accepted = Topic::Accepted.format::<64>(self.mqtt.client_id())?;
+        let rejected = Topic::Rejected.format::<64>(self.mqtt.client_id())?;
+
         let sub = self
             .mqtt
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                Topic::Accepted
-                                    .format::<64>(self.mqtt.client_id())?
-                                    .as_str(),
-                            )
-                            .build(),
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                Topic::Rejected
-                                    .format::<64>(self.mqtt.client_id())?
-                                    .as_str(),
-                            )
-                            .build(),
-                    ])
-                    .build(),
-            )
+            .subscribe::<2>(&[
+                (accepted.as_str(), QoS::AtMostOnce),
+                (rejected.as_str(), QoS::AtMostOnce),
+            ])
             .await
-            .map_err(|_| Error::Mqtt)?;
+            .map_err(|_| MetricError::Mqtt)?;
 
-        //*** PUBLISH REQUEST ***/
         let topic_name = Topic::Publish.format::<64>(self.mqtt.client_id())?;
 
-        match self
-            .mqtt
-            .publish(
-                Publish::builder()
-                    .topic_name(topic_name.as_str())
-                    .payload(payload)
-                    .build(),
-            )
+        self.mqtt
+            .publish(topic_name.as_str(), payload)
             .await
-            .map_err(|_| Error::Mqtt)
-        {
-            Ok(_) => {}
-            Err(_) => {
+            .map_err(|_| {
                 error!("ERROR PUBLISHING PAYLOAD");
-                return Err(Error::Mqtt);
-            }
-        };
+                MetricError::Mqtt
+            })?;
 
         Ok(sub)
     }

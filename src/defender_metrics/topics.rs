@@ -3,7 +3,7 @@ use core::fmt::Write;
 
 use heapless::String;
 
-use crate::shadows::Error;
+use super::errors::MetricError;
 
 pub enum PayloadFormat {
     #[cfg(feature = "metric_cbor")]
@@ -29,23 +29,25 @@ impl Topic {
     #[cfg(not(feature = "metric_cbor"))]
     const PAYLOAD_FORMAT: &'static str = "json";
 
-    fn format_inner(&self, thing_name: &str, w: &mut dyn Write) -> Result<(), core::fmt::Error> {
+    pub fn format<const L: usize>(&self, thing_name: &str) -> Result<String<L>, MetricError> {
+        let mut topic_path = String::new();
+
         match self {
-            Self::Accepted => w.write_fmt(format_args!(
+            Self::Accepted => topic_path.write_fmt(format_args!(
                 "{}/{}/{}/{}/accepted",
                 Self::PREFIX,
                 thing_name,
                 Self::NAME,
                 Self::PAYLOAD_FORMAT,
             )),
-            Self::Rejected => w.write_fmt(format_args!(
+            Self::Rejected => topic_path.write_fmt(format_args!(
                 "{}/{}/{}/{}/rejected",
                 Self::PREFIX,
                 thing_name,
                 Self::NAME,
                 Self::PAYLOAD_FORMAT,
             )),
-            Self::Publish => w.write_fmt(format_args!(
+            Self::Publish => topic_path.write_fmt(format_args!(
                 "{}/{}/{}/{}",
                 Self::PREFIX,
                 thing_name,
@@ -53,12 +55,8 @@ impl Topic {
                 Self::PAYLOAD_FORMAT,
             )),
         }
-    }
+        .map_err(|_| MetricError::Overflow)?;
 
-    pub fn format<const L: usize>(&self, thing_name: &str) -> Result<String<L>, Error> {
-        let mut topic_path = String::new();
-        self.format_inner(thing_name, &mut topic_path)
-            .map_err(|_| Error::Overflow)?;
         Ok(topic_path)
     }
 
