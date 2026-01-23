@@ -2,9 +2,9 @@
 
 use core::ops::DerefMut;
 
-use embassy_sync::blocking_mutex::raw::RawMutex;
-use mqttrust::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use serde::{de::DeserializeOwned, Serialize};
+
+use crate::mqtt::{DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS, ToPayload};
 
 use crate::shadows::{
     data_types::{
@@ -31,12 +31,12 @@ const CLASSIC_SHADOW: &str = "classic";
 // Cloud Communication Methods (MQTT)
 // =============================================================================
 
-impl<'a, 'm, S, M, K> Shadow<'a, 'm, S, M, K>
+impl<'a, 'm, S, C, K> Shadow<'a, 'm, S, C, K>
 where
     S: ShadowRoot + Clone,
     S::Delta: Serialize + DeserializeOwned + Default,
     S::Reported: Serialize + Default,
-    M: RawMutex,
+    C: MqttClient,
     K: StateStore<S>,
 {
     // =========================================================================
@@ -58,25 +58,14 @@ where
                     debug!("Subscribing to delta topic");
                     self.mqtt.wait_connected().await;
 
+                    let topic = Topic::UpdateDelta
+                        .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+
                     let sub = self
                         .mqtt
-                        .subscribe::<2>(
-                            Subscribe::builder()
-                                .topics(&[SubscribeTopic::builder()
-                                    .topic_path(
-                                        Topic::UpdateDelta
-                                            .format::<64>(
-                                                S::PREFIX,
-                                                self.mqtt.client_id(),
-                                                S::NAME,
-                                            )?
-                                            .as_str(),
-                                    )
-                                    .build()])
-                                .build(),
-                        )
+                        .subscribe::<1>(&[(topic.as_str(), QoS::AtMostOnce)])
                         .await
-                        .map_err(Error::MqttError)?;
+                        .map_err(|_| Error::Mqtt)?;
 
                     let _ = sub_ref.insert(sub);
 
@@ -147,7 +136,7 @@ where
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
                 serde_json_core::to_slice(&request, buf)
-                    .map_err(|_| mqttrust::EncodingError::BufferSize)
+                    .map_err(|_| PayloadError::EncodingFailed)
             },
             S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD,
         );
@@ -303,7 +292,7 @@ where
         &self,
         topic: Topic,
         payload: impl ToPayload,
-    ) -> Result<mqttrust::Subscription<'a, 'm, M, 2>, Error> {
+    ) -> Result<C::Subscription<'m, 2>, Error> {
         let (accepted, rejected) = match topic {
             Topic::Get => (Topic::GetAccepted, Topic::GetRejected),
             Topic::Update => (Topic::UpdateAccepted, Topic::UpdateRejected),
@@ -312,43 +301,27 @@ where
         };
 
         //*** SUBSCRIBE ***/
+        let accepted_topic =
+            accepted.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+        let rejected_topic =
+            rejected.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+
         let sub = self
             .mqtt
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                accepted
-                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
-                                    .as_str(),
-                            )
-                            .build(),
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                rejected
-                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
-                                    .as_str(),
-                            )
-                            .build(),
-                    ])
-                    .build(),
-            )
+            .subscribe::<2>(&[
+                (accepted_topic.as_str(), QoS::AtMostOnce),
+                (rejected_topic.as_str(), QoS::AtMostOnce),
+            ])
             .await
-            .map_err(Error::MqttError)?;
+            .map_err(|_| Error::Mqtt)?;
 
         //*** PUBLISH REQUEST ***/
         let topic_name =
             topic.format::<MAX_TOPIC_LEN>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
         self.mqtt
-            .publish(
-                Publish::builder()
-                    .topic_name(topic_name.as_str())
-                    .payload(payload)
-                    .build(),
-            )
+            .publish(topic_name.as_str(), payload)
             .await
-            .map_err(Error::MqttError)?;
+            .map_err(|_| Error::Mqtt)?;
 
         Ok(sub)
     }

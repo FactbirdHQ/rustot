@@ -129,7 +129,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
                     .build(),
             )
             .await
-            .map_err(Error::MqttError)?;
+            .map_err(|_| Error::Mqtt)?;
 
         //*** PUBLISH REQUEST ***/
         let topic_name = Topic::Publish.format::<64>(self.mqtt.client_id())?;
@@ -143,12 +143,12 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
                     .build(),
             )
             .await
-            .map_err(Error::MqttError)
+            .map_err(|_| Error::Mqtt)
         {
             Ok(_) => {}
             Err(_) => {
                 error!("ERROR PUBLISHING PAYLOAD");
-                return Err(Error::MqttError(mqttrust::Error::BadTopicFilter));
+                return Err(Error::Mqtt);
             }
         };
 
