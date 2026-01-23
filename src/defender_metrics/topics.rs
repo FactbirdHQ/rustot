@@ -3,7 +3,7 @@ use core::fmt::Write;
 
 use heapless::String;
 
-use crate::shadows::Error;
+use super::errors::MetricError;
 
 pub enum PayloadFormat {
     #[cfg(feature = "metric_cbor")]
@@ -29,7 +29,7 @@ impl Topic {
     #[cfg(not(feature = "metric_cbor"))]
     const PAYLOAD_FORMAT: &'static str = "json";
 
-    pub fn format<const L: usize>(&self, thing_name: &str) -> Result<String<L>, Error> {
+    pub fn format<const L: usize>(&self, thing_name: &str) -> Result<String<L>, MetricError> {
         let mut topic_path = String::new();
 
         match self {
@@ -55,7 +55,7 @@ impl Topic {
                 Self::PAYLOAD_FORMAT,
             )),
         }
-        .map_err(|_| Error::Overflow)?;
+        .map_err(|_| MetricError::Overflow)?;
 
         Ok(topic_path)
     }

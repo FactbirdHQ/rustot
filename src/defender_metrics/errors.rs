@@ -27,5 +27,7 @@ pub enum MetricError {
     MissingHeader,
     ErrorResponseDeserialize,
     PublishSubscribe,
+    Overflow,
+    Mqtt,
     Other,
 }
