@@ -117,7 +117,7 @@ async fn test_mqtt_ota() {
 
     let ota_fut = async {
         let mut jobs_subscription = client
-            .subscribe::<2>(
+            .subscribe(
                 Subscribe::builder()
                     .topics(&[
                         SubscribeTopic::builder()
@@ -153,14 +153,8 @@ async fn test_mqtt_ota() {
             jobs_subscription.unsubscribe().await.unwrap();
 
             // We have an OTA job, leeeets go!
-            Updater::perform_ota(
-                &mqtt,
-                &mqtt,
-                file_ctx.clone(),
-                &mut file_handler,
-                &config,
-            )
-            .await?;
+            Updater::perform_ota(&mqtt, &mqtt, file_ctx.clone(), &mut file_handler, &config)
+                .await?;
 
             assert_eq!(file_handler.plateform_state, FileHandlerState::Swap);
 

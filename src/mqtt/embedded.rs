@@ -96,7 +96,10 @@ impl<'a, M: RawMutex, B: BufferProvider> MqttMessage for embedded_mqtt::Message<
 impl<'a, 'b, M: RawMutex, const N: usize> MqttSubscription
     for embedded_mqtt::Subscription<'a, 'b, M, N>
 {
-    type Message<'m> = embedded_mqtt::Message<'a, M, SliceBufferProvider<'a>> where Self: 'm;
+    type Message<'m>
+        = embedded_mqtt::Message<'a, M, SliceBufferProvider<'a>>
+    where
+        Self: 'm;
     type Error = embedded_mqtt::Error;
 
     fn next_message(&mut self) -> impl core::future::Future<Output = Option<Self::Message<'_>>> {
@@ -109,7 +112,10 @@ impl<'a, 'b, M: RawMutex, const N: usize> MqttSubscription
 }
 
 impl<'a, M: RawMutex> crate::mqtt::MqttClient for embedded_mqtt::MqttClient<'a, M> {
-    type Subscription<'m, const N: usize> = embedded_mqtt::Subscription<'a, 'm, M, N> where Self: 'm;
+    type Subscription<'m, const N: usize>
+        = embedded_mqtt::Subscription<'a, 'm, M, N>
+    where
+        Self: 'm;
     type Error = embedded_mqtt::Error;
 
     fn client_id(&self) -> &str {
@@ -140,27 +146,25 @@ impl<'a, M: RawMutex> crate::mqtt::MqttClient for embedded_mqtt::MqttClient<'a, 
         &self,
         topics: &[(&str, QoS); N],
     ) -> impl core::future::Future<Output = Result<Self::Subscription<'_, N>, Self::Error>> {
-        let subscribe_topics: [embedded_mqtt::SubscribeTopic<'_>; N] =
-            core::array::from_fn(|i| {
-                embedded_mqtt::SubscribeTopic::builder()
-                    .topic_path(topics[i].0)
-                    .maximum_qos(to_embedded_qos(topics[i].1))
-                    .build()
-            });
+        let subscribe_topics: [embedded_mqtt::SubscribeTopic<'_>; N] = core::array::from_fn(|i| {
+            embedded_mqtt::SubscribeTopic::builder()
+                .topic_path(topics[i].0)
+                .maximum_qos(to_embedded_qos(topics[i].1))
+                .build()
+        });
 
         async move {
             let subscribe = embedded_mqtt::Subscribe::builder()
                 .topics(&subscribe_topics)
                 .build();
-            embedded_mqtt::MqttClient::subscribe(self, subscribe)
-                .await
+            embedded_mqtt::MqttClient::subscribe(self, subscribe).await
         }
     }
 }
 
 /// Re-export embedded-mqtt types for convenience.
 pub use embedded_mqtt::{
-    Broker, Config, DomainBroker, Error as EmbeddedMqttError, IpBroker,
-    Message, MqttClient as EmbeddedMqttClient, MqttStack, Publish, QoS as EmbeddedQoS,
-    State, Subscribe, Subscription, ToPayload as EmbeddedToPayload,
+    Broker, Config, DomainBroker, Error as EmbeddedMqttError, IpBroker, Message,
+    MqttClient as EmbeddedMqttClient, MqttStack, Publish, QoS as EmbeddedQoS, State, Subscribe,
+    Subscription, ToPayload as EmbeddedToPayload,
 };

@@ -165,7 +165,7 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
         debug!("Subscribing to: [{:?}]", &topic_path);
 
         self.0
-            .subscribe::<1>(&[(topic_path.as_str(), QoS::AtMostOnce)])
+            .subscribe(&[(topic_path.as_str(), QoS::AtMostOnce)])
             .await
             .map(MqttTransfer)
             .map_err(|_| OtaError::Mqtt)
@@ -180,8 +180,11 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
     ) -> Result<(), OtaError> {
         progress_state.request_block_remaining = progress_state.bitmap.len() as u32;
 
-        let topic = OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())
-            .format::<{ MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30 }>(self.0.client_id())?;
+        let topic = OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str()).format::<{
+            MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30
+        }>(
+            self.0.client_id(),
+        )?;
 
         let mut buf = [0u8; 256];
         let len = cbor::to_slice(

@@ -70,7 +70,7 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
         // }
 
         // let mut sub = self.0
-        //     .subscribe::<2>(&[
+        //     .subscribe(&[
         //         (
         //             JobTopic::UpdateAccepted(file_ctx.job_name.as_str())
         //                 .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(

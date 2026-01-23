@@ -4,7 +4,9 @@ use core::ops::DerefMut;
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::mqtt::{DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS, ToPayload};
+use crate::mqtt::{
+    DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS, ToPayload,
+};
 
 use crate::shadows::{
     data_types::{
@@ -58,12 +60,15 @@ where
                     debug!("Subscribing to delta topic");
                     self.mqtt.wait_connected().await;
 
-                    let topic = Topic::UpdateDelta
-                        .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+                    let topic = Topic::UpdateDelta.format::<64>(
+                        S::PREFIX,
+                        self.mqtt.client_id(),
+                        S::NAME,
+                    )?;
 
                     let sub = self
                         .mqtt
-                        .subscribe::<1>(&[(topic.as_str(), QoS::AtMostOnce)])
+                        .subscribe(&[(topic.as_str(), QoS::AtMostOnce)])
                         .await
                         .map_err(|_| Error::Mqtt)?;
 
@@ -135,8 +140,7 @@ where
 
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
-                serde_json_core::to_slice(&request, buf)
-                    .map_err(|_| PayloadError::EncodingFailed)
+                serde_json_core::to_slice(&request, buf).map_err(|_| PayloadError::EncodingFailed)
             },
             S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD,
         );
@@ -301,14 +305,12 @@ where
         };
 
         //*** SUBSCRIBE ***/
-        let accepted_topic =
-            accepted.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
-        let rejected_topic =
-            rejected.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+        let accepted_topic = accepted.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+        let rejected_topic = rejected.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
 
         let sub = self
             .mqtt
-            .subscribe::<2>(&[
+            .subscribe(&[
                 (accepted_topic.as_str(), QoS::AtMostOnce),
                 (rejected_topic.as_str(), QoS::AtMostOnce),
             ])

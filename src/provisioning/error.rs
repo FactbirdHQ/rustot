@@ -30,4 +30,3 @@ impl From<minicbor_serde::error::DecodeError> for Error {
         Self::DeserializeCbor
     }
 }
-
