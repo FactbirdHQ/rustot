@@ -53,6 +53,11 @@ tokio = { version = "1", features = ["fs", "io-util", "sync"], optional = true }
 serde_json = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 
+# MQTT client implementations (optional, feature-gated)
+rumqttc = { version = "0.24", optional = true }
+greengrass-ipc-rust = { path = "../greengrass-ipc-rust", optional = true }
+bytes = { version = "1", optional = true }
+
 [dev-dependencies]
 native-tls = { version = "0.2" }
 embedded-nal-async = "0.8"
@@ -104,6 +109,10 @@ defmt = [
     "embassy-time/defmt",
 ]
 log = ["dep:log", "embedded-mqtt/log"]
+
+# MQTT client implementations (std/tokio)
+rumqttc = ["std", "dep:rumqttc", "tokio/time"]
+greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes"]
 
 
 # [patch."ssh://git@github.com/FactbirdHQ/embedded-mqtt"]
