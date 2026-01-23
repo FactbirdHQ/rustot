@@ -142,7 +142,6 @@ impl<'a> Update<'a> {
             ..self
         }
     }
-
 }
 
 impl ToPayload for Update<'_> {

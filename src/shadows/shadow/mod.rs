@@ -16,10 +16,7 @@ mod tests;
 
 use core::marker::PhantomData;
 
-use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
-    mutex::Mutex,
-};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
 use crate::mqtt::MqttClient;
 
@@ -116,10 +113,7 @@ where
     /// shadow.load().await?;  // Loads from storage or initializes on first boot
     /// let state = shadow.state().await?;  // Get current state
     /// ```
-    pub fn new(
-        store: &'a K,
-        mqtt: &'m C,
-    ) -> Self {
+    pub fn new(store: &'a K, mqtt: &'m C) -> Self {
         Self {
             store,
             mqtt,

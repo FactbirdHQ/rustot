@@ -50,7 +50,10 @@ impl GreengrassClient {
 
 impl crate::mqtt::MqttClient for GreengrassClient {
     // Greengrass only supports single-topic subscriptions, so N is ignored
-    type Subscription<'m, const N: usize> = GreengrassSubscription where Self: 'm;
+    type Subscription<'m, const N: usize>
+        = GreengrassSubscription
+    where
+        Self: 'm;
     type Error = greengrass_ipc_rust::Error;
 
     fn client_id(&self) -> &str {
@@ -133,7 +136,10 @@ pub struct GreengrassSubscription {
 }
 
 impl MqttSubscription for GreengrassSubscription {
-    type Message<'m> = GreengrassMessage where Self: 'm;
+    type Message<'m>
+        = GreengrassMessage
+    where
+        Self: 'm;
     type Error = greengrass_ipc_rust::Error;
 
     fn next_message(&mut self) -> impl core::future::Future<Output = Option<Self::Message<'_>>> {
@@ -221,6 +227,6 @@ fn to_gg_qos(qos: QoS) -> greengrass_ipc_rust::QoS {
 
 /// Re-export greengrass-ipc-rust types for convenience.
 pub use greengrass_ipc_rust::{
-    Error as GreengrassError, GreengrassCoreIPCClient, IoTCoreMessage,
-    PublishToIoTCoreRequest, StreamOperation, SubscribeToIoTCoreRequest,
+    Error as GreengrassError, GreengrassCoreIPCClient, IoTCoreMessage, PublishToIoTCoreRequest,
+    StreamOperation, SubscribeToIoTCoreRequest,
 };

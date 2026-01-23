@@ -51,8 +51,7 @@ impl<'m, C: MqttClient> MetricHandler<'m, C> {
 
                 #[cfg(not(feature = "metric_cbor"))]
                 {
-                    serde_json_core::to_slice(&metric, buf)
-                        .map_err(|_| PayloadError::BufferSize)
+                    serde_json_core::to_slice(&metric, buf).map_err(|_| PayloadError::BufferSize)
                 }
             },
             max_payload_size,
@@ -104,7 +103,7 @@ impl<'m, C: MqttClient> MetricHandler<'m, C> {
 
         let sub = self
             .mqtt
-            .subscribe::<2>(&[
+            .subscribe(&[
                 (accepted.as_str(), QoS::AtMostOnce),
                 (rejected.as_str(), QoS::AtMostOnce),
             ])

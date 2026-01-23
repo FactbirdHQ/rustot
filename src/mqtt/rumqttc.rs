@@ -36,10 +36,7 @@ impl RumqttcClient {
     /// Create a new client and spawn the eventloop task.
     ///
     /// Returns the client and a join handle for the eventloop task.
-    pub fn new(
-        options: rumqttc::MqttOptions,
-        cap: usize,
-    ) -> (Self, tokio::task::JoinHandle<()>) {
+    pub fn new(options: rumqttc::MqttOptions, cap: usize) -> (Self, tokio::task::JoinHandle<()>) {
         let client_id = options.client_id().to_string();
         let (client, eventloop) = rumqttc::AsyncClient::new(options, cap);
 
@@ -108,7 +105,10 @@ impl RumqttcClient {
 }
 
 impl crate::mqtt::MqttClient for RumqttcClient {
-    type Subscription<'m, const N: usize> = RumqttcSubscription<N> where Self: 'm;
+    type Subscription<'m, const N: usize>
+        = RumqttcSubscription<N>
+    where
+        Self: 'm;
     type Error = rumqttc::ClientError;
 
     fn client_id(&self) -> &str {
@@ -135,11 +135,12 @@ impl crate::mqtt::MqttClient for RumqttcClient {
         async move {
             // Encode payload to Vec<u8>
             let mut buf = vec![0u8; payload.max_size()];
-            let len = payload.encode(&mut buf).map_err(|_| {
-                rumqttc::ClientError::TryRequest(rumqttc::Request::Publish(
-                    rumqttc::Publish::new(&topic, to_rumqttc_qos(options.qos), vec![]),
-                ))
-            })?;
+            let len =
+                payload.encode(&mut buf).map_err(|_| {
+                    rumqttc::ClientError::TryRequest(rumqttc::Request::Publish(
+                        rumqttc::Publish::new(&topic, to_rumqttc_qos(options.qos), vec![]),
+                    ))
+                })?;
             buf.truncate(len);
 
             client
@@ -197,7 +198,10 @@ pub struct RumqttcSubscription<const N: usize> {
 }
 
 impl<const N: usize> MqttSubscription for RumqttcSubscription<N> {
-    type Message<'m> = RumqttcMessage where Self: 'm;
+    type Message<'m>
+        = RumqttcMessage
+    where
+        Self: 'm;
     type Error = rumqttc::ClientError;
 
     fn next_message(&mut self) -> impl core::future::Future<Output = Option<Self::Message<'_>>> {
