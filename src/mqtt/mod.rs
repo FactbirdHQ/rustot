@@ -31,6 +31,10 @@ pub use self::rumqttc::*;
 #[cfg(feature = "greengrass")]
 pub use self::greengrass::*;
 
+/// Newtype wrapper for implementing service-specific traits
+/// (OTA, Shadows, etc.) atop any MqttClient implementation.
+pub struct Mqtt<C>(pub C);
+
 /// MQTT Quality of Service levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QoS {

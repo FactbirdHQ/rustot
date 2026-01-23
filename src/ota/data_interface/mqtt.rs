@@ -1,11 +1,8 @@
 use core::fmt::{Display, Write};
-use core::ops::DerefMut;
+use core::ops::{Deref, DerefMut};
 use core::str::FromStr;
 
-use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{
-    DeferredPayload, EncodingError, MqttClient, Publish, Subscribe, SubscribeTopic, Subscription,
-};
+use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, QoS};
 
 use crate::ota::error::OtaError;
 use crate::ota::ProgressState;
@@ -123,21 +120,34 @@ impl OtaTopic<'_> {
     }
 }
 
-impl<M: RawMutex> BlockTransfer for Subscription<'_, '_, M, 1> {
-    async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError> {
-        let next = self.next_message().await;
-        if next.is_none() {
-            warn!("[OTA] Data stream ended (subscription closed due to clean session/disconnect)");
-        }
-        Ok(next)
+struct MessagePayload<M>(M);
+
+impl<M: MqttMessage> Deref for MessagePayload<M> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.0.payload()
     }
 }
 
-impl<'a, M: RawMutex> DataInterface for MqttClient<'a, M> {
+impl<M: MqttMessage> DerefMut for MessagePayload<M> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        self.0.payload_mut()
+    }
+}
+
+pub struct MqttTransfer<S>(S);
+
+impl<S: MqttSubscription> BlockTransfer for MqttTransfer<S> {
+    async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError> {
+        Ok(self.0.next_message().await.map(MessagePayload))
+    }
+}
+
+impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
     const PROTOCOL: Protocol = Protocol::Mqtt;
 
     type ActiveTransfer<'t>
-        = Subscription<'a, 't, M, 1>
+        = MqttTransfer<C::Subscription<'t, 1>>
     where
         Self: 't;
 
@@ -147,24 +157,15 @@ impl<'a, M: RawMutex> DataInterface for MqttClient<'a, M> {
         file_ctx: &FileContext,
     ) -> Result<Self::ActiveTransfer<'_>, OtaError> {
         let topic_path = OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
-            .format::<256>(self.client_id())?;
-
-        let topics = [SubscribeTopic::builder()
-            .topic_path(topic_path.as_str())
-            .build()];
+            .format::<256>(self.0.client_id())?;
 
         debug!("Subscribing to: [{:?}]", &topic_path);
 
-        let sub = self
-            .subscribe::<1>(Subscribe::builder().topics(&topics).build())
-            .await?;
-
-        info!(
-            "[OTA] Subscribed to data stream {}",
-            file_ctx.stream_name.as_str()
-        );
-
-        Ok(sub)
+        self.0
+            .subscribe::<1>(&[(topic_path.as_str(), QoS::AtMostOnce)])
+            .await
+            .map(MqttTransfer)
+            .map_err(|_| OtaError::Mqtt)
     }
 
     /// Request file block by publishing to the get stream topic
@@ -176,53 +177,33 @@ impl<'a, M: RawMutex> DataInterface for MqttClient<'a, M> {
     ) -> Result<(), OtaError> {
         progress_state.request_block_remaining = progress_state.bitmap.len() as u32;
 
-        let payload = DeferredPayload::new(
-            |buf| {
-                cbor::to_slice(
-                    &cbor::GetStreamRequest {
-                        // Arbitrary client token sent in the stream "GET" message
-                        client_token: None,
-                        stream_version: None,
-                        file_id: file_ctx.fileid,
-                        block_size: config.block_size,
-                        block_offset: Some(progress_state.block_offset),
-                        block_bitmap: Some(&progress_state.bitmap),
-                        number_of_blocks: Some(progress_state.request_block_remaining),
-                    },
-                    buf,
-                )
-                .map_err(|_| EncodingError::BufferSize)
+        let topic = OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())
+            .format::<{ MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30 }>(self.0.client_id())?;
+
+        let mut buf = [0u8; 256];
+        let len = cbor::to_slice(
+            &cbor::GetStreamRequest {
+                client_token: None,
+                stream_version: None,
+                file_id: file_ctx.fileid,
+                block_size: config.block_size,
+                block_offset: Some(progress_state.block_offset),
+                block_bitmap: Some(&progress_state.bitmap),
+                number_of_blocks: Some(progress_state.request_block_remaining),
             },
-            32,
-        );
+            &mut buf,
+        )
+        .map_err(|_| OtaError::Encoding)?;
 
         debug!(
             "Requesting more file blocks. Remaining: {}",
             progress_state.request_block_remaining
         );
-        info!(
-            "[OTA] Requesting blocks stream={} offset={} bitmap_len={} blocks_remaining={}",
-            file_ctx.stream_name.as_str(),
-            progress_state.block_offset,
-            progress_state.bitmap.len(),
-            progress_state.blocks_remaining
-        );
-        self.publish(
-            Publish::builder()
-                .topic_name(
-                    OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str())
-                        .format::<{ MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30 }>(
-                            self.client_id(),
-                        )?
-                        .as_str(),
-                )
-                // .qos(embedded_mqtt::QoS::AtMostOnce)
-                .payload(payload)
-                .build(),
-        )
-        .await?;
 
-        Ok(())
+        self.0
+            .publish(topic.as_str(), &buf[..len])
+            .await
+            .map_err(|_| OtaError::Mqtt)
     }
 
     /// Decode a cbor encoded fileblock received from streaming service

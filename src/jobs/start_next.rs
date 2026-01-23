@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::jobs::JobTopic;
+use crate::mqtt::{PayloadError, ToPayload};
 
 use super::{JobError, MAX_CLIENT_TOKEN_LEN, MAX_THING_NAME_LEN};
 
@@ -80,21 +81,28 @@ impl<'a> StartNext<'a> {
         }
     }
 
-    pub fn topic_payload(
-        self,
+    pub fn topic(
+        &self,
         client_id: &str,
-        buf: &mut [u8],
-    ) -> Result<(heapless::String<{ MAX_THING_NAME_LEN + 28 }>, usize), JobError> {
-        let payload_len = serde_json_core::to_slice(
+    ) -> Result<heapless::String<{ MAX_THING_NAME_LEN + 28 }>, JobError> {
+        JobTopic::StartNext.format(client_id)
+    }
+}
+
+impl ToPayload for StartNext<'_> {
+    fn max_size(&self) -> usize {
+        256
+    }
+
+    fn encode(&self, buf: &mut [u8]) -> Result<usize, PayloadError> {
+        serde_json_core::to_slice(
             &StartNextPendingJobExecutionRequest {
                 step_timeout_in_minutes: self.step_timeout_in_minutes,
                 client_token: self.client_token,
             },
             buf,
         )
-        .map_err(|_| JobError::Encoding)?;
-
-        Ok((JobTopic::StartNext.format(client_id)?, payload_len))
+        .map_err(|_| PayloadError::BufferSize)
     }
 }
 
@@ -124,16 +132,18 @@ mod test {
     }
 
     #[test]
-    fn topic_payload() {
-        let mut buf = [0u8; 512];
-        let (topic, payload_len) = StartNext::new()
+    fn topic_and_payload() {
+        let start_next = StartNext::new()
             .client_token("test_client:token_next_pending")
-            .step_timeout_in_minutes(43)
-            .topic_payload("test_client", &mut buf)
-            .unwrap();
+            .step_timeout_in_minutes(43);
+
+        let topic = start_next.topic("test_client").unwrap();
+
+        let mut buf = [0u8; 256];
+        let len = start_next.encode(&mut buf).unwrap();
 
         assert_eq!(
-            &buf[..payload_len],
+            &buf[..len],
             br#"{"stepTimeoutInMinutes":43,"clientToken":"test_client:token_next_pending"}"#
         );
 

@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::jobs::JobTopic;
+use crate::mqtt::{PayloadError, ToPayload};
 
 use super::{JobError, MAX_CLIENT_TOKEN_LEN, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 
@@ -75,18 +76,24 @@ impl<'a> Describe<'a> {
         }
     }
 
-    pub fn topic_payload(
-        self,
+    pub fn topic(
+        &self,
         client_id: &str,
-        buf: &mut [u8],
-    ) -> Result<
-        (
-            heapless::String<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 22 }>,
-            usize,
-        ),
-        JobError,
-    > {
-        let payload_len = serde_json_core::to_slice(
+    ) -> Result<heapless::String<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 22 }>, JobError> {
+        self.job_id
+            .map(JobTopic::Get)
+            .unwrap_or(JobTopic::GetNext)
+            .format(client_id)
+    }
+}
+
+impl ToPayload for Describe<'_> {
+    fn max_size(&self) -> usize {
+        256
+    }
+
+    fn encode(&self, buf: &mut [u8]) -> Result<usize, PayloadError> {
+        serde_json_core::to_slice(
             &DescribeJobExecutionRequest {
                 execution_number: self.execution_number,
                 include_job_document: self.include_job_document.then_some(true),
@@ -94,15 +101,7 @@ impl<'a> Describe<'a> {
             },
             buf,
         )
-        .map_err(|_| JobError::Encoding)?;
-
-        Ok((
-            self.job_id
-                .map(JobTopic::Get)
-                .unwrap_or(JobTopic::GetNext)
-                .format(client_id)?,
-            payload_len,
-        ))
+        .map_err(|_| PayloadError::BufferSize)
     }
 }
 
@@ -125,17 +124,19 @@ mod test {
     }
 
     #[test]
-    fn topic_payload() {
-        let mut buf = [0u8; 512];
-        let (topic, payload_len) = Describe::new()
+    fn topic_and_payload() {
+        let describe = Describe::new()
             .include_job_document()
             .execution_number(1)
-            .client_token("test_client:token")
-            .topic_payload("test_client", &mut buf)
-            .unwrap();
+            .client_token("test_client:token");
+
+        let topic = describe.topic("test_client").unwrap();
+
+        let mut buf = [0u8; 256];
+        let len = describe.encode(&mut buf).unwrap();
 
         assert_eq!(
-            &buf[..payload_len],
+            &buf[..len],
             br#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
         );
 
@@ -144,17 +145,19 @@ mod test {
 
     #[test]
     fn topic_job_id() {
-        let mut buf = [0u8; 512];
-        let (topic, payload_len) = Describe::new()
+        let describe = Describe::new()
             .include_job_document()
             .execution_number(1)
             .job_id("test_job_id")
-            .client_token("test_client:token")
-            .topic_payload("test_client", &mut buf)
-            .unwrap();
+            .client_token("test_client:token");
+
+        let topic = describe.topic("test_client").unwrap();
+
+        let mut buf = [0u8; 256];
+        let len = describe.encode(&mut buf).unwrap();
 
         assert_eq!(
-            &buf[..payload_len],
+            &buf[..len],
             br#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
         );
 

@@ -20,6 +20,7 @@ use rustot::{
         self,
         data_types::{DescribeJobExecutionResponse, NextJobExecutionChanged},
     },
+    mqtt::Mqtt,
     ota::{
         self,
         encoding::{json::OtaJob, FileContext},
@@ -136,9 +137,11 @@ async fn test_mqtt_ota() {
                     ])
                     .build(),
             )
-            .await?;
+            .await
+            .map_err(|_| ota::error::OtaError::Mqtt)?;
 
-        Updater::check_for_job(&client).await?;
+        let mqtt = Mqtt(&client);
+        Updater::check_for_job(&mqtt).await?;
 
         let config = ota::config::Config::default();
 
@@ -150,8 +153,8 @@ async fn test_mqtt_ota() {
 
             // We have an OTA job, leeeets go!
             Updater::perform_ota(
-                &client,
-                &client,
+                &mqtt,
+                &mqtt,
                 file_ctx.clone(),
                 &mut file_handler,
                 &config,
@@ -172,7 +175,7 @@ async fn test_mqtt_ota() {
                 )
                 .unwrap();
 
-            Updater::perform_ota(&client, &client, file_ctx, &mut file_handler, &config).await?;
+            Updater::perform_ota(&mqtt, &mqtt, file_ctx, &mut file_handler, &config).await?;
 
             return Ok(());
         }
