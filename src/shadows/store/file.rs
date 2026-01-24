@@ -108,6 +108,11 @@ impl FileKVStore {
         })
     }
 
+    /// Get the base path of the store.
+    pub fn base_path(&self) -> &std::path::Path {
+        &self.base_path
+    }
+
     /// Initialize the store, creating the directory if needed.
     pub async fn init(&self) -> Result<(), FileKVStoreError> {
         fs::create_dir_all(&self.base_path).await?;
