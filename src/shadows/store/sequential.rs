@@ -7,6 +7,7 @@ use core::ops::Range;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex;
 use embedded_storage_async::nor_flash::{MultiwriteNorFlash, NorFlash};
+use heapless::index_set::FnvIndexSet;
 use heapless::String;
 use sequential_storage::cache::{KeyCacheImpl, NoCache};
 use sequential_storage::map::{MapConfig, MapStorage};
@@ -169,7 +170,7 @@ impl<
                 let mut buf = [0u8; 512];
 
                 // Track seen keys since iterator returns duplicates (old versions)
-                let mut seen = heapless::FnvIndexSet::<String<MAX_KEY_LEN>, 64>::new();
+                let mut seen = FnvIndexSet::<String<MAX_KEY_LEN>, 64>::new();
 
                 // Use fetch_all_items to iterate
                 let mut iter = map.fetch_all_items(&mut buf).await?;
@@ -370,8 +371,8 @@ impl<
         hash: u64,
     ) -> Result<CommitStats, KvError<Self::Error>> {
         // Build set of valid keys for O(1) lookup during GC
-        let mut valid: heapless::FnvIndexSet<heapless::String<128>, 128> =
-            heapless::FnvIndexSet::new();
+        let mut valid: FnvIndexSet<heapless::String<128>, 128> =
+            FnvIndexSet::new();
 
         // Collect all valid keys using per-field codegen
         St::collect_valid_keys::<128>(prefix, &mut |key| {

@@ -33,7 +33,7 @@ minicbor-serde = { version = "0.3.2", optional = true }
 postcard = { version = "1.1", default-features = false, features = ["experimental-derive"] }
 
 # KV-based shadow storage (optional, enabled by shadows_kv_persist feature)
-sequential-storage = { version = "7.0", features = ["heapless"], optional = true }
+sequential-storage = { version = "7.0", features = ["heapless-09"], optional = true }
 
 serde-json-core = { version = "0.6" }
 rustot-derive = { path = "rustot_derive", version = "0.2.1" }
