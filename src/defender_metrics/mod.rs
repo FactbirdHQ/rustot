@@ -3,10 +3,11 @@ use data_types::Metric;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use errors::{ErrorResponse, MetricError};
 use mqttrust::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
-use serde::{Deserialize, Serialize};
+#[cfg(feature = "metric_cbor")]
+use serde::Deserialize;
+use serde::Serialize;
 use topics::Topic;
 
-// pub mod aws_types;
 pub mod aws_types;
 pub mod data_types;
 pub mod errors;
