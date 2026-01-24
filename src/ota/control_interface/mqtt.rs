@@ -60,36 +60,16 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
             }
         }
 
-        // Downgrade progress updates to QOS 0 to avoid overloading MQTT
-        // buffers during active streaming. But make sure to always send and await ack for first update and last update
-        // if status == JobStatus::InProgress
-        //     && progress_state.blocks_remaining != 0
-        //     && received_blocks != 0
-        // {
-        //     qos = QoS::AtMostOnce;
-        // }
-
-        // let mut sub = self.0
-        //     .subscribe(&[
-        //         (
-        //             JobTopic::UpdateAccepted(file_ctx.job_name.as_str())
-        //                 .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
-        //                     self.0.client_id(),
-        //                 )?
-        //                 .as_str(),
-        //             QoS::AtMostOnce,
-        //         ),
-        //         (
-        //             JobTopic::UpdateRejected(file_ctx.job_name.as_str())
-        //                 .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
-        //                     self.0.client_id(),
-        //                 )?
-        //                 .as_str(),
-        //             QoS::AtMostOnce,
-        //         ),
-        //     ])
-        //     .await
-        //     .map_err(|_| OtaError::Mqtt)?;
+        // Downgrade progress updates to QoS 0 to avoid overloading MQTT
+        // buffers during active streaming. First and last updates remain QoS 1.
+        let qos = if status == JobStatus::InProgress
+            && progress_state.blocks_remaining != 0
+            && progress_state.total_blocks != progress_state.blocks_remaining
+        {
+            QoS::AtMostOnce
+        } else {
+            QoS::AtLeastOnce
+        };
 
         let topic = JobTopic::Update(file_ctx.job_name.as_str())
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
@@ -101,65 +81,10 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
         debug!("Updating job status! {:?}", status);
 
         self.0
-            .publish_with_options(&topic, payload, PublishOptions::new().qos(QoS::AtLeastOnce))
+            .publish_with_options(&topic, payload, PublishOptions::new().qos(qos))
             .await
             .map_err(|_| OtaError::Mqtt)?;
 
         Ok(())
-
-        // loop {
-        //     let message = match with_timeout(
-        //         embassy_time::Duration::from_secs(1),
-        //         sub.next_message(),
-        //     )
-        //     .await
-        //     {
-        //         Ok(res) => res.ok_or(JobError::Encoding)?,
-        //         Err(_) => return Err(OtaError::Timeout),
-        //     };
-
-        //     // Check if topic is GetAccepted
-        //     match crate::jobs::Topic::from_str(message.topic_name()) {
-        //         Some(crate::jobs::Topic::UpdateAccepted(_)) => {
-        //             // Check client token
-        //             let (response, _) = serde_json_core::from_slice::<
-        //                 UpdateJobExecutionResponse<encoding::json::OtaJob<'_>>,
-        //             >(message.payload())
-        //             .map_err(|_| JobError::Encoding)?;
-
-        //             if response.client_token != Some(self.0.client_id()) {
-        //                 error!(
-        //                     "Unexpected client token received: {}, expected: {}",
-        //                     response.client_token.unwrap_or("None"),
-        //                     self.0.client_id()
-        //                 );
-        //                 continue;
-        //             }
-
-        //             return Ok(());
-        //         }
-        //         Some(crate::jobs::Topic::UpdateRejected(_)) => {
-        //             let (error_response, _) =
-        //                 serde_json_core::from_slice::<ErrorResponse>(message.payload())
-        //                     .map_err(|_| JobError::Encoding)?;
-
-        //             if error_response.client_token != Some(self.0.client_id()) {
-        //                 error!(
-        //                     "Unexpected client token received: {}, expected: {}",
-        //                     error_response.client_token.unwrap_or("None"),
-        //                     self.0.client_id()
-        //                 );
-        //                 continue;
-        //             }
-
-        //             error!("OTA Update rejected: {:?}", error_response.message);
-
-        //             return Err(OtaError::UpdateRejected(error_response.code));
-        //         }
-        //         _ => {
-        //             error!("Expected Topic name GetRejected or GetAccepted but got something else");
-        //         }
-        //     }
-        // }
     }
 }

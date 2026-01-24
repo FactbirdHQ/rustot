@@ -59,10 +59,10 @@ pub struct PublishOptions {
 }
 
 impl PublishOptions {
-    /// Create new publish options with defaults (QoS 0, no retain, no dup).
+    /// Create new publish options with defaults (QoS 1, no retain, no dup).
     pub const fn new() -> Self {
         Self {
-            qos: QoS::AtMostOnce,
+            qos: QoS::AtLeastOnce,
             retain: false,
             dup: false,
         }

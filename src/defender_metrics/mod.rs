@@ -104,8 +104,8 @@ impl<'m, C: MqttClient> MetricHandler<'m, C> {
         let sub = self
             .mqtt
             .subscribe(&[
-                (accepted.as_str(), QoS::AtMostOnce),
-                (rejected.as_str(), QoS::AtMostOnce),
+                (accepted.as_str(), QoS::AtLeastOnce),
+                (rejected.as_str(), QoS::AtLeastOnce),
             ])
             .await
             .map_err(|_| MetricError::Mqtt)?;

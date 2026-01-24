@@ -47,11 +47,7 @@ impl<P: ToPayload> embedded_mqtt::ToPayload for PayloadBridge<P> {
 pub fn to_embedded_qos(qos: QoS) -> embedded_mqtt::QoS {
     match qos {
         QoS::AtMostOnce => embedded_mqtt::QoS::AtMostOnce,
-        QoS::AtLeastOnce => embedded_mqtt::QoS::AtLeastOnce,
-        #[cfg(feature = "qos2")]
-        QoS::ExactlyOnce => embedded_mqtt::QoS::ExactlyOnce,
-        #[cfg(not(feature = "qos2"))]
-        QoS::ExactlyOnce => embedded_mqtt::QoS::AtLeastOnce, // Fallback
+        QoS::AtLeastOnce | QoS::ExactlyOnce => embedded_mqtt::QoS::AtLeastOnce,
     }
 }
 
@@ -59,9 +55,7 @@ pub fn to_embedded_qos(qos: QoS) -> embedded_mqtt::QoS {
 pub fn from_embedded_qos(qos: embedded_mqtt::QoS) -> QoS {
     match qos {
         embedded_mqtt::QoS::AtMostOnce => QoS::AtMostOnce,
-        embedded_mqtt::QoS::AtLeastOnce => QoS::AtLeastOnce,
-        #[cfg(feature = "qos2")]
-        embedded_mqtt::QoS::ExactlyOnce => QoS::ExactlyOnce,
+        _ => QoS::AtLeastOnce,
     }
 }
 

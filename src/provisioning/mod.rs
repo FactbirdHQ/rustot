@@ -218,7 +218,7 @@ impl FleetProvisioner {
         let register_rejected_topic =
             Topic::RegisterThingRejected(template_name, payload_format).format::<150>()?;
         let mut register_subscription = mqtt
-            .subscribe::<2>(&[
+            .subscribe(&[
                 (register_accepted_topic.as_str(), QoS::AtMostOnce),
                 (register_rejected_topic.as_str(), QoS::AtMostOnce),
             ])
@@ -277,8 +277,8 @@ impl FleetProvisioner {
 
             let subscription = mqtt
                 .subscribe(&[
-                    (rejected_topic.as_str(), QoS::AtMostOnce),
-                    (accepted_topic.as_str(), QoS::AtMostOnce),
+                    (rejected_topic.as_str(), QoS::AtLeastOnce),
+                    (accepted_topic.as_str(), QoS::AtLeastOnce),
                 ])
                 .await
                 .map_err(|_| Error::Mqtt)?;
@@ -321,8 +321,8 @@ impl FleetProvisioner {
 
             let subscription = mqtt
                 .subscribe(&[
-                    (accepted_topic.as_str(), QoS::AtMostOnce),
-                    (rejected_topic.as_str(), QoS::AtMostOnce),
+                    (accepted_topic.as_str(), QoS::AtLeastOnce),
+                    (rejected_topic.as_str(), QoS::AtLeastOnce),
                 ])
                 .await
                 .map_err(|_| Error::Mqtt)?;
