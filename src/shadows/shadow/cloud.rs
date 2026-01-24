@@ -48,59 +48,74 @@ where
     /// On first call, subscribes to the delta topic and fetches current shadow
     /// state from cloud. On subsequent calls, waits for delta messages.
     async fn handle_delta(&self) -> Result<Option<S::Delta>, Error> {
-        let mut sub_ref = self.subscription.lock().await;
+        // Loop to automatically retry on clean session
+        loop {
+            let mut sub_ref = self.subscription.lock().await;
 
-        let delta_subscription = match sub_ref.deref_mut() {
-            Some(sub) => sub,
-            None => {
-                debug!("Subscribing to delta topic");
-                self.mqtt.wait_connected().await;
+            let delta_subscription = match sub_ref.deref_mut() {
+                Some(sub) => sub,
+                None => {
+                    debug!("Subscribing to delta topic");
+                    self.mqtt.wait_connected().await;
 
-                let sub = self
-                    .mqtt
-                    .subscribe::<2>(
-                        Subscribe::builder()
-                            .topics(&[SubscribeTopic::builder()
-                                .topic_path(
-                                    Topic::UpdateDelta
-                                        .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
-                                        .as_str(),
-                                )
-                                .build()])
-                            .build(),
-                    )
-                    .await
-                    .map_err(Error::MqttError)?;
+                    let sub = self
+                        .mqtt
+                        .subscribe::<2>(
+                            Subscribe::builder()
+                                .topics(&[SubscribeTopic::builder()
+                                    .topic_path(
+                                        Topic::UpdateDelta
+                                            .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
+                                            .as_str(),
+                                    )
+                                    .build()])
+                                .build(),
+                        )
+                        .await
+                        .map_err(Error::MqttError)?;
 
-                let _ = sub_ref.insert(sub);
+                    let _ = sub_ref.insert(sub);
 
-                let delta_state = self.get_shadow_from_cloud().await?;
+                    let delta_state = self.get_shadow_from_cloud().await?;
 
-                return Ok(delta_state.delta);
-            }
-        };
+                    return Ok(delta_state.delta);
+                }
+            };
 
-        let delta_message = match delta_subscription.next_message().await {
-            Some(msg) => msg,
-            None => {
-                // Clear subscription if we get clean session
-                sub_ref.take();
-                return Err(Error::InvalidPayload);
-            }
-        };
+            let delta_message = match delta_subscription.next_message().await {
+                Some(msg) => msg,
+                None => {
+                    // Clear subscription if we get clean session
+                    info!(
+                        "[{:?}] Clean session detected, resubscribing to delta topic",
+                        S::NAME.unwrap_or(CLASSIC_SHADOW)
+                    );
+                    sub_ref.take();
+                    // Drop the lock and continue the loop to retry
+                    drop(sub_ref);
+                    continue;
+                }
+            };
 
-        // Update the device's state to match the desired state in the
-        // message body.
-        debug!(
-            "[{:?}] Received shadow delta event.",
-            S::NAME.unwrap_or(CLASSIC_SHADOW),
-        );
+            // Update the device's state to match the desired state in the
+            // message body.
+            debug!(
+                "[{:?}] Received shadow delta event.",
+                S::NAME.unwrap_or(CLASSIC_SHADOW),
+            );
 
-        let (delta, _) =
-            serde_json_core::from_slice::<DeltaResponse<S::Delta>>(delta_message.payload())
-                .map_err(|_| Error::InvalidPayload)?;
+            // Buffer to temporarily hold escaped characters data
+            let mut buf = [0u8; 64];
 
-        Ok(delta.state)
+            // Use from_slice_escaped to properly handle escaped characters
+            let (delta, _) = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
+                delta_message.payload(),
+                &mut buf,
+            )
+            .map_err(|_| Error::InvalidPayload)?;
+
+            return Ok(delta.state);
+        }
     }
 
     /// Publish an update request to the cloud and wait for response.
@@ -146,9 +161,10 @@ where
 
             match Topic::from_str(S::PREFIX, message.topic_name()) {
                 Some((Topic::UpdateAccepted, _, _)) => {
-                    let (response, _) = serde_json_core::from_slice::<
+                    let mut buf = [0u8; 64];
+                    let (response, _) = serde_json_core::from_slice_escaped::<
                         AcceptedResponse<S::Delta, S::Delta>,
-                    >(message.payload())
+                    >(message.payload(), &mut buf)
                     .map_err(|_| Error::InvalidPayload)?;
 
                     if response.client_token != Some(self.mqtt.client_id()) {
@@ -158,9 +174,12 @@ where
                     return Ok(response.state);
                 }
                 Some((Topic::UpdateRejected, _, _)) => {
-                    let (error_response, _) =
-                        serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                            .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
+                    let mut buf = [0u8; 64];
+                    let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
+                        message.payload(),
+                        &mut buf,
+                    )
+                    .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
 
                     if error_response.client_token != Some(self.mqtt.client_id()) {
                         continue;
@@ -192,17 +211,21 @@ where
         // Persist shadow and return new shadow
         match Topic::from_str(S::PREFIX, get_message.topic_name()) {
             Some((Topic::GetAccepted, _, _)) => {
-                let (response, _) = serde_json_core::from_slice::<
+                let mut buf = [0u8; 64];
+                let (response, _) = serde_json_core::from_slice_escaped::<
                     AcceptedResponse<S::Delta, S::Delta>,
-                >(get_message.payload())
+                >(get_message.payload(), &mut buf)
                 .map_err(|_| Error::InvalidPayload)?;
 
                 Ok(response.state)
             }
             Some((Topic::GetRejected, _, _)) => {
-                let (error_response, _) =
-                    serde_json_core::from_slice::<ErrorResponse>(get_message.payload())
-                        .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
+                let mut buf = [0u8; 64];
+                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
+                    get_message.payload(),
+                    &mut buf,
+                )
+                .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
 
                 if error_response.code == 404 {
                     debug!(
@@ -238,9 +261,12 @@ where
         match Topic::from_str(S::PREFIX, message.topic_name()) {
             Some((Topic::DeleteAccepted, _, _)) => Ok(()),
             Some((Topic::DeleteRejected, _, _)) => {
-                let (error_response, _) =
-                    serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                        .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
+                let mut buf = [0u8; 64];
+                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
+                    message.payload(),
+                    &mut buf,
+                )
+                .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
 
                 Err(Error::ShadowError(
                     error_response.try_into().unwrap_or(ShadowError::NotFound),
@@ -290,14 +316,14 @@ where
                         SubscribeTopic::builder()
                             .topic_path(
                                 accepted
-                                    .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
+                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
                                     .as_str(),
                             )
                             .build(),
                         SubscribeTopic::builder()
                             .topic_path(
                                 rejected
-                                    .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
+                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
                                     .as_str(),
                             )
                             .build(),
