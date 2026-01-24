@@ -232,7 +232,7 @@ where
                         "[{:?}] Thing has no shadow document. Creating with defaults...",
                         S::NAME.unwrap_or(CLASSIC_SHADOW)
                     );
-                    self.create_shadow().await?;
+                    return self.create_shadow().await;
                 }
 
                 Err(Error::ShadowError(
