@@ -60,7 +60,10 @@ fn handle_ota<'a>(
             .ok()?;
 
             if execution_changed.execution.is_none() {
-                panic!("No OTA jobs queued?");
+                if std::env::var("CI").is_ok() {
+                    panic!("No OTA jobs queued?");
+                }
+                return None;
             }
 
             execution_changed.execution?

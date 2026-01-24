@@ -110,3 +110,6 @@ log = ["dep:log", "mqttrust/log"]
 
 # [patch."ssh://git@github.com/FactbirdHQ/mqttrust"]
 # mqttrust = { path = "../mqttrust" }
+
+[patch.crates-io]
+serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core", rev = "a435f78" }
