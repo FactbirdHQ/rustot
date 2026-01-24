@@ -24,6 +24,7 @@ impl From<serde_json_core::de::Error> for Error {
     }
 }
 
+#[cfg(feature = "provision_cbor")]
 impl From<minicbor_serde::error::DecodeError> for Error {
     fn from(_e: minicbor_serde::error::DecodeError) -> Self {
         Self::DeserializeCbor

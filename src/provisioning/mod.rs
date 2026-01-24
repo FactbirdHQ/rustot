@@ -122,7 +122,6 @@ impl FleetProvisioner {
         .await
     }
 
-    #[cfg(feature = "provision_cbor")]
     async fn provision_inner<'a, C, M: RawMutex>(
         mqtt: &embedded_mqtt::MqttClient<'a, M>,
         template_name: &str,
@@ -218,21 +217,22 @@ impl FleetProvisioner {
         let mut register_subscription = mqtt
             .subscribe::<2>(
                 Subscribe::builder()
-                    .topics(&[SubscribeTopic::builder()
-                        .topic_path(
-                            Topic::RegisterThingAccepted(template_name, payload_format)
-                                .format::<150>()?
-                                .as_str(),
-                        )
-                        .build(),
+                    .topics(&[
                         SubscribeTopic::builder()
-                        .topic_path(
-                            Topic::RegisterThingRejected(template_name, payload_format)
-                                .format::<150>()?
-                                .as_str(),
-                        )
-                        .build()
-                        ])
+                            .topic_path(
+                                Topic::RegisterThingAccepted(template_name, payload_format)
+                                    .format::<150>()?
+                                    .as_str(),
+                            )
+                            .build(),
+                        SubscribeTopic::builder()
+                            .topic_path(
+                                Topic::RegisterThingRejected(template_name, payload_format)
+                                    .format::<150>()?
+                                    .as_str(),
+                            )
+                            .build(),
+                    ])
                     .build(),
             )
             .await?;
