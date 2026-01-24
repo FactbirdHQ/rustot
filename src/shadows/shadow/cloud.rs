@@ -54,34 +54,60 @@ where
         loop {
             let mut sub_ref = self.subscription.lock().await;
 
-            let delta_subscription = match sub_ref.deref_mut() {
-                Some(sub) => sub,
-                None => {
-                    debug!("Subscribing to delta topic");
-                    self.mqtt.wait_connected().await;
+            if sub_ref.is_none() {
+                debug!("Subscribing to delta topic");
+                self.mqtt.wait_connected().await;
 
-                    let topic = Topic::UpdateDelta.format::<64>(
-                        S::PREFIX,
-                        self.mqtt.client_id(),
-                        S::NAME,
-                    )?;
+                let topic = Topic::UpdateDelta.format::<64>(
+                    S::PREFIX,
+                    self.mqtt.client_id(),
+                    S::NAME,
+                )?;
 
-                    let sub = self
-                        .mqtt
-                        .subscribe(&[(topic.as_str(), QoS::AtMostOnce)])
-                        .await
-                        .map_err(|_| Error::Mqtt)?;
+                let sub = self
+                    .mqtt
+                    .subscribe(&[(topic.as_str(), QoS::AtMostOnce)])
+                    .await
+                    .map_err(|_| Error::Mqtt)?;
 
-                    let _ = sub_ref.insert(sub);
+                let _ = sub_ref.insert(sub);
 
-                    let delta_state = self.get_shadow_from_cloud().await?;
+                let delta_state = self.get_shadow_from_cloud().await?;
 
-                    return Ok(delta_state.delta);
+                return Ok(delta_state.delta);
+            }
+
+            // Scope the mutable borrow of the subscription so we can call
+            // sub_ref.take() in the clean-session path below.
+            let result = {
+                let sub = sub_ref.deref_mut().as_mut().unwrap();
+                match sub.next_message().await {
+                    Some(delta_message) => {
+                        debug!(
+                            "[{:?}] Received shadow delta event.",
+                            S::NAME.unwrap_or(CLASSIC_SHADOW),
+                        );
+
+                        let mut buf = [0u8; 64];
+                        let parsed = serde_json_core::from_slice_escaped::<
+                            DeltaResponse<S::Delta>,
+                        >(
+                            delta_message.payload(), &mut buf
+                        );
+
+                        Some(
+                            parsed
+                                .map(|(delta, _)| delta.state)
+                                .map_err(|_| Error::InvalidPayload),
+                        )
+                    }
+                    None => None,
                 }
             };
 
-            let delta_message = match delta_subscription.next_message().await {
-                Some(msg) => msg,
+            match result {
+                Some(Ok(state)) => return Ok(state),
+                Some(Err(e)) => return Err(e),
                 None => {
                     // Clear subscription if we get clean session
                     info!(
@@ -93,26 +119,7 @@ where
                     drop(sub_ref);
                     continue;
                 }
-            };
-
-            // Update the device's state to match the desired state in the
-            // message body.
-            debug!(
-                "[{:?}] Received shadow delta event.",
-                S::NAME.unwrap_or(CLASSIC_SHADOW),
-            );
-
-            // Buffer to temporarily hold escaped characters data
-            let mut buf = [0u8; 64];
-
-            // Use from_slice_escaped to properly handle escaped characters
-            let (delta, _) = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
-                delta_message.payload(),
-                &mut buf,
-            )
-            .map_err(|_| Error::InvalidPayload)?;
-
-            return Ok(delta.state);
+            }
         }
     }
 
