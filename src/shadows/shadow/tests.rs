@@ -321,8 +321,8 @@ async fn test_multiple_shadows_share_kvstore() {
 
     // Multiple shadows can share the same KVStore via & references
     // This is the key benefit of interior mutability
-    let mut device = Shadow::<SimpleConfig, _>::new(&kv);
-    let mut network = Shadow::<NetworkShadow, _>::new(&kv);
+    let device = Shadow::<SimpleConfig, _>::new(&kv);
+    let network = Shadow::<NetworkShadow, _>::new(&kv);
 
     // Both initialize on first boot (different prefixes, same KVStore)
     device.load().await.unwrap();
@@ -336,8 +336,8 @@ async fn test_multiple_shadows_share_kvstore() {
     network.apply_and_save(&delta).await.unwrap();
 
     // Reload fresh - still sharing the same KVStore
-    let mut device2 = Shadow::<SimpleConfig, _>::new(&kv);
-    let mut network2 = Shadow::<NetworkShadow, _>::new(&kv);
+    let device2 = Shadow::<SimpleConfig, _>::new(&kv);
+    let network2 = Shadow::<NetworkShadow, _>::new(&kv);
 
     device2.load().await.unwrap();
     network2.load().await.unwrap();
@@ -402,7 +402,10 @@ async fn test_new_in_memory_kvstore_has_default_state() {
     let shadow = Shadow::<SimpleConfig, _>::new(&kv);
     shadow.load().await.unwrap();
 
-    assert_eq!(shadow.state().await.unwrap().value, SimpleConfig::default().value);
+    assert_eq!(
+        shadow.state().await.unwrap().value,
+        SimpleConfig::default().value
+    );
 }
 
 // =========================================================================
@@ -521,13 +524,13 @@ async fn test_rollback_scenario_old_firmware_reads_old_keys() {
             "device/__schema_hash__",
             &OldConfig::SCHEMA_HASH.to_le_bytes(),
         ),
-        ("device/timeout", &encode(5000u32)),      // new key (from migration)
+        ("device/timeout", &encode(5000u32)), // new key (from migration)
         ("device/old_timeout", &encode(5000u32)), // old key (preserved)
     ])
     .await;
 
     // "Old firmware" only knows about old_timeout
-    let mut old_shadow = Shadow::<OldConfig, _>::new(&kv);
+    let old_shadow = Shadow::<OldConfig, _>::new(&kv);
     old_shadow.load().await.unwrap();
 
     assert_eq!(old_shadow.state().await.unwrap().old_timeout, 5000); // Works!
@@ -580,9 +583,9 @@ async fn test_commit_removes_truly_orphaned_keys() {
             "device/__schema_hash__",
             &0xDEADBEEFu64.to_le_bytes(), // Different hash to trigger migration
         ),
-        ("device/timeout", &encode(5000u32)),      // current field
+        ("device/timeout", &encode(5000u32)), // current field
         ("device/removed_field", &encode(123u32)), // orphaned - not in schema
-        ("device/also_removed", &encode(456u32)),  // orphaned - not in schema
+        ("device/also_removed", &encode(456u32)), // orphaned - not in schema
     ])
     .await;
 
@@ -601,10 +604,7 @@ async fn test_commit_removes_truly_orphaned_keys() {
 async fn test_commit_preserves_inactive_enum_variant_fields() {
     // Inactive variant fields are NOT orphans - they should be preserved during commit
     let kv = setup_kv(&[
-        (
-            "wifi/__schema_hash__",
-            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
-        ),
+        ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Dhcp"),
         ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
         ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
@@ -615,7 +615,10 @@ async fn test_commit_preserves_inactive_enum_variant_fields() {
     shadow.load().await.unwrap();
 
     // Verify state is Dhcp
-    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+    assert!(matches!(
+        shadow.state().await.unwrap().ip,
+        IpSettingsCfg::Dhcp
+    ));
 
     // Commit should NOT remove the Static variant fields
     shadow.commit().await.unwrap();
@@ -690,10 +693,7 @@ async fn kv_fetch_raw(kv: &FileKVStore, key: &str) -> Vec<u8> {
 async fn test_enum_load_sets_variant_before_reading_fields() {
     // If variant isn't set first, field deserialization fails with Absent
     let kv = setup_kv(&[
-        (
-            "wifi/__schema_hash__",
-            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
-        ),
+        ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Static"), // plain UTF-8, not postcard
         ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
         ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
@@ -720,7 +720,10 @@ async fn test_enum_load_missing_variant_uses_default() {
     let shadow = Shadow::<WifiCfg, _>::new(&kv);
     shadow.load().await.unwrap(); // First boot - initializes defaults
 
-    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+    assert!(matches!(
+        shadow.state().await.unwrap().ip,
+        IpSettingsCfg::Dhcp
+    ));
 }
 
 #[tokio::test]
@@ -728,10 +731,7 @@ async fn test_enum_load_ignores_inactive_variant_fields() {
     // _variant says Dhcp, but Static fields exist in KV (orphans from previous)
     // Should not error, just ignore them
     let kv = setup_kv(&[
-        (
-            "wifi/__schema_hash__",
-            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
-        ),
+        ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Dhcp"),
         ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])), // orphan
     ])
@@ -740,7 +740,10 @@ async fn test_enum_load_ignores_inactive_variant_fields() {
     let shadow = Shadow::<WifiCfg, _>::new(&kv);
     shadow.load().await.unwrap(); // Should not fail
 
-    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+    assert!(matches!(
+        shadow.state().await.unwrap().ip,
+        IpSettingsCfg::Dhcp
+    ));
 }
 
 // =========================================================================
@@ -789,10 +792,7 @@ async fn test_enum_variant_switch_preserves_inactive_fields() {
     // Was Static, apply_and_save to Dhcp - Static fields should be PRESERVED
     // (they are valid keys, not orphans)
     let kv = setup_kv(&[
-        (
-            "wifi/__schema_hash__",
-            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
-        ),
+        ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Static"),
         ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
         ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
@@ -817,7 +817,10 @@ async fn test_enum_variant_switch_preserves_inactive_fields() {
     shadow.apply_and_save(&delta).await.unwrap();
 
     // Verify state is now Dhcp
-    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+    assert!(matches!(
+        shadow.state().await.unwrap().ip,
+        IpSettingsCfg::Dhcp
+    ));
 
     // Static fields should still be in KV (preserved for future switch back)
     assert!(kv_has_key(&kv, "wifi/ip/Static/address").await);
@@ -829,10 +832,7 @@ async fn test_enum_variant_switch_and_back_restores_values_on_reload() {
     // Design decision: Switching variants at runtime uses defaults from delta,
     // but preserved KV values are restored on RELOAD (e.g., after reboot).
     let kv = setup_kv(&[
-        (
-            "wifi/__schema_hash__",
-            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
-        ),
+        ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Static"),
         ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
         ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
@@ -847,7 +847,10 @@ async fn test_enum_variant_switch_and_back_restores_values_on_reload() {
         ip: Some(DeltaIpSettingsCfg::Dhcp),
     };
     shadow.apply_and_save(&delta).await.unwrap();
-    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+    assert!(matches!(
+        shadow.state().await.unwrap().ip,
+        IpSettingsCfg::Dhcp
+    ));
 
     // Switch back to Static (without providing address/gateway in delta)
     let delta = DeltaWifiCfg {
@@ -943,17 +946,17 @@ async fn test_apply_and_save_only_persists_some_fields() {
 async fn test_apply_and_save_enum_variant_change() {
     // Delta changes enum variant from Dhcp to Static
     let kv = setup_kv(&[
-        (
-            "wifi/__schema_hash__",
-            &WifiCfg::SCHEMA_HASH.to_le_bytes(),
-        ),
+        ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Dhcp"),
     ])
     .await;
 
     let shadow = Shadow::<WifiCfg, _>::new(&kv);
     shadow.load().await.unwrap();
-    assert!(matches!(shadow.state().await.unwrap().ip, IpSettingsCfg::Dhcp));
+    assert!(matches!(
+        shadow.state().await.unwrap().ip,
+        IpSettingsCfg::Dhcp
+    ));
 
     // Apply delta that changes to Static variant with values
     let delta = DeltaWifiCfg {
