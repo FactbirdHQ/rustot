@@ -1,10 +1,8 @@
 //! Tests for Shadow KV persistence
 
-use super::ShadowTestOnly;
+use super::Shadow;
+use crate::mqtt::mock::MockMqttClient;
 use crate::shadows::store::{FileKVStore, InMemory, KVStore};
-
-// Use ShadowTestOnly for storage-only testing (doesn't require MQTT)
-type Shadow<'a, S, K> = ShadowTestOnly<'a, S, K>;
 
 // =========================================================================
 // Phase 8 Tests - Test fixtures using proc macros
@@ -243,9 +241,10 @@ async fn test_load_detects_schema_change() {
         ("device/value", &encode(42u32)),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
     // Shadow borrows KVStore via & reference (interior mutability)
-    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
+    let shadow = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
     let result = shadow.load().await.unwrap();
 
     assert!(!result.first_boot); // Not first boot - hash existed
@@ -262,8 +261,9 @@ async fn test_load_no_schema_change_when_hash_matches() {
         ("device/value", &encode(42u32)),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
+    let shadow = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
     let result = shadow.load().await.unwrap();
 
     assert!(!result.first_boot);
@@ -275,8 +275,9 @@ async fn test_load_no_schema_change_when_hash_matches() {
 async fn test_first_boot_initializes_and_persists() {
     // Empty store = first boot
     let kv = empty_kv();
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
+    let shadow = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
     let result = shadow.load().await.unwrap();
 
     assert!(result.first_boot); // First boot detected
@@ -294,17 +295,18 @@ async fn test_first_boot_initializes_and_persists() {
 #[tokio::test]
 async fn test_first_boot_then_normal_boot() {
     let kv = empty_kv();
+    let mqtt = MockMqttClient::new("test-client");
 
     // First boot
     {
-        let shadow1 = Shadow::<SimpleConfig, _>::new(&kv);
+        let shadow1 = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
         let result1 = shadow1.load().await.unwrap();
         assert!(result1.first_boot);
     }
 
     // Second boot - should be normal load
     {
-        let shadow2 = Shadow::<SimpleConfig, _>::new(&kv);
+        let shadow2 = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
         let result2 = shadow2.load().await.unwrap();
         assert!(!result2.first_boot);
         assert!(!result2.schema_changed);
@@ -318,11 +320,12 @@ async fn test_first_boot_then_normal_boot() {
 #[tokio::test]
 async fn test_multiple_shadows_share_kvstore() {
     let kv = empty_kv();
+    let mqtt = MockMqttClient::new("test-client");
 
     // Multiple shadows can share the same KVStore via & references
     // This is the key benefit of interior mutability
-    let device = Shadow::<SimpleConfig, _>::new(&kv);
-    let network = Shadow::<NetworkShadow, _>::new(&kv);
+    let device = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
+    let network = Shadow::<NetworkShadow, _, _>::new(&kv, &mqtt);
 
     // Both initialize on first boot (different prefixes, same KVStore)
     device.load().await.unwrap();
@@ -336,8 +339,8 @@ async fn test_multiple_shadows_share_kvstore() {
     network.apply_and_save(&delta).await.unwrap();
 
     // Reload fresh - still sharing the same KVStore
-    let device2 = Shadow::<SimpleConfig, _>::new(&kv);
-    let network2 = Shadow::<NetworkShadow, _>::new(&kv);
+    let device2 = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
+    let network2 = Shadow::<NetworkShadow, _, _>::new(&kv, &mqtt);
 
     device2.load().await.unwrap();
     network2.load().await.unwrap();
@@ -354,7 +357,8 @@ async fn test_multiple_shadows_share_kvstore() {
 async fn test_in_memory_shadow_initializes_defaults() {
     // Non-persisted shadow using InMemory KVStore
     let kv = InMemory::<SimpleConfig>::new();
-    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
+    let mqtt = MockMqttClient::new("test-client");
+    let shadow = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
     let result = shadow.load().await.unwrap();
 
     // First boot since InMemory starts with defaults
@@ -365,7 +369,8 @@ async fn test_in_memory_shadow_initializes_defaults() {
 #[tokio::test]
 async fn test_in_memory_shadow_apply_and_save_updates_state() {
     let kv = InMemory::<SimpleConfig>::new();
-    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
+    let mqtt = MockMqttClient::new("test-client");
+    let shadow = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     let delta = DeltaSimpleConfig { value: Some(42) };
@@ -379,9 +384,10 @@ async fn test_in_memory_shadow_apply_and_save_updates_state() {
 async fn test_in_memory_shadow_persists_across_shadow_instances() {
     // InMemory now persists state within the same KVStore instance
     let kv = InMemory::<SimpleConfig>::new();
+    let mqtt = MockMqttClient::new("test-client");
 
     {
-        let shadow = Shadow::<SimpleConfig, _>::new(&kv);
+        let shadow = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
         shadow.load().await.unwrap();
 
         let delta = DeltaSimpleConfig { value: Some(42) };
@@ -389,7 +395,7 @@ async fn test_in_memory_shadow_persists_across_shadow_instances() {
     }
 
     // Create new shadow pointing to same KVStore - state persists
-    let shadow2 = Shadow::<SimpleConfig, _>::new(&kv);
+    let shadow2 = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
     shadow2.load().await.unwrap();
 
     assert_eq!(shadow2.state().await.unwrap().value, 42);
@@ -399,7 +405,8 @@ async fn test_in_memory_shadow_persists_across_shadow_instances() {
 async fn test_new_in_memory_kvstore_has_default_state() {
     // New InMemory KVStore starts with default state
     let kv = InMemory::<SimpleConfig>::new();
-    let shadow = Shadow::<SimpleConfig, _>::new(&kv);
+    let mqtt = MockMqttClient::new("test-client");
+    let shadow = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     assert_eq!(
@@ -428,8 +435,9 @@ async fn test_migration_prefers_primary_key_over_old() {
         ("device/old_timeout", &encode(9999u32)),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<MigratedConfig, _>::new(&kv);
+    let shadow = Shadow::<MigratedConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     assert_eq!(shadow.state().await.unwrap().timeout, 5000); // NOT 9999
@@ -445,8 +453,9 @@ async fn test_migration_multiple_sources_tried_in_order() {
         // "current_value" doesn't exist
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<MultiSourceConfig, _>::new(&kv);
+    let shadow = Shadow::<MultiSourceConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     assert_eq!(shadow.state().await.unwrap().current_value, 42);
@@ -461,8 +470,9 @@ async fn test_migration_type_conversion_when_new_type_fails_deserialize() {
         ("device/precision", &encode(42u8)), // old type at migration source
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<TypeMigratedConfig, _>::new(&kv);
+    let shadow = Shadow::<TypeMigratedConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     assert_eq!(shadow.state().await.unwrap().precision, 42u16); // converted
@@ -480,8 +490,9 @@ async fn test_load_writes_new_key_but_preserves_old() {
         ("device/old_timeout", &encode(5000u32)),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<MigratedConfig, _>::new(&kv);
+    let shadow = Shadow::<MigratedConfig, _, _>::new(&kv, &mqtt);
     let result = shadow.load().await.unwrap();
 
     assert_eq!(result.fields_migrated, 1);
@@ -500,8 +511,9 @@ async fn test_commit_removes_old_keys_only_after_explicit_call() {
         ("device/old_timeout", &encode(5000u32)),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<MigratedConfig, _>::new(&kv);
+    let shadow = Shadow::<MigratedConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     // Old key still there
@@ -528,9 +540,10 @@ async fn test_rollback_scenario_old_firmware_reads_old_keys() {
         ("device/old_timeout", &encode(5000u32)), // old key (preserved)
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
     // "Old firmware" only knows about old_timeout
-    let old_shadow = Shadow::<OldConfig, _>::new(&kv);
+    let old_shadow = Shadow::<OldConfig, _, _>::new(&kv, &mqtt);
     old_shadow.load().await.unwrap();
 
     assert_eq!(old_shadow.state().await.unwrap().old_timeout, 5000); // Works!
@@ -549,8 +562,9 @@ async fn test_conversion_function_receives_correct_bytes() {
         ("device/timeout_ms", &encode(5000u32)),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<MsToSecsConfig, _>::new(&kv);
+    let shadow = Shadow::<MsToSecsConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     assert_eq!(shadow.state().await.unwrap().timeout_secs, 5); // 5000ms -> 5s
@@ -564,8 +578,9 @@ async fn test_conversion_failure_propagates_error() {
         ("device/old_value", &encode(123u32)), // Value at migration source (not primary key)
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<FailingConversionConfig, _>::new(&kv);
+    let shadow = Shadow::<FailingConversionConfig, _, _>::new(&kv, &mqtt);
     let result = shadow.load().await;
 
     assert!(result.is_err());
@@ -588,8 +603,9 @@ async fn test_commit_removes_truly_orphaned_keys() {
         ("device/also_removed", &encode(456u32)), // orphaned - not in schema
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<CurrentConfig, _>::new(&kv);
+    let shadow = Shadow::<CurrentConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
     shadow.commit().await.unwrap();
 
@@ -616,8 +632,9 @@ async fn test_commit_preserves_inactive_enum_variant_fields() {
         ),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     // Verify state is Dhcp
@@ -646,8 +663,9 @@ async fn test_commit_does_not_affect_other_shadow_prefixes() {
         ("network/some_key", &encode(123u32)),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<CurrentConfig, _>::new(&kv);
+    let shadow = Shadow::<CurrentConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
     shadow.commit().await.unwrap();
 
@@ -711,8 +729,9 @@ async fn test_enum_load_sets_variant_before_reading_fields() {
         ),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     let state = shadow.state().await.unwrap();
@@ -728,8 +747,9 @@ async fn test_enum_load_sets_variant_before_reading_fields() {
 async fn test_enum_load_missing_variant_uses_default() {
     // No _variant key -> use #[default] variant
     let kv = empty_kv();
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap(); // First boot - initializes defaults
 
     assert!(matches!(
@@ -751,8 +771,9 @@ async fn test_enum_load_ignores_inactive_variant_fields() {
         ), // orphan
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap(); // Should not fail
 
     assert!(matches!(
@@ -769,8 +790,9 @@ async fn test_enum_load_ignores_inactive_variant_fields() {
 async fn test_enum_first_boot_writes_variant_key_as_utf8() {
     // First boot (empty KV) persists defaults including _variant keys
     let kv = empty_kv();
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     let result = shadow.load().await.unwrap();
 
     assert!(result.first_boot);
@@ -784,8 +806,9 @@ async fn test_enum_first_boot_writes_variant_key_as_utf8() {
 async fn test_enum_apply_and_save_writes_variant_key_as_utf8() {
     // Use apply_and_save to change variant and verify UTF-8 storage
     let kv = empty_kv();
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap(); // First boot - sets Dhcp
 
     // Apply delta to change to Static variant
@@ -819,8 +842,9 @@ async fn test_enum_variant_switch_preserves_inactive_fields() {
         ),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     // Verify we loaded Static variant
@@ -865,8 +889,9 @@ async fn test_enum_variant_switch_and_back_restores_values_on_reload() {
         ),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     // Switch to Dhcp
@@ -892,7 +917,7 @@ async fn test_enum_variant_switch_and_back_restores_values_on_reload() {
     // But on reload, we should get the preserved KV values
 
     // Simulate reboot by creating new shadow instance
-    let shadow2 = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow2 = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     shadow2.load().await.unwrap();
 
     // After reload, original values should be restored from KV
@@ -920,8 +945,9 @@ async fn test_enum_serde_rename_affects_variant_key() {
         ("wifi/auth/_variant", b"none"), // serde-renamed
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<AuthConfig, _>::new(&kv);
+    let shadow = Shadow::<AuthConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     assert!(matches!(shadow.state().await.unwrap().auth, WifiAuth::Open));
@@ -944,8 +970,9 @@ async fn test_apply_and_save_only_persists_some_fields() {
         ("test/retries", &encode(3u8)),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<TestConfig, _>::new(&kv);
+    let shadow = Shadow::<TestConfig, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     // Delta only changes timeout
@@ -977,8 +1004,9 @@ async fn test_apply_and_save_enum_variant_change() {
         ("wifi/ip/_variant", b"Dhcp"),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<WifiCfg, _>::new(&kv);
+    let shadow = Shadow::<WifiCfg, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
     assert!(matches!(
         shadow.state().await.unwrap().ip,
@@ -1023,8 +1051,9 @@ async fn test_apply_and_save_nested_struct_fields() {
         ("device/version", &encode(1u32)),
     ])
     .await;
+    let mqtt = MockMqttClient::new("test-client");
 
-    let shadow = Shadow::<DeviceShadow, _>::new(&kv);
+    let shadow = Shadow::<DeviceShadow, _, _>::new(&kv, &mqtt);
     shadow.load().await.unwrap();
 
     // Delta changes only nested timeout

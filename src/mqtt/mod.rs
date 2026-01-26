@@ -23,6 +23,9 @@ mod rumqttc;
 #[cfg(feature = "greengrass")]
 mod greengrass;
 
+#[cfg(test)]
+pub mod mock;
+
 pub use embedded::*;
 
 #[cfg(feature = "rumqttc")]
