@@ -95,6 +95,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     let mut persist_delta_mode_arms = Vec::new();
     let mut persist_delta_config_arms = Vec::new();
     let mut collect_valid_keys_arms = Vec::new();
+    let mut collect_valid_prefixes_arms = Vec::new();
     let mut max_key_len_items = Vec::new();
 
     // "_variant" key path length
@@ -266,6 +267,16 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         let _ = inner_prefix.push_str(prefix);
                         let _ = inner_prefix.push_str(#variant_path);
                         <#inner_ty as #krate::shadows::KVPersist>::collect_valid_keys::<KEY_LEN>(&inner_prefix, keys);
+                    }
+                });
+
+                // collect_valid_prefixes: delegate to inner
+                collect_valid_prefixes_arms.push(quote! {
+                    {
+                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                        let _ = inner_prefix.push_str(prefix);
+                        let _ = inner_prefix.push_str(#variant_path);
+                        <#inner_ty as #krate::shadows::KVPersist>::collect_valid_prefixes::<KEY_LEN>(&inner_prefix, prefixes);
                     }
                 });
             }
@@ -707,6 +718,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
                 // Collect from all variants (not just active)
                 #(#collect_valid_keys_arms)*
+            }
+
+            fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
+                #(#collect_valid_prefixes_arms)*
             }
         }
     };
