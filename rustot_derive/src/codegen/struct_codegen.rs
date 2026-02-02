@@ -433,7 +433,9 @@ pub(crate) fn generate_struct_code(
             // Nested ShadowNode field: delegate
 
             // MAX_KEY_LEN: "/field_name".len() + nested MAX_KEY_LEN
-            max_key_len_items.push(quote! { #field_path_len + <#field_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN });
+            max_key_len_items.push(
+                quote! { #field_path_len + <#field_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN },
+            );
 
             // load_from_kv
             load_from_kv_arms.push(quote! {

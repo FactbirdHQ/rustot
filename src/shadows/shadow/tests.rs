@@ -606,8 +606,14 @@ async fn test_commit_preserves_inactive_enum_variant_fields() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Dhcp"),
-        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())),
-        ("wifi/ip/Static/gateway", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap())),
+        (
+            "wifi/ip/Static/address",
+            &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap()),
+        ),
+        (
+            "wifi/ip/Static/gateway",
+            &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap()),
+        ),
     ])
     .await;
 
@@ -695,8 +701,14 @@ async fn test_enum_load_sets_variant_before_reading_fields() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Static"), // plain UTF-8, not postcard
-        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())),
-        ("wifi/ip/Static/gateway", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap())),
+        (
+            "wifi/ip/Static/address",
+            &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap()),
+        ),
+        (
+            "wifi/ip/Static/gateway",
+            &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap()),
+        ),
     ])
     .await;
 
@@ -733,7 +745,10 @@ async fn test_enum_load_ignores_inactive_variant_fields() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Dhcp"),
-        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())), // orphan
+        (
+            "wifi/ip/Static/address",
+            &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap()),
+        ), // orphan
     ])
     .await;
 
@@ -794,8 +809,14 @@ async fn test_enum_variant_switch_preserves_inactive_fields() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Static"),
-        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())),
-        ("wifi/ip/Static/gateway", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap())),
+        (
+            "wifi/ip/Static/address",
+            &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap()),
+        ),
+        (
+            "wifi/ip/Static/gateway",
+            &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap()),
+        ),
     ])
     .await;
 
@@ -834,8 +855,14 @@ async fn test_enum_variant_switch_and_back_restores_values_on_reload() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Static"),
-        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())),
-        ("wifi/ip/Static/gateway", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap())),
+        (
+            "wifi/ip/Static/address",
+            &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap()),
+        ),
+        (
+            "wifi/ip/Static/gateway",
+            &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap()),
+        ),
     ])
     .await;
 

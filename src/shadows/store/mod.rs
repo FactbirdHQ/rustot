@@ -175,4 +175,3 @@ pub trait KVStore {
         Ok(self.fetch(key, &mut buf).await?.map(|s| s.to_vec()))
     }
 }
-

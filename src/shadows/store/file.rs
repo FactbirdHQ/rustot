@@ -272,16 +272,16 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
         self.get_state(prefix).await
     }
 
-    async fn load(
-        &self,
-        prefix: &str,
-        hash: u64,
-    ) -> Result<LoadResult<St>, KvError<Self::Error>> {
+    async fn load(&self, prefix: &str, hash: u64) -> Result<LoadResult<St>, KvError<Self::Error>> {
         // Build hash key: prefix + SCHEMA_HASH_SUFFIX
         let hash_key = format!("{}{}", prefix, SCHEMA_HASH_SUFFIX);
 
         let mut hash_buf = [0u8; 8];
-        match self.fetch(&hash_key, &mut hash_buf).await.map_err(KvError::Kv)? {
+        match self
+            .fetch(&hash_key, &mut hash_buf)
+            .await
+            .map_err(KvError::Kv)?
+        {
             None => {
                 // First boot - no hash exists
                 let state = St::default();
@@ -312,9 +312,7 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
                 if stored_hash == hash {
                     // Hash matches - normal load
                     let mut state = St::default();
-                    let field_result = state
-                        .load_from_kv::<Self, 128>(prefix, self)
-                        .await?;
+                    let field_result = state.load_from_kv::<Self, 128>(prefix, self).await?;
 
                     Ok(LoadResult {
                         state,
@@ -367,11 +365,7 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
         }
     }
 
-    async fn commit(
-        &self,
-        prefix: &str,
-        hash: u64,
-    ) -> Result<CommitStats, KvError<Self::Error>> {
+    async fn commit(&self, prefix: &str, hash: u64) -> Result<CommitStats, KvError<Self::Error>> {
         // Build set of valid keys for O(1) lookup during GC
         let mut valid: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -394,7 +388,9 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
             .remove_if(prefix, |key| {
                 let rel_key = key.strip_prefix(prefix).unwrap_or(key);
                 !valid.contains(rel_key)
-                    && !valid_prefixes.iter().any(|pfx| rel_key.starts_with(pfx.as_str()))
+                    && !valid_prefixes
+                        .iter()
+                        .any(|pfx| rel_key.starts_with(pfx.as_str()))
                     && !rel_key.starts_with("/__")
             })
             .await

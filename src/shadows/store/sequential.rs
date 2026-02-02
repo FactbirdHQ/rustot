@@ -254,11 +254,7 @@ impl<
         self.get_state(prefix).await
     }
 
-    async fn load(
-        &self,
-        prefix: &str,
-        hash: u64,
-    ) -> Result<LoadResult<St>, KvError<Self::Error>> {
+    async fn load(&self, prefix: &str, hash: u64) -> Result<LoadResult<St>, KvError<Self::Error>> {
         // Build hash key: prefix + SCHEMA_HASH_SUFFIX
         let mut hash_key: heapless::String<128> = heapless::String::new();
         hash_key.push_str(prefix).map_err(|_| KvError::KeyTooLong)?;
@@ -357,14 +353,9 @@ impl<
         }
     }
 
-    async fn commit(
-        &self,
-        prefix: &str,
-        hash: u64,
-    ) -> Result<CommitStats, KvError<Self::Error>> {
+    async fn commit(&self, prefix: &str, hash: u64) -> Result<CommitStats, KvError<Self::Error>> {
         // Build set of valid keys for O(1) lookup during GC
-        let mut valid: FnvIndexSet<heapless::String<128>, 128> =
-            FnvIndexSet::new();
+        let mut valid: FnvIndexSet<heapless::String<128>, 128> = FnvIndexSet::new();
 
         // Collect all valid keys using per-field codegen
         St::collect_valid_keys::<128>(prefix, &mut |key| {

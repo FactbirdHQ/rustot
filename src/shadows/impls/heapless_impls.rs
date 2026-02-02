@@ -400,9 +400,7 @@ where
                 .await
                 .map_err(KvError::Kv)?
             {
-                Some(data) => {
-                    postcard::from_bytes(data).map_err(|_| KvError::Serialization)?
-                }
+                Some(data) => postcard::from_bytes(data).map_err(|_| KvError::Serialization)?,
                 None => {
                     result.defaulted += 1;
                     return Ok(result);
@@ -450,8 +448,8 @@ where
             // Write manifest
             let manifest_key = build_key::<KEY_LEN>(prefix, "/__keys__");
             let mut buf = [0u8; N * (K::MAX_KEY_DISPLAY_LEN + 5) + 5];
-            let bytes = postcard::to_slice(&manifest_keys, &mut buf)
-                .map_err(|_| KvError::Serialization)?;
+            let bytes =
+                postcard::to_slice(&manifest_keys, &mut buf).map_err(|_| KvError::Serialization)?;
             kv.store(&manifest_key, bytes).await.map_err(KvError::Kv)?;
 
             Ok(())
