@@ -6,3 +6,4 @@ target/
 *.o
 Cargo.lock
 statemachine.svg
+planning/
