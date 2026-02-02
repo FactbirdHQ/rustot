@@ -180,7 +180,7 @@ async fn test_shadow_end_to_end() {
         client.wait_connected().await;
         log::info!("MQTT connected");
 
-        let shadow = Shadow::<TestShadow, NoopRawMutex, FileKVStore>::new(&kv, &client);
+        let shadow = Shadow::<TestShadow, _, FileKVStore>::new(&kv, &client);
 
         // =====================================================================
         // Step 2: Load shadow → initializes defaults, persists to file store

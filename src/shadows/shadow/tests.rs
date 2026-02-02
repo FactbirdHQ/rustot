@@ -63,29 +63,6 @@ struct CurrentConfig {
 // Phase 6 Enum Test Fixtures
 // =========================================================================
 
-#[shadow_node]
-#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-struct StaticIpConfig {
-    #[shadow_attr(opaque)]
-    address: heapless::Vec<u8, 4>,
-    #[shadow_attr(opaque)]
-    gateway: heapless::Vec<u8, 4>,
-}
-
-#[shadow_node]
-#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-enum IpSettings {
-    #[default]
-    Dhcp,
-    Static(StaticIpConfig),
-}
-
-#[shadow_root(name = "wifi")]
-#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-struct WifiConfig {
-    ip: IpSettings,
-}
-
 // For serde rename test
 #[shadow_node]
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
