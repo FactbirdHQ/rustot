@@ -113,9 +113,7 @@ fn shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
         is_root: true,
         name: params.name.map(|s| s.value()),
         topic_prefix: params.topic_prefix.map(|s| s.value()),
-        max_payload_len: params
-            .max_payload_len
-            .map(|l| l.base10_parse().unwrap()),
+        max_payload_len: params.max_payload_len.map(|l| l.base10_parse().unwrap()),
     };
 
     let shadow_code = generate_shadow_node(&derive_input, &config)?;

@@ -110,11 +110,7 @@ impl<S: ShadowNode> StateStore<S> for InMemory<S> {
         }
     }
 
-    async fn commit(
-        &self,
-        _prefix: &str,
-        _hash: u64,
-    ) -> Result<CommitStats, KvError<Self::Error>> {
+    async fn commit(&self, _prefix: &str, _hash: u64) -> Result<CommitStats, KvError<Self::Error>> {
         // No-op for in-memory - nothing to commit
         Ok(CommitStats::default())
     }

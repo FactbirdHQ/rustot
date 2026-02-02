@@ -196,11 +196,17 @@ impl crate::shadows::KVPersist for core::time::Duration {
         &mut self,
         prefix: &str,
         kv: &K,
-    ) -> impl ::core::future::Future<Output = Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>>> {
+    ) -> impl ::core::future::Future<
+        Output = Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>>,
+    > {
         async move {
             let mut result = crate::shadows::LoadFieldResult::default();
             let mut buf = [0u8; 15];
-            match kv.fetch(prefix, &mut buf).await.map_err(crate::shadows::KvError::Kv)? {
+            match kv
+                .fetch(prefix, &mut buf)
+                .await
+                .map_err(crate::shadows::KvError::Kv)?
+            {
                 Some(data) => {
                     *self = ::postcard::from_bytes(data)
                         .map_err(|_| crate::shadows::KvError::Serialization)?;
@@ -216,7 +222,9 @@ impl crate::shadows::KVPersist for core::time::Duration {
         &mut self,
         prefix: &str,
         kv: &K,
-    ) -> impl ::core::future::Future<Output = Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>>> {
+    ) -> impl ::core::future::Future<
+        Output = Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>>,
+    > {
         self.load_from_kv::<K, KEY_LEN>(prefix, kv)
     }
 
@@ -229,7 +237,9 @@ impl crate::shadows::KVPersist for core::time::Duration {
             let mut buf = [0u8; 15];
             let bytes = ::postcard::to_slice(self, &mut buf)
                 .map_err(|_| crate::shadows::KvError::Serialization)?;
-            kv.store(prefix, bytes).await.map_err(crate::shadows::KvError::Kv)
+            kv.store(prefix, bytes)
+                .await
+                .map_err(crate::shadows::KvError::Kv)
         }
     }
 
@@ -242,7 +252,9 @@ impl crate::shadows::KVPersist for core::time::Duration {
             let mut buf = [0u8; 15];
             let bytes = ::postcard::to_slice(delta, &mut buf)
                 .map_err(|_| crate::shadows::KvError::Serialization)?;
-            kv.store(prefix, bytes).await.map_err(crate::shadows::KvError::Kv)
+            kv.store(prefix, bytes)
+                .await
+                .map_err(crate::shadows::KvError::Kv)
         }
     }
 

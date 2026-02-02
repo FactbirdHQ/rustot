@@ -4,9 +4,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident};
 
-use crate::attr::{
-    apply_rename_all, get_serde_rename, get_serde_rename_all, has_default_attr,
-};
+use crate::attr::{apply_rename_all, get_serde_rename, get_serde_rename_all, has_default_attr};
 
 use super::adjacently_tagged::generate_adjacently_tagged_enum_code;
 
@@ -139,8 +137,7 @@ pub(crate) fn generate_simple_enum_code(
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 // Newtype variant - delegate to inner ShadowNode
                 let inner_ty = &fields.unnamed[0].ty;
-                let delta_inner_ty =
-                    quote! { <#inner_ty as #krate::shadows::ShadowNode>::Delta };
+                let delta_inner_ty = quote! { <#inner_ty as #krate::shadows::ShadowNode>::Delta };
                 let reported_inner_ty =
                     quote! { <#inner_ty as #krate::shadows::ShadowNode>::Reported };
 

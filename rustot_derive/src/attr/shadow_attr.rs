@@ -110,7 +110,11 @@ mod tests {
         assert_eq!(params.name.unwrap().value(), "device");
         assert!(params.topic_prefix.is_none());
         assert_eq!(
-            params.max_payload_len.unwrap().base10_parse::<usize>().unwrap(),
+            params
+                .max_payload_len
+                .unwrap()
+                .base10_parse::<usize>()
+                .unwrap(),
             1024
         );
     }
@@ -126,7 +130,11 @@ mod tests {
         assert_eq!(params.name.unwrap().value(), "device");
         assert_eq!(params.topic_prefix.unwrap().value(), "$custom");
         assert_eq!(
-            params.max_payload_len.unwrap().base10_parse::<usize>().unwrap(),
+            params
+                .max_payload_len
+                .unwrap()
+                .base10_parse::<usize>()
+                .unwrap(),
             2048
         );
     }

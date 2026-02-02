@@ -116,100 +116,100 @@ impl Updater {
                 loop {
                     // Select over the futures
                     match subscription.next_block().await {
-                    Ok(Some(mut payload)) => {
-                        // Decode the file block received
-                        let mut progress = progress_state.lock().await;
+                        Ok(Some(mut payload)) => {
+                            // Decode the file block received
+                            let mut progress = progress_state.lock().await;
 
-                        match Self::ingest_data_block(
-                            data,
-                            &mut block_writer,
-                            config,
-                            &mut progress,
-                            payload.deref_mut(),
-                        )
-                        .await
-                        {
-                            Ok(true) => {
-                                // ... (Handle end of file) ...
-                                match pal.close_file(&file_ctx).await {
-                                    Err(e) => {
-                                        // FIXME: This seems like duplicate status update, as it will also report during cleanup
-                                        // job_updater.signal_update(
-                                        //     JobStatus::Failed,
-                                        //     JobStatusReason::Pal(0),
-                                        // );
+                            match Self::ingest_data_block(
+                                data,
+                                &mut block_writer,
+                                config,
+                                &mut progress,
+                                payload.deref_mut(),
+                            )
+                            .await
+                            {
+                                Ok(true) => {
+                                    // ... (Handle end of file) ...
+                                    match pal.close_file(&file_ctx).await {
+                                        Err(e) => {
+                                            // FIXME: This seems like duplicate status update, as it will also report during cleanup
+                                            // job_updater.signal_update(
+                                            //     JobStatus::Failed,
+                                            //     JobStatusReason::Pal(0),
+                                            // );
 
-                                        return Err(e.into());
+                                            return Err(e.into());
+                                        }
+                                        Ok(_) if file_ctx.file_type == Some(0) => {
+                                            job_updater.signal_update(
+                                                JobStatus::InProgress,
+                                                JobStatusReason::SigCheckPassed,
+                                            );
+                                            return Ok(());
+                                        }
+                                        Ok(_) => {
+                                            job_updater.signal_update(
+                                                JobStatus::Succeeded,
+                                                JobStatusReason::Accepted,
+                                            );
+                                            return Ok(());
+                                        }
                                     }
-                                    Ok(_) if file_ctx.file_type == Some(0) => {
+                                }
+                                Ok(false) => {
+                                    // ... (Handle successful block processing) ...
+                                    progress.request_momentum = Some(0);
+
+                                    // Update the job status to reflect the download progress
+                                    if progress.blocks_remaining
+                                        % config.status_update_frequency as usize
+                                        == 0
+                                    {
                                         job_updater.signal_update(
                                             JobStatus::InProgress,
-                                            JobStatusReason::SigCheckPassed,
+                                            JobStatusReason::Receiving,
                                         );
-                                        return Ok(());
                                     }
-                                    Ok(_) => {
-                                        job_updater.signal_update(
-                                            JobStatus::Succeeded,
-                                            JobStatusReason::Accepted,
-                                        );
-                                        return Ok(());
+
+                                    if progress.request_block_remaining > 1 {
+                                        progress.request_block_remaining -= 1;
+                                    } else {
+                                        data.request_file_blocks(&file_ctx, &mut progress, config)
+                                            .await?;
                                     }
                                 }
-                            }
-                            Ok(false) => {
-                                // ... (Handle successful block processing) ...
-                                progress.request_momentum = Some(0);
-
-                                // Update the job status to reflect the download progress
-                                if progress.blocks_remaining
-                                    % config.status_update_frequency as usize
-                                    == 0
-                                {
-                                    job_updater.signal_update(
-                                        JobStatus::InProgress,
-                                        JobStatusReason::Receiving,
-                                    );
+                                Err(e) if e.is_retryable() => {
+                                    // ... (Handle retryable errors) ...
+                                    error!("Failed block validation: {:?}! Retrying", e);
                                 }
-
-                                if progress.request_block_remaining > 1 {
-                                    progress.request_block_remaining -= 1;
-                                } else {
-                                    data.request_file_blocks(&file_ctx, &mut progress, config)
-                                        .await?;
+                                Err(e) => {
+                                    // ... (Handle fatal errors) ...
+                                    return Err(e);
                                 }
-                            }
-                            Err(e) if e.is_retryable() => {
-                                // ... (Handle retryable errors) ...
-                                error!("Failed block validation: {:?}! Retrying", e);
-                            }
-                            Err(e) => {
-                                // ... (Handle fatal errors) ...
-                                return Err(e);
                             }
                         }
+                        Ok(None) => {
+                            warn!("[OTA] Data stream subscription ended (clean session/disconnect). Resubscribing and resuming...");
+
+                            let blocks_remaining = {
+                                let progress = progress_state.lock().await;
+                                progress.blocks_remaining
+                            };
+
+                            info!("[OTA] Resuming OTA: {} blocks remaining", blocks_remaining);
+
+                            // Break inner loop to trigger resubscription in outer loop
+                            break;
+                        }
+
+                        // Handle status update future results
+                        Err(e) => {
+                            error!("Status update error: {:?}", e);
+                            return Err(e);
+                        }
                     }
-                    Ok(None) => {
-                        warn!("[OTA] Data stream subscription ended (clean session/disconnect). Resubscribing and resuming...");
-
-                        let blocks_remaining = {
-                            let progress = progress_state.lock().await;
-                            progress.blocks_remaining
-                        };
-
-                        info!("[OTA] Resuming OTA: {} blocks remaining", blocks_remaining);
-
-                        // Break inner loop to trigger resubscription in outer loop
-                        break;
-                    }
-
-                    // Handle status update future results
-                    Err(e) => {
-                        error!("Status update error: {:?}", e);
-                        return Err(e);
-                    }
-                }
-            } // End of inner block processing loop
+                } // End of inner block processing loop
             } // End of outer resubscribe loop
         };
 

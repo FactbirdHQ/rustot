@@ -22,11 +22,7 @@ use embassy_sync::{
 };
 
 use crate::shadows::{
-    commit::CommitStats,
-    error::KvError,
-    migration::LoadResult,
-    store::StateStore,
-    ShadowRoot,
+    commit::CommitStats, error::KvError, migration::LoadResult, store::StateStore, ShadowRoot,
 };
 
 /// A shadow instance managing state persistence via StateStore with MQTT cloud connectivity.
@@ -118,10 +114,7 @@ where
     /// shadow.load().await?;  // Loads from storage or initializes on first boot
     /// let state = shadow.state().await?;  // Get current state
     /// ```
-    pub fn new(
-        store: &'a K,
-        mqtt: &'m embedded_mqtt::MqttClient<'a, M>,
-    ) -> Self {
+    pub fn new(store: &'a K, mqtt: &'m embedded_mqtt::MqttClient<'a, M>) -> Self {
         Self {
             store,
             mqtt,

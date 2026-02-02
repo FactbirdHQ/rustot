@@ -65,7 +65,11 @@ where
                                 .topics(&[SubscribeTopic::builder()
                                     .topic_path(
                                         Topic::UpdateDelta
-                                            .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
+                                            .format::<64>(
+                                                S::PREFIX,
+                                                self.mqtt.client_id(),
+                                                S::NAME,
+                                            )?
                                             .as_str(),
                                     )
                                     .build()])

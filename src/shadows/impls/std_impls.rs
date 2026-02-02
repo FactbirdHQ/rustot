@@ -308,7 +308,11 @@ where
     // std HashMap uses dynamic allocation; this is a reasonable upper bound
     const MAX_VALUE_LEN: usize = {
         const fn const_max(a: usize, b: usize) -> usize {
-            if a > b { a } else { b }
+            if a > b {
+                a
+            } else {
+                b
+            }
         }
         const_max(4096, V::MAX_VALUE_LEN)
     };
@@ -386,16 +390,15 @@ where
                 key_strings.push(key_str.clone());
 
                 let entry_prefix = format!("{}/{}", prefix, key_str);
-                value.persist_to_kv::<K2, KEY_LEN>(&entry_prefix, kv).await?;
+                value
+                    .persist_to_kv::<K2, KEY_LEN>(&entry_prefix, kv)
+                    .await?;
             }
 
             // Write manifest
             let manifest_key = format!("{}/__keys__", prefix);
-            let bytes =
-                postcard::to_allocvec(&key_strings).map_err(|_| KvError::Serialization)?;
-            kv.store(&manifest_key, &bytes)
-                .await
-                .map_err(KvError::Kv)?;
+            let bytes = postcard::to_allocvec(&key_strings).map_err(|_| KvError::Serialization)?;
+            kv.store(&manifest_key, &bytes).await.map_err(KvError::Kv)?;
 
             Ok(())
         }
@@ -443,11 +446,9 @@ where
                 }
 
                 // Write updated manifest
-                let bytes = postcard::to_allocvec(&key_strings)
-                    .map_err(|_| KvError::Serialization)?;
-                kv.store(&manifest_key, &bytes)
-                    .await
-                    .map_err(KvError::Kv)?;
+                let bytes =
+                    postcard::to_allocvec(&key_strings).map_err(|_| KvError::Serialization)?;
+                kv.store(&manifest_key, &bytes).await.map_err(KvError::Kv)?;
             }
 
             Ok(())
@@ -459,10 +460,7 @@ where
         keys(&manifest_key);
     }
 
-    fn collect_valid_prefixes<const KEY_LEN: usize>(
-        prefix: &str,
-        prefixes: &mut impl FnMut(&str),
-    ) {
+    fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
         let mut pfx = format!("{}/", prefix);
         prefixes(&pfx);
         pfx.clear(); // just to suppress unused warning

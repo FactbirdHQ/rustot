@@ -21,7 +21,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Ident};
 
-use crate::attr::{get_serde_rename_all, get_serde_tag_content, get_variant_serde_name, has_default_attr};
+use crate::attr::{
+    get_serde_rename_all, get_serde_tag_content, get_variant_serde_name, has_default_attr,
+};
 
 /// Generate code for an adjacently-tagged enum type
 pub(crate) fn generate_adjacently_tagged_enum_code(
@@ -41,7 +43,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // Get serde attributes
     let (tag_key, content_key) = get_serde_tag_content(&input.attrs);
     let tag_key = tag_key.ok_or_else(|| {
-        syn::Error::new_spanned(input, "adjacently-tagged enum requires #[serde(tag = \"...\")]")
+        syn::Error::new_spanned(
+            input,
+            "adjacently-tagged enum requires #[serde(tag = \"...\")]",
+        )
     })?;
     let content_key = content_key.ok_or_else(|| {
         syn::Error::new_spanned(
@@ -168,8 +173,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 variants_with_data.push((variant, serde_name.clone()));
 
                 // Nested ShadowNode
-                let delta_inner_ty =
-                    quote! { <#inner_ty as #krate::shadows::ShadowNode>::Delta };
+                let delta_inner_ty = quote! { <#inner_ty as #krate::shadows::ShadowNode>::Delta };
                 let reported_inner_ty =
                     quote! { <#inner_ty as #krate::shadows::ShadowNode>::Reported };
 
