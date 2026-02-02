@@ -66,16 +66,16 @@ struct CurrentConfig {
 // =========================================================================
 
 #[shadow_node]
-#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 struct StaticIpConfig {
     #[shadow_attr(opaque)]
-    address: [u8; 4],
+    address: heapless::Vec<u8, 4>,
     #[shadow_attr(opaque)]
-    gateway: [u8; 4],
+    gateway: heapless::Vec<u8, 4>,
 }
 
 #[shadow_node]
-#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 enum IpSettings {
     #[default]
     Dhcp,
@@ -83,7 +83,7 @@ enum IpSettings {
 }
 
 #[shadow_root(name = "wifi")]
-#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 struct WifiConfig {
     ip: IpSettings,
 }
@@ -606,8 +606,8 @@ async fn test_commit_preserves_inactive_enum_variant_fields() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Dhcp"),
-        ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
-        ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
+        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())),
+        ("wifi/ip/Static/gateway", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap())),
     ])
     .await;
 
@@ -656,16 +656,16 @@ async fn test_commit_does_not_affect_other_shadow_prefixes() {
 // Phase 6 test fixtures - using different names to avoid conflict with earlier tests
 
 #[shadow_node]
-#[derive(Clone, Default, Serialize, Deserialize, MaxSize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct StaticIpCfg {
     #[shadow_attr(opaque)]
-    address: [u8; 4],
+    address: heapless::Vec<u8, 4>,
     #[shadow_attr(opaque)]
-    gateway: [u8; 4],
+    gateway: heapless::Vec<u8, 4>,
 }
 
 #[shadow_node]
-#[derive(Clone, Default, Serialize, Deserialize, MaxSize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 enum IpSettingsCfg {
     #[default]
     Dhcp,
@@ -673,7 +673,7 @@ enum IpSettingsCfg {
 }
 
 #[shadow_root(name = "wifi")]
-#[derive(Clone, Default, Serialize, Deserialize, MaxSize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct WifiCfg {
     ip: IpSettingsCfg,
 }
@@ -695,8 +695,8 @@ async fn test_enum_load_sets_variant_before_reading_fields() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Static"), // plain UTF-8, not postcard
-        ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
-        ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
+        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())),
+        ("wifi/ip/Static/gateway", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap())),
     ])
     .await;
 
@@ -706,7 +706,7 @@ async fn test_enum_load_sets_variant_before_reading_fields() {
     let state = shadow.state().await.unwrap();
     match &state.ip {
         IpSettingsCfg::Static(cfg) => {
-            assert_eq!(cfg.address, [192, 168, 1, 100]);
+            assert_eq!(cfg.address.as_slice(), &[192, 168, 1, 100]);
         }
         IpSettingsCfg::Dhcp => panic!("Wrong variant loaded"),
     }
@@ -733,7 +733,7 @@ async fn test_enum_load_ignores_inactive_variant_fields() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Dhcp"),
-        ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])), // orphan
+        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())), // orphan
     ])
     .await;
 
@@ -776,8 +776,8 @@ async fn test_enum_apply_and_save_writes_variant_key_as_utf8() {
     // Apply delta to change to Static variant
     let delta = DeltaWifiCfg {
         ip: Some(DeltaIpSettingsCfg::Static(DeltaStaticIpCfg {
-            address: Some([10, 0, 0, 1]),
-            gateway: Some([10, 0, 0, 254]),
+            address: Some(heapless::Vec::from_slice(&[10, 0, 0, 1]).unwrap()),
+            gateway: Some(heapless::Vec::from_slice(&[10, 0, 0, 254]).unwrap()),
         })),
     };
     shadow.apply_and_save(&delta).await.unwrap();
@@ -794,8 +794,8 @@ async fn test_enum_variant_switch_preserves_inactive_fields() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Static"),
-        ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
-        ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
+        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())),
+        ("wifi/ip/Static/gateway", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap())),
     ])
     .await;
 
@@ -805,7 +805,7 @@ async fn test_enum_variant_switch_preserves_inactive_fields() {
     // Verify we loaded Static variant
     match &shadow.state().await.unwrap().ip {
         IpSettingsCfg::Static(cfg) => {
-            assert_eq!(cfg.address, [192, 168, 1, 100]);
+            assert_eq!(cfg.address.as_slice(), &[192, 168, 1, 100]);
         }
         _ => panic!("Expected Static variant"),
     }
@@ -834,8 +834,8 @@ async fn test_enum_variant_switch_and_back_restores_values_on_reload() {
     let kv = setup_kv(&[
         ("wifi/__schema_hash__", &WifiCfg::SCHEMA_HASH.to_le_bytes()),
         ("wifi/ip/_variant", b"Static"),
-        ("wifi/ip/Static/address", &encode([192u8, 168, 1, 100])),
-        ("wifi/ip/Static/gateway", &encode([192u8, 168, 1, 1])),
+        ("wifi/ip/Static/address", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 100]).unwrap())),
+        ("wifi/ip/Static/gateway", &encode(heapless::Vec::<u8, 4>::from_slice(&[192, 168, 1, 1]).unwrap())),
     ])
     .await;
 
@@ -871,8 +871,8 @@ async fn test_enum_variant_switch_and_back_restores_values_on_reload() {
     // After reload, original values should be restored from KV
     match &shadow2.state().await.unwrap().ip {
         IpSettingsCfg::Static(cfg) => {
-            assert_eq!(cfg.address, [192, 168, 1, 100]);
-            assert_eq!(cfg.gateway, [192, 168, 1, 1]);
+            assert_eq!(cfg.address.as_slice(), &[192, 168, 1, 100]);
+            assert_eq!(cfg.gateway.as_slice(), &[192, 168, 1, 1]);
         }
         _ => panic!("Expected Static variant after reload"),
     }
@@ -961,8 +961,8 @@ async fn test_apply_and_save_enum_variant_change() {
     // Apply delta that changes to Static variant with values
     let delta = DeltaWifiCfg {
         ip: Some(DeltaIpSettingsCfg::Static(DeltaStaticIpCfg {
-            address: Some([10, 0, 0, 50]),
-            gateway: Some([10, 0, 0, 1]),
+            address: Some(heapless::Vec::from_slice(&[10, 0, 0, 50]).unwrap()),
+            gateway: Some(heapless::Vec::from_slice(&[10, 0, 0, 1]).unwrap()),
         })),
     };
     shadow.apply_and_save(&delta).await.unwrap();
@@ -970,8 +970,8 @@ async fn test_apply_and_save_enum_variant_change() {
     // Verify state changed
     match &shadow.state().await.unwrap().ip {
         IpSettingsCfg::Static(cfg) => {
-            assert_eq!(cfg.address, [10, 0, 0, 50]);
-            assert_eq!(cfg.gateway, [10, 0, 0, 1]);
+            assert_eq!(cfg.address.as_slice(), &[10, 0, 0, 50]);
+            assert_eq!(cfg.gateway.as_slice(), &[10, 0, 0, 1]);
         }
         _ => panic!("Expected Static variant"),
     }
@@ -980,8 +980,8 @@ async fn test_apply_and_save_enum_variant_change() {
     let variant = kv_fetch_raw(&kv, "wifi/ip/_variant").await;
     assert_eq!(variant, b"Static");
 
-    let addr: [u8; 4] = kv_fetch_decode(&kv, "wifi/ip/Static/address").await;
-    assert_eq!(addr, [10, 0, 0, 50]);
+    let addr: heapless::Vec<u8, 4> = kv_fetch_decode(&kv, "wifi/ip/Static/address").await;
+    assert_eq!(addr.as_slice(), &[10, 0, 0, 50]);
 }
 
 #[tokio::test]

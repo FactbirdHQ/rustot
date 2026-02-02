@@ -164,5 +164,15 @@ pub trait KVStore {
     async fn remove_if<F>(&self, prefix: &str, predicate: F) -> Result<usize, Self::Error>
     where
         F: FnMut(&str) -> bool;
+
+    /// Fetch a value by key, returning owned bytes (std only).
+    ///
+    /// Default implementation uses `fetch()` with a 4096-byte buffer.
+    /// Implementations may override for more efficient behavior (e.g., `fs::read`).
+    #[cfg(feature = "std")]
+    async fn fetch_to_vec(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error> {
+        let mut buf = vec![0u8; 4096];
+        Ok(self.fetch(key, &mut buf).await?.map(|s| s.to_vec()))
+    }
 }
 

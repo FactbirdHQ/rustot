@@ -73,7 +73,6 @@ macro_rules! impl_opaque {
 
         #[cfg(feature = "shadows_kv_persist")]
         impl $crate::shadows::KVPersist for $ty {
-            const MAX_DEPTH: usize = 0;
             const MAX_KEY_LEN: usize = 0;
             const MAX_VALUE_LEN: usize = <$ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE;
 
@@ -93,11 +92,11 @@ macro_rules! impl_opaque {
                 &mut self,
                 prefix: &str,
                 kv: &K,
-                buf: &mut [u8],
             ) -> impl ::core::future::Future<Output = Result<$crate::shadows::LoadFieldResult, $crate::shadows::KvError<K::Error>>> {
                 async move {
                     let mut result = $crate::shadows::LoadFieldResult::default();
-                    match kv.fetch(prefix, buf).await.map_err($crate::shadows::KvError::Kv)? {
+                    let mut buf = [0u8; Self::MAX_VALUE_LEN];
+                    match kv.fetch(prefix, &mut buf).await.map_err($crate::shadows::KvError::Kv)? {
                         Some(data) => {
                             *self = ::postcard::from_bytes(data)
                                 .map_err(|_| $crate::shadows::KvError::Serialization)?;
@@ -113,20 +112,19 @@ macro_rules! impl_opaque {
                 &mut self,
                 prefix: &str,
                 kv: &K,
-                buf: &mut [u8],
             ) -> impl ::core::future::Future<Output = Result<$crate::shadows::LoadFieldResult, $crate::shadows::KvError<K::Error>>> {
                 // Leaf types have no migration sources, delegate to load_from_kv
-                self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
+                self.load_from_kv::<K, KEY_LEN>(prefix, kv)
             }
 
             fn persist_to_kv<K: $crate::shadows::KVStore, const KEY_LEN: usize>(
                 &self,
                 prefix: &str,
                 kv: &K,
-                buf: &mut [u8],
             ) -> impl ::core::future::Future<Output = Result<(), $crate::shadows::KvError<K::Error>>> {
                 async move {
-                    let bytes = ::postcard::to_slice(self, buf)
+                    let mut buf = [0u8; Self::MAX_VALUE_LEN];
+                    let bytes = ::postcard::to_slice(self, &mut buf)
                         .map_err(|_| $crate::shadows::KvError::Serialization)?;
                     kv.store(prefix, bytes).await.map_err($crate::shadows::KvError::Kv)
                 }
@@ -136,11 +134,10 @@ macro_rules! impl_opaque {
                 delta: &Self::Delta,
                 kv: &K,
                 prefix: &str,
-                buf: &mut [u8],
             ) -> impl ::core::future::Future<Output = Result<(), $crate::shadows::KvError<K::Error>>> {
                 async move {
-                    // For leaf types, Delta = Self, so just persist the value
-                    let bytes = ::postcard::to_slice(delta, buf)
+                    let mut buf = [0u8; Self::MAX_VALUE_LEN];
+                    let bytes = ::postcard::to_slice(delta, &mut buf)
                         .map_err(|_| $crate::shadows::KvError::Serialization)?;
                     kv.store(prefix, bytes).await.map_err($crate::shadows::KvError::Kv)
                 }
@@ -190,11 +187,14 @@ impl<const N: usize> ReportedUnionFields for heapless::String<N> {
 }
 
 #[cfg(feature = "shadows_kv_persist")]
-impl<const N: usize> KVPersist for heapless::String<N> {
-    const MAX_DEPTH: usize = 0;
+#[allow(incomplete_features)]
+impl<const N: usize> KVPersist for heapless::String<N>
+where
+    [(); N + 5]:,
+{
     const MAX_KEY_LEN: usize = 0;
-    // heapless::String<N> serializes as a string with max N bytes + length prefix
-    const MAX_VALUE_LEN: usize = N + 5; // +5 for postcard length encoding overhead
+    // N bytes content + varint length prefix (max 5 bytes for lengths up to u32::MAX)
+    const MAX_VALUE_LEN: usize = N + 5;
 
     fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
         &[]
@@ -212,11 +212,11 @@ impl<const N: usize> KVPersist for heapless::String<N> {
         &mut self,
         prefix: &str,
         kv: &K,
-        buf: &mut [u8],
     ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
         async move {
             let mut result = LoadFieldResult::default();
-            match kv.fetch(prefix, buf).await.map_err(KvError::Kv)? {
+            let mut buf = [0u8; N + 5];
+            match kv.fetch(prefix, &mut buf).await.map_err(KvError::Kv)? {
                 Some(data) => {
                     *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
                     result.loaded += 1;
@@ -231,19 +231,18 @@ impl<const N: usize> KVPersist for heapless::String<N> {
         &mut self,
         prefix: &str,
         kv: &K,
-        buf: &mut [u8],
     ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
+        self.load_from_kv::<K, KEY_LEN>(prefix, kv)
     }
 
     fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
         prefix: &str,
         kv: &K,
-        buf: &mut [u8],
     ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
         async move {
-            let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
+            let mut buf = [0u8; N + 5];
+            let bytes = postcard::to_slice(self, &mut buf).map_err(|_| KvError::Serialization)?;
             kv.store(prefix, bytes).await.map_err(KvError::Kv)
         }
     }
@@ -252,10 +251,10 @@ impl<const N: usize> KVPersist for heapless::String<N> {
         delta: &Self::Delta,
         kv: &K,
         prefix: &str,
-        buf: &mut [u8],
     ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
         async move {
-            let bytes = postcard::to_slice(delta, buf).map_err(|_| KvError::Serialization)?;
+            let mut buf = [0u8; N + 5];
+            let bytes = postcard::to_slice(delta, &mut buf).map_err(|_| KvError::Serialization)?;
             kv.store(prefix, bytes).await.map_err(KvError::Kv)
         }
     }
@@ -295,14 +294,15 @@ where
 }
 
 #[cfg(feature = "shadows_kv_persist")]
+#[allow(incomplete_features)]
 impl<T, const N: usize> KVPersist for heapless::Vec<T, N>
 where
     T: Clone + Default + Serialize + DeserializeOwned + MaxSize,
+    [(); N * T::POSTCARD_MAX_SIZE + 5]:,
 {
-    const MAX_DEPTH: usize = 0;
     const MAX_KEY_LEN: usize = 0;
-    // Vec<T, N> serializes as: length prefix + N * T::MAX_SIZE
-    const MAX_VALUE_LEN: usize = 5 + N * T::POSTCARD_MAX_SIZE;
+    // N * T::POSTCARD_MAX_SIZE bytes content + varint length prefix
+    const MAX_VALUE_LEN: usize = N * T::POSTCARD_MAX_SIZE + 5;
 
     fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
         &[]
@@ -320,11 +320,11 @@ where
         &mut self,
         prefix: &str,
         kv: &K,
-        buf: &mut [u8],
     ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
         async move {
             let mut result = LoadFieldResult::default();
-            match kv.fetch(prefix, buf).await.map_err(KvError::Kv)? {
+            let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
+            match kv.fetch(prefix, &mut buf).await.map_err(KvError::Kv)? {
                 Some(data) => {
                     *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
                     result.loaded += 1;
@@ -339,19 +339,18 @@ where
         &mut self,
         prefix: &str,
         kv: &K,
-        buf: &mut [u8],
     ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
+        self.load_from_kv::<K, KEY_LEN>(prefix, kv)
     }
 
     fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
         prefix: &str,
         kv: &K,
-        buf: &mut [u8],
     ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
         async move {
-            let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
+            let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
+            let bytes = postcard::to_slice(self, &mut buf).map_err(|_| KvError::Serialization)?;
             kv.store(prefix, bytes).await.map_err(KvError::Kv)
         }
     }
@@ -360,10 +359,10 @@ where
         delta: &Self::Delta,
         kv: &K,
         prefix: &str,
-        buf: &mut [u8],
     ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
         async move {
-            let bytes = postcard::to_slice(delta, buf).map_err(|_| KvError::Serialization)?;
+            let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
+            let bytes = postcard::to_slice(delta, &mut buf).map_err(|_| KvError::Serialization)?;
             kv.store(prefix, bytes).await.map_err(KvError::Kv)
         }
     }
@@ -408,9 +407,8 @@ mod std_impls {
 
     #[cfg(feature = "shadows_kv_persist")]
     impl KVPersist for String {
-        const MAX_DEPTH: usize = 0;
         const MAX_KEY_LEN: usize = 0;
-        // std::String has unbounded size, use a reasonable max
+        // std::String has unbounded size; unused on std path (to_allocvec/fetch_to_vec)
         const MAX_VALUE_LEN: usize = 1024;
 
         fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
@@ -429,13 +427,12 @@ mod std_impls {
             &mut self,
             prefix: &str,
             kv: &K,
-            buf: &mut [u8],
         ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
             async move {
                 let mut result = LoadFieldResult::default();
-                match kv.fetch(prefix, buf).await.map_err(KvError::Kv)? {
+                match kv.fetch_to_vec(prefix).await.map_err(KvError::Kv)? {
                     Some(data) => {
-                        *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
+                        *self = postcard::from_bytes(&data).map_err(|_| KvError::Serialization)?;
                         result.loaded += 1;
                     }
                     None => result.defaulted += 1,
@@ -448,20 +445,18 @@ mod std_impls {
             &mut self,
             prefix: &str,
             kv: &K,
-            buf: &mut [u8],
         ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-            self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
+            self.load_from_kv::<K, KEY_LEN>(prefix, kv)
         }
 
         fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
             &self,
             prefix: &str,
             kv: &K,
-            buf: &mut [u8],
         ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
             async move {
-                let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
-                kv.store(prefix, bytes).await.map_err(KvError::Kv)
+                let bytes = postcard::to_allocvec(self).map_err(|_| KvError::Serialization)?;
+                kv.store(prefix, &bytes).await.map_err(KvError::Kv)
             }
         }
 
@@ -469,11 +464,10 @@ mod std_impls {
             delta: &Self::Delta,
             kv: &K,
             prefix: &str,
-            buf: &mut [u8],
         ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
             async move {
-                let bytes = postcard::to_slice(delta, buf).map_err(|_| KvError::Serialization)?;
-                kv.store(prefix, bytes).await.map_err(KvError::Kv)
+                let bytes = postcard::to_allocvec(delta).map_err(|_| KvError::Serialization)?;
+                kv.store(prefix, &bytes).await.map_err(KvError::Kv)
             }
         }
 
@@ -516,9 +510,8 @@ mod std_impls {
     where
         T: Clone + Default + Serialize + DeserializeOwned,
     {
-        const MAX_DEPTH: usize = 0;
         const MAX_KEY_LEN: usize = 0;
-        // std::Vec has unbounded size, use a reasonable max
+        // std::Vec has unbounded size; unused on std path (to_allocvec/fetch_to_vec)
         const MAX_VALUE_LEN: usize = 4096;
 
         fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
@@ -537,13 +530,12 @@ mod std_impls {
             &mut self,
             prefix: &str,
             kv: &K,
-            buf: &mut [u8],
         ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
             async move {
                 let mut result = LoadFieldResult::default();
-                match kv.fetch(prefix, buf).await.map_err(KvError::Kv)? {
+                match kv.fetch_to_vec(prefix).await.map_err(KvError::Kv)? {
                     Some(data) => {
-                        *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
+                        *self = postcard::from_bytes(&data).map_err(|_| KvError::Serialization)?;
                         result.loaded += 1;
                     }
                     None => result.defaulted += 1,
@@ -556,20 +548,18 @@ mod std_impls {
             &mut self,
             prefix: &str,
             kv: &K,
-            buf: &mut [u8],
         ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-            self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
+            self.load_from_kv::<K, KEY_LEN>(prefix, kv)
         }
 
         fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
             &self,
             prefix: &str,
             kv: &K,
-            buf: &mut [u8],
         ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
             async move {
-                let bytes = postcard::to_slice(self, buf).map_err(|_| KvError::Serialization)?;
-                kv.store(prefix, bytes).await.map_err(KvError::Kv)
+                let bytes = postcard::to_allocvec(self).map_err(|_| KvError::Serialization)?;
+                kv.store(prefix, &bytes).await.map_err(KvError::Kv)
             }
         }
 
@@ -577,11 +567,10 @@ mod std_impls {
             delta: &Self::Delta,
             kv: &K,
             prefix: &str,
-            buf: &mut [u8],
         ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
             async move {
-                let bytes = postcard::to_slice(delta, buf).map_err(|_| KvError::Serialization)?;
-                kv.store(prefix, bytes).await.map_err(KvError::Kv)
+                let bytes = postcard::to_allocvec(delta).map_err(|_| KvError::Serialization)?;
+                kv.store(prefix, &bytes).await.map_err(KvError::Kv)
             }
         }
 

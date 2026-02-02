@@ -95,7 +95,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     let mut persist_delta_mode_arms = Vec::new();
     let mut persist_delta_config_arms = Vec::new();
     let mut collect_valid_keys_arms = Vec::new();
-    let mut max_depth_items = Vec::new();
     let mut max_key_len_items = Vec::new();
 
     // "_variant" key path length
@@ -139,9 +138,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 // =====================================================================
                 // KVPersist codegen for unit variant
                 // =====================================================================
-
-                // MAX_DEPTH: unit variants contribute 0
-                max_depth_items.push(quote! { 0 });
 
                 // load_from_kv arm: just set the variant
                 load_from_kv_variant_arms.push(quote! {
@@ -219,9 +215,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 let variant_path = format!("/{}", serde_name);
                 let variant_path_len = variant_path.len();
 
-                // MAX_DEPTH: 1 + nested depth
-                max_depth_items.push(quote! { <#inner_ty as #krate::shadows::KVPersist>::MAX_DEPTH });
-
                 // MAX_KEY_LEN: "/VariantName" + nested MAX_KEY_LEN
                 max_key_len_items.push(quote! { #variant_path_len + <#inner_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN });
 
@@ -233,7 +226,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                             let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                             let _ = inner_prefix.push_str(prefix);
                             let _ = inner_prefix.push_str(#variant_path);
-                            let inner_result = <#inner_ty as #krate::shadows::KVPersist>::load_from_kv::<K, KEY_LEN>(inner, &inner_prefix, kv, buf).await?;
+                            let inner_result = <#inner_ty as #krate::shadows::KVPersist>::load_from_kv::<K, KEY_LEN>(inner, &inner_prefix, kv).await?;
                             result.merge(inner_result);
                         }
                     }
@@ -245,7 +238,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                         let _ = inner_prefix.push_str(prefix);
                         let _ = inner_prefix.push_str(#variant_path);
-                        <#inner_ty as #krate::shadows::KVPersist>::persist_to_kv::<K, KEY_LEN>(inner, &inner_prefix, kv, buf).await?;
+                        <#inner_ty as #krate::shadows::KVPersist>::persist_to_kv::<K, KEY_LEN>(inner, &inner_prefix, kv).await?;
                     }
                 });
 
@@ -262,7 +255,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                         let _ = inner_prefix.push_str(prefix);
                         let _ = inner_prefix.push_str(#variant_path);
-                        <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &inner_prefix, buf).await?;
+                        <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &inner_prefix).await?;
                     }
                 });
 
@@ -299,24 +292,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     if a > b { a } else { b }
                 }
                 #expr
-            }
-        }
-    };
-
-    // Build MAX_DEPTH const expression (1 + max of variant depths)
-    let max_depth_expr = if max_depth_items.is_empty() {
-        quote! { 1 }
-    } else {
-        let mut expr = max_depth_items[0].clone();
-        for item in &max_depth_items[1..] {
-            expr = quote! { const_max(#expr, #item) };
-        }
-        quote! {
-            {
-                const fn const_max(a: usize, b: usize) -> usize {
-                    if a > b { a } else { b }
-                }
-                1 + #expr
             }
         }
     };
@@ -613,7 +588,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         // KVPersist impl (feature-gated)
         #[cfg(feature = "shadows_kv_persist")]
         impl #krate::shadows::KVPersist for #name {
-            const MAX_DEPTH: usize = #max_depth_expr;
             const MAX_KEY_LEN: usize = #max_key_len_expr;
             const MAX_VALUE_LEN: usize = #max_value_len_expr;
 
@@ -633,26 +607,24 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 &mut self,
                 prefix: &str,
                 kv: &K,
-                buf: &mut [u8],
             ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
                 async move {
                     let mut result = #krate::shadows::LoadFieldResult::default();
 
-                    // Read _variant key
+                    // Read _variant key (variant names are short, 128 bytes is plenty)
                     let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                     let _ = variant_key.push_str(prefix);
                     let _ = variant_key.push_str("/_variant");
 
-                    let variant_name = match kv.fetch(&variant_key, buf).await.map_err(#krate::shadows::KvError::Kv)? {
+                    let mut __vbuf = [0u8; 128];
+                    let variant_name = match kv.fetch(&variant_key, &mut __vbuf).await.map_err(#krate::shadows::KvError::Kv)? {
                         Some(data) => core::str::from_utf8(data).map_err(|_| #krate::shadows::KvError::InvalidVariant)?,
                         None => {
-                            // No variant stored, use default
                             *self = Self::default();
                             return Ok(result);
                         }
                     };
 
-                    // Construct variant and load inner fields
                     match variant_name {
                         #(#load_from_kv_variant_arms)*
                         _ => return Err(#krate::shadows::KvError::UnknownVariant),
@@ -666,17 +638,15 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 &mut self,
                 prefix: &str,
                 kv: &K,
-                buf: &mut [u8],
             ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
                 // Adjacently-tagged enums don't have migration support at this level
-                self.load_from_kv::<K, KEY_LEN>(prefix, kv, buf)
+                self.load_from_kv::<K, KEY_LEN>(prefix, kv)
             }
 
             fn persist_to_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                 &self,
                 prefix: &str,
                 kv: &K,
-                buf: &mut [u8],
             ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
                 async move {
                     // Write _variant key
@@ -703,7 +673,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 delta: &Self::Delta,
                 kv: &K,
                 prefix: &str,
-                buf: &mut [u8],
             ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
                 async move {
                     // Build variant key path

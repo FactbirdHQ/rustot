@@ -224,10 +224,8 @@ impl<
 
     async fn get_state(&self, prefix: &str) -> Result<St, Self::Error> {
         let mut state = St::default();
-        let mut buf = [0u8; 512];
-        // Use KVPersist's load_from_kv to reconstruct state from storage
         let _ = state
-            .load_from_kv::<Self, MAX_KEY_LEN>(prefix, self, &mut buf)
+            .load_from_kv::<Self, MAX_KEY_LEN>(prefix, self)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => kv_err,
@@ -237,9 +235,8 @@ impl<
     }
 
     async fn set_state(&self, prefix: &str, state: &St) -> Result<(), Self::Error> {
-        let mut buf = [0u8; 512];
         state
-            .persist_to_kv::<Self, MAX_KEY_LEN>(prefix, self, &mut buf)
+            .persist_to_kv::<Self, MAX_KEY_LEN>(prefix, self)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => kv_err,
@@ -248,15 +245,12 @@ impl<
     }
 
     async fn apply_delta(&self, prefix: &str, delta: &St::Delta) -> Result<St, Self::Error> {
-        let mut buf = [0u8; 512];
-        // Direct delta persist - no load first!
-        St::persist_delta::<Self, MAX_KEY_LEN>(delta, self, prefix, &mut buf)
+        St::persist_delta::<Self, MAX_KEY_LEN>(delta, self, prefix)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => kv_err,
                 _ => SequentialKVStoreError::KeyTooLong,
             })?;
-        // Load full state to return
         self.get_state(prefix).await
     }
 
@@ -308,9 +302,8 @@ impl<
                 if stored_hash == hash {
                     // Hash matches - normal load
                     let mut state = St::default();
-                    let mut buf = [0u8; 512];
                     let field_result = state
-                        .load_from_kv::<Self, MAX_KEY_LEN>(prefix, self, &mut buf)
+                        .load_from_kv::<Self, MAX_KEY_LEN>(prefix, self)
                         .await?;
 
                     Ok(LoadResult {
@@ -324,9 +317,8 @@ impl<
                 } else {
                     // Hash mismatch - migration needed
                     let mut state = St::default();
-                    let mut buf = [0u8; 512];
                     let field_result = state
-                        .load_from_kv_with_migration::<Self, MAX_KEY_LEN>(prefix, self, &mut buf)
+                        .load_from_kv_with_migration::<Self, MAX_KEY_LEN>(prefix, self)
                         .await?;
 
                     Ok(LoadResult {

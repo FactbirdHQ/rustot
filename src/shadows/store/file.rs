@@ -164,6 +164,16 @@ impl KVStore for FileKVStore {
         }
     }
 
+    async fn fetch_to_vec(&self, key: &str) -> Result<Option<Vec<u8>>, Self::Error> {
+        let path = self.key_path(key);
+
+        match fs::read(&path).await {
+            Ok(data) => Ok(Some(data)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     async fn store(&self, key: &str, value: &[u8]) -> Result<(), Self::Error> {
         // Ensure directory exists
         fs::create_dir_all(&self.base_path).await?;
@@ -232,10 +242,8 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
 
     async fn get_state(&self, prefix: &str) -> Result<St, Self::Error> {
         let mut state = St::default();
-        let mut buf = [0u8; 512];
-        // Use KVPersist's load_from_kv to reconstruct state from storage
         let _ = state
-            .load_from_kv::<Self, 128>(prefix, self, &mut buf)
+            .load_from_kv::<Self, 128>(prefix, self)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => kv_err,
@@ -245,9 +253,8 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
     }
 
     async fn set_state(&self, prefix: &str, state: &St) -> Result<(), Self::Error> {
-        let mut buf = [0u8; 512];
         state
-            .persist_to_kv::<Self, 128>(prefix, self, &mut buf)
+            .persist_to_kv::<Self, 128>(prefix, self)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => kv_err,
@@ -256,15 +263,12 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
     }
 
     async fn apply_delta(&self, prefix: &str, delta: &St::Delta) -> Result<St, Self::Error> {
-        let mut buf = [0u8; 512];
-        // Direct delta persist - no load first!
-        St::persist_delta::<Self, 128>(delta, self, prefix, &mut buf)
+        St::persist_delta::<Self, 128>(delta, self, prefix)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => kv_err,
                 _ => FileKVStoreError::KeyEncoding,
             })?;
-        // Load full state to return
         self.get_state(prefix).await
     }
 
@@ -308,9 +312,8 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
                 if stored_hash == hash {
                     // Hash matches - normal load
                     let mut state = St::default();
-                    let mut buf = [0u8; 512];
                     let field_result = state
-                        .load_from_kv::<Self, 128>(prefix, self, &mut buf)
+                        .load_from_kv::<Self, 128>(prefix, self)
                         .await?;
 
                     Ok(LoadResult {
@@ -324,9 +327,8 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
                 } else {
                     // Hash mismatch - migration needed
                     let mut state = St::default();
-                    let mut buf = [0u8; 512];
                     let field_result = state
-                        .load_from_kv_with_migration::<Self, 128>(prefix, self, &mut buf)
+                        .load_from_kv_with_migration::<Self, 128>(prefix, self)
                         .await?;
 
                     Ok(LoadResult {
