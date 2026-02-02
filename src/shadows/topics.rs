@@ -97,7 +97,7 @@ impl Topic {
         &self,
         prefix: &str,
         thing_name: &str,
-        shadow_name: Option<&'static str>,
+        shadow_name: Option<&str>,
         w: &mut dyn Write,
     ) -> Result<(), core::fmt::Error> {
         let (name_prefix, shadow_name) = shadow_name.map(|n| ("/name/", n)).unwrap_or_default();
@@ -219,7 +219,7 @@ impl Topic {
         &self,
         prefix: &str,
         thing_name: &str,
-        shadow_name: Option<&'static str>,
+        shadow_name: Option<&str>,
     ) -> Result<String<L>, Error> {
         let mut topic_path = String::new();
         self.format_inner(prefix, thing_name, shadow_name, &mut topic_path)
@@ -258,7 +258,7 @@ impl<const N: usize> Subscribe<N> {
         self,
         prefix: &str,
         thing_name: &str,
-        shadow_name: Option<&'static str>,
+        shadow_name: Option<&str>,
     ) -> Result<heapless::Vec<(heapless::String<128>, QoS), N>, Error> {
         assert!(thing_name.len() <= MAX_THING_NAME_LEN);
 
@@ -298,7 +298,7 @@ impl<const N: usize> Unsubscribe<N> {
         self,
         prefix: &str,
         thing_name: &str,
-        shadow_name: Option<&'static str>,
+        shadow_name: Option<&str>,
     ) -> Result<heapless::Vec<heapless::String<256>, N>, Error> {
         assert!(thing_name.len() <= MAX_THING_NAME_LEN);
 
