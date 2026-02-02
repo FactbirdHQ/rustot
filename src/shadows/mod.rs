@@ -248,13 +248,6 @@ pub trait KVPersist: ShadowNode {
     // KV Storage Constants
     // =========================================================================
 
-    /// Maximum nesting depth for this type's field tree.
-    ///
-    /// Computed at compile time per-field during codegen.
-    /// For structs: 1 + max(nested field depths)
-    /// For enums: 1 + max(variant inner depths)
-    const MAX_DEPTH: usize;
-
     /// Maximum key length needed for this type's fields (excluding prefix).
     ///
     /// Computed at compile time per-field during codegen.
@@ -263,8 +256,9 @@ pub trait KVPersist: ShadowNode {
 
     /// Maximum serialized value size for any field.
     ///
-    /// Computed using `postcard::experimental::max_size::MaxSize::POSTCARD_MAX_SIZE`
-    /// for leaf types. Opaque field types must implement `MaxSize`.
+    /// Used by no-std impls to allocate stack buffers for serialization.
+    /// Under std, this constant may be unused since `to_allocvec` / `fetch_to_vec`
+    /// handle allocation dynamically.
     const MAX_VALUE_LEN: usize;
 
     // =========================================================================
@@ -305,15 +299,15 @@ pub trait KVPersist: ShadowNode {
 
     /// Load this type's state from KV storage.
     ///
-    /// For enums: reads `_variant` key first, constructs the variant, then loads inner fields.
-    /// For structs: recursively calls `load_from_kv()` on each field.
+    /// Each impl allocates its own buffer internally:
+    /// - no-std: stack buffer of `MAX_VALUE_LEN` bytes
+    /// - std: uses `kv.fetch_to_vec()` for dynamic allocation
     ///
     /// KEY_LEN is propagated from root to ensure buffer size matches full key paths.
     fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
         &mut self,
         prefix: &str,
         kv: &K,
-        buf: &mut [u8],
     ) -> impl core::future::Future<Output = Result<LoadFieldResult, KvError<K::Error>>>;
 
     /// Load this type's state from KV storage with migration support.
@@ -323,18 +317,17 @@ pub trait KVPersist: ShadowNode {
         &mut self,
         prefix: &str,
         kv: &K,
-        buf: &mut [u8],
     ) -> impl core::future::Future<Output = Result<LoadFieldResult, KvError<K::Error>>>;
 
     /// Persist this type's entire state to KV storage (all fields).
     ///
-    /// For enums: writes `_variant` key, then inner fields.
-    /// For structs: recursively calls `persist_to_kv()` on each field.
+    /// Each impl allocates its own buffer internally:
+    /// - no-std: stack buffer of `MAX_VALUE_LEN` bytes + `postcard::to_slice`
+    /// - std: uses `postcard::to_allocvec()` for dynamic allocation
     fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
         prefix: &str,
         kv: &K,
-        buf: &mut [u8],
     ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>>;
 
     /// Persist only delta fields to KV storage (efficient partial update).
@@ -346,7 +339,6 @@ pub trait KVPersist: ShadowNode {
         delta: &Self::Delta,
         kv: &K,
         prefix: &str,
-        buf: &mut [u8],
     ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>>;
 
     /// Collect all valid key paths for this type.
