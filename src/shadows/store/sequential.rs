@@ -375,13 +375,26 @@ impl<
             let _ = valid.insert(hs);
         });
 
+        // Collect valid prefixes for dynamic collections (maps)
+        let mut valid_prefixes: FnvIndexSet<heapless::String<128>, 16> = FnvIndexSet::new();
+        St::collect_valid_prefixes::<128>(prefix, &mut |pfx| {
+            let rel = pfx.strip_prefix(prefix).unwrap_or(pfx);
+            let mut hs: heapless::String<128> = heapless::String::new();
+            let _ = hs.push_str(rel);
+            let _ = valid_prefixes.insert(hs);
+        });
+
         // Remove orphaned keys using KVStore::remove_if
         let orphans_removed = self
             .remove_if(prefix, |key| {
                 let rel_key = key.strip_prefix(prefix).unwrap_or(key);
                 let mut rel_key_string: heapless::String<128> = heapless::String::new();
                 let _ = rel_key_string.push_str(rel_key);
-                !valid.contains(&rel_key_string) && !rel_key.starts_with("/__")
+                !valid.contains(&rel_key_string)
+                    && !valid_prefixes
+                        .iter()
+                        .any(|pfx| rel_key.starts_with(pfx.as_str()))
+                    && !rel_key.starts_with("/__")
             })
             .await
             .map_err(KvError::Kv)?;

@@ -382,11 +382,20 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
             valid.insert(rel_key.to_string());
         });
 
+        // Collect valid prefixes for dynamic collections (maps)
+        let mut valid_prefixes: Vec<String> = Vec::new();
+        St::collect_valid_prefixes::<128>(prefix, &mut |pfx| {
+            let rel = pfx.strip_prefix(prefix).unwrap_or(pfx);
+            valid_prefixes.push(rel.to_string());
+        });
+
         // Remove orphaned keys using KVStore::remove_if
         let orphans_removed = self
             .remove_if(prefix, |key| {
                 let rel_key = key.strip_prefix(prefix).unwrap_or(key);
-                !valid.contains(rel_key) && !rel_key.starts_with("/__")
+                !valid.contains(rel_key)
+                    && !valid_prefixes.iter().any(|pfx| rel_key.starts_with(pfx.as_str()))
+                    && !rel_key.starts_with("/__")
             })
             .await
             .map_err(KvError::Kv)?;

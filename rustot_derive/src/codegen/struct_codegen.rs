@@ -50,6 +50,7 @@ pub(crate) fn generate_struct_code(
     let mut persist_to_kv_arms = Vec::new();
     let mut persist_delta_arms = Vec::new();
     let mut collect_valid_keys_arms = Vec::new();
+    let mut collect_valid_prefixes_arms = Vec::new();
     let mut max_key_len_items = Vec::new();
 
     for field in named_fields {
@@ -487,6 +488,16 @@ pub(crate) fn generate_struct_code(
                     <#field_ty as #krate::shadows::KVPersist>::collect_valid_keys::<KEY_LEN>(&nested_prefix, keys);
                 }
             });
+
+            // collect_valid_prefixes
+            collect_valid_prefixes_arms.push(quote! {
+                {
+                    let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                    let _ = nested_prefix.push_str(prefix);
+                    let _ = nested_prefix.push_str(#field_path);
+                    <#field_ty as #krate::shadows::KVPersist>::collect_valid_prefixes::<KEY_LEN>(&nested_prefix, prefixes);
+                }
+            });
         }
     }
 
@@ -677,6 +688,10 @@ pub(crate) fn generate_struct_code(
 
             fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
                 #(#collect_valid_keys_arms)*
+            }
+
+            fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
+                #(#collect_valid_prefixes_arms)*
             }
         }
     };
