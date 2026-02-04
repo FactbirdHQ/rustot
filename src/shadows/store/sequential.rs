@@ -408,10 +408,7 @@ impl<
     }
 
     fn resolver<'a>(&'a self, prefix: &'a str) -> impl VariantResolver + 'a {
-        KvResolver::<Self, MAX_KEY_LEN> {
-            kv: self,
-            prefix,
-        }
+        KvResolver::<Self, MAX_KEY_LEN> { kv: self, prefix }
     }
 
     async fn apply_json_delta(
@@ -419,8 +416,7 @@ impl<
         prefix: &str,
         json: &[u8],
     ) -> Result<St::Delta, ApplyJsonError<Self::Error>> {
-        let resolver =
-            <Self as StateStore<St>>::resolver(self, prefix);
+        let resolver = <Self as StateStore<St>>::resolver(self, prefix);
         let delta = St::parse_delta(json, "", &resolver)
             .await
             .map_err(ApplyJsonError::Parse)?;

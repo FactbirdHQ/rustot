@@ -1057,8 +1057,8 @@ async fn test_apply_and_save_nested_struct_fields() {
 
 mod adjacently_tagged {
     use super::*;
-    use rustot_derive::shadow_node;
     use crate::shadows::store::StateStore;
+    use rustot_derive::shadow_node;
 
     // Inner config type for Sio variant
     #[shadow_node]
@@ -1164,7 +1164,9 @@ mod adjacently_tagged {
 
         // Test deserialization using parse_delta
         use crate::shadows::{NullResolver, ShadowNode};
-        let parsed = PortMode::parse_delta(json.as_bytes(), "", &NullResolver).await.unwrap();
+        let parsed = PortMode::parse_delta(json.as_bytes(), "", &NullResolver)
+            .await
+            .unwrap();
         assert_eq!(parsed.mode, Some(PortModeVariant::Sio));
     }
 
@@ -1173,7 +1175,9 @@ mod adjacently_tagged {
         // Test mode-only delta (no config)
         let json = br#"{"mode": "inactive"}"#;
         use crate::shadows::{NullResolver, ShadowNode};
-        let delta = PortMode::parse_delta(json, "", &NullResolver).await.unwrap();
+        let delta = PortMode::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
         assert_eq!(delta.mode, Some(PortModeVariant::Inactive));
         assert!(delta.config.is_none());
     }
@@ -1187,7 +1191,10 @@ mod adjacently_tagged {
 
         // Set up InMemory store with current state set to Sio variant
         let store = InMemory::<PortMode>::new();
-        store.set_state("/test", &PortMode::Sio(SioConfig { polarity: true })).await.unwrap();
+        store
+            .set_state("/test", &PortMode::Sio(SioConfig { polarity: true }))
+            .await
+            .unwrap();
         let resolver = store.resolver("/test");
 
         let json = br#"{"config": {"polarity": false}}"#;
@@ -1424,10 +1431,22 @@ mod adjacently_tagged {
         let partial_json = serde_json::to_string(&partial).unwrap();
 
         // Partial should ONLY have adjacent (the field that was in delta)
-        assert!(!partial_json.contains("\"simple_field\""), "partial should NOT have simple_field");
-        assert!(partial_json.contains("\"adjacent\""), "partial should have adjacent");
-        assert!(partial_json.contains("\"mode\""), "adjacent's mode should be present");
-        assert!(partial_json.contains("\"polarity\""), "adjacent's polarity should be present");
+        assert!(
+            !partial_json.contains("\"simple_field\""),
+            "partial should NOT have simple_field"
+        );
+        assert!(
+            partial_json.contains("\"adjacent\""),
+            "partial should have adjacent"
+        );
+        assert!(
+            partial_json.contains("\"mode\""),
+            "adjacent's mode should be present"
+        );
+        assert!(
+            partial_json.contains("\"polarity\""),
+            "adjacent's polarity should be present"
+        );
     }
 
     #[test]
@@ -1435,7 +1454,9 @@ mod adjacently_tagged {
         use crate::shadows::ShadowNode;
         // Test with IoLinkConfig which has cycle_time field
         let mut config = IoLinkConfig { cycle_time: 1000 };
-        let delta = DeltaIoLinkConfig { cycle_time: Some(2000) };
+        let delta = DeltaIoLinkConfig {
+            cycle_time: Some(2000),
+        };
         config.apply_delta(&delta);
 
         let partial = config.into_partial_reported(&delta);
@@ -1458,7 +1479,11 @@ mod adjacently_tagged {
     fn test_struct_into_partial_reported_excludes_unchanged_fields() {
         use crate::shadows::ShadowNode;
 
-        let mut config = MultiFieldConfig { alpha: 1, beta: 2, gamma: true };
+        let mut config = MultiFieldConfig {
+            alpha: 1,
+            beta: 2,
+            gamma: true,
+        };
 
         // Delta only changes alpha
         let delta = DeltaMultiFieldConfig {
@@ -1472,8 +1497,17 @@ mod adjacently_tagged {
         let partial_json = serde_json::to_string(&partial).unwrap();
 
         // Partial should ONLY have alpha (the field that was in delta)
-        assert!(partial_json.contains("\"alpha\""), "partial should have alpha");
-        assert!(!partial_json.contains("\"beta\""), "partial should NOT have beta");
-        assert!(!partial_json.contains("\"gamma\""), "partial should NOT have gamma");
+        assert!(
+            partial_json.contains("\"alpha\""),
+            "partial should have alpha"
+        );
+        assert!(
+            !partial_json.contains("\"beta\""),
+            "partial should NOT have beta"
+        );
+        assert!(
+            !partial_json.contains("\"gamma\""),
+            "partial should NOT have gamma"
+        );
     }
 }

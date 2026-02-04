@@ -34,9 +34,7 @@ impl ShadowNode for String {
         _path: &str,
         _resolver: &R,
     ) -> impl Future<Output = Result<Self::Delta, ParseError>> {
-        async move {
-            serde_json::from_slice(json).map_err(|_| ParseError::Deserialize)
-        }
+        async move { serde_json::from_slice(json).map_err(|_| ParseError::Deserialize) }
     }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
@@ -145,9 +143,7 @@ where
         _path: &str,
         _resolver: &R,
     ) -> impl Future<Output = Result<Self::Delta, ParseError>> {
-        async move {
-            serde_json::from_slice(json).map_err(|_| ParseError::Deserialize)
-        }
+        async move { serde_json::from_slice(json).map_err(|_| ParseError::Deserialize) }
     }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {

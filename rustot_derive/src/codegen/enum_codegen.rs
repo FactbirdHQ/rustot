@@ -5,7 +5,8 @@ use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident};
 
 use crate::attr::{
-    apply_rename_all, get_serde_rename, get_serde_rename_all, get_serde_tag_content, has_default_attr,
+    apply_rename_all, get_serde_rename, get_serde_rename_all, get_serde_tag_content,
+    has_default_attr,
 };
 
 use super::adjacently_tagged::generate_adjacently_tagged_enum_code;
@@ -246,9 +247,11 @@ pub(crate) fn generate_simple_enum_code(
                 ));
 
                 // persist_delta: write _variant key and delegate to inner
-                let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
+                let variant_key_ident =
+                    syn::Ident::new("variant_key", proc_macro2::Span::call_site());
                 let variant_key_code = kv_codegen::build_key(&variant_key_ident, "/_variant");
-                let inner_prefix_ident = syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
+                let inner_prefix_ident =
+                    syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
                 let inner_prefix_code = kv_codegen::build_key(&inner_prefix_ident, &variant_path);
                 persist_delta_arms.push(quote! {
                     Self::Delta::#variant_ident(ref inner_delta) => {
@@ -261,10 +264,18 @@ pub(crate) fn generate_simple_enum_code(
                 });
 
                 // collect_valid_keys: delegate to inner (all variants, not just active)
-                collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(krate, &variant_path, inner_ty));
+                collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
+                    krate,
+                    &variant_path,
+                    inner_ty,
+                ));
 
                 // collect_valid_prefixes: delegate to inner
-                collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(krate, &variant_path, inner_ty));
+                collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(
+                    krate,
+                    &variant_path,
+                    inner_ty,
+                ));
 
                 // Mark that we have newtype variants
                 has_newtype_variants = true;
@@ -330,8 +341,10 @@ pub(crate) fn generate_simple_enum_code(
 
     // Generate enum KVPersist method bodies using shared helpers
     let load_from_kv_body = kv_codegen::enum_load_from_kv_body(krate, &load_from_kv_variant_arms);
-    let persist_to_kv_body = kv_codegen::enum_persist_to_kv_body(krate, &variant_name_arms, &persist_to_kv_variant_arms);
-    let collect_valid_keys_body = kv_codegen::enum_collect_valid_keys_body(&collect_valid_keys_arms);
+    let persist_to_kv_body =
+        kv_codegen::enum_persist_to_kv_body(krate, &variant_name_arms, &persist_to_kv_variant_arms);
+    let collect_valid_keys_body =
+        kv_codegen::enum_collect_valid_keys_body(&collect_valid_keys_arms);
 
     // Build SCHEMA_HASH const
     let schema_hash_const = quote! {

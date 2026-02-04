@@ -334,7 +334,11 @@ pub fn nested_persist_delta(
 }
 
 /// Generates code for collecting keys from a nested ShadowNode field.
-pub fn nested_collect_keys(krate: &TokenStream, field_path: &str, field_ty: &syn::Type) -> TokenStream {
+pub fn nested_collect_keys(
+    krate: &TokenStream,
+    field_path: &str,
+    field_ty: &syn::Type,
+) -> TokenStream {
     let prefix_ident = syn::Ident::new("nested_prefix", proc_macro2::Span::call_site());
     let prefix_code = build_key(&prefix_ident, field_path);
 

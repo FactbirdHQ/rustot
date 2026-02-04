@@ -326,7 +326,11 @@ pub(crate) fn generate_struct_code(
 
             // persist_delta (for non-report_only fields)
             if !attrs.report_only {
-                persist_delta_arms.push(kv_codegen::leaf_persist_delta(krate, &field_path, field_name));
+                persist_delta_arms.push(kv_codegen::leaf_persist_delta(
+                    krate,
+                    &field_path,
+                    field_name,
+                ));
             }
 
             // collect_valid_keys
@@ -374,10 +378,18 @@ pub(crate) fn generate_struct_code(
             }
 
             // collect_valid_keys
-            collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(krate, &field_path, field_ty));
+            collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
+                krate,
+                &field_path,
+                field_ty,
+            ));
 
             // collect_valid_prefixes
-            collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(krate, &field_path, field_ty));
+            collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(
+                krate,
+                &field_path,
+                field_ty,
+            ));
         }
     }
 
@@ -455,7 +467,8 @@ pub(crate) fn generate_struct_code(
         let is_leaf = attrs.opaque || has_migration;
 
         if !is_leaf {
-            let serde_name = get_serde_rename(&field.attrs).unwrap_or_else(|| field_name.to_string());
+            let serde_name =
+                get_serde_rename(&field.attrs).unwrap_or_else(|| field_name.to_string());
             let field_prefix = format!("{}/", serde_name);
             variant_at_path_arms.push(quote! {
                 if path.starts_with(#field_prefix) {

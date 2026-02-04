@@ -1,4 +1,6 @@
-use heck::{ToLowerCamelCase, ToPascalCase, ToShoutyKebabCase, ToShoutySnakeCase, ToSnakeCase, ToKebabCase};
+use heck::{
+    ToKebabCase, ToLowerCamelCase, ToPascalCase, ToShoutyKebabCase, ToShoutySnakeCase, ToSnakeCase,
+};
 use syn::{
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
