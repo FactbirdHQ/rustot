@@ -72,7 +72,7 @@ pub(crate) fn generate_struct_code(
         field_names.push(serde_name.clone());
 
         // Check if this is a leaf type for KV operations.
-        let has_migration = !attrs.migrate_from.is_empty();
+        let has_migration = !attrs.migrate_from().is_empty();
         let is_leaf = attrs.opaque || has_migration;
 
         // Collect opaque field types for where clause
@@ -246,9 +246,10 @@ pub(crate) fn generate_struct_code(
         // =====================================================================
 
         // Migration sources
-        if !attrs.migrate_from.is_empty() {
-            let from_keys: Vec<_> = attrs.migrate_from.iter().collect();
-            let convert_expr = if let Some(ref convert) = attrs.migrate_convert {
+        let migrate_from = attrs.migrate_from();
+        if !migrate_from.is_empty() {
+            let from_keys: Vec<_> = migrate_from.iter().collect();
+            let convert_expr = if let Some(convert) = attrs.migrate_convert() {
                 quote! { Some(#convert) }
             } else {
                 quote! { None }
@@ -302,13 +303,15 @@ pub(crate) fn generate_struct_code(
             ));
 
             // load_from_kv_with_migration
-            let migrate_from_keys: Vec<_> = attrs.migrate_from.iter().collect();
+            let migrate_from_vec = attrs.migrate_from();
+            let migrate_from_keys: Vec<_> = migrate_from_vec.iter().collect();
+            let migrate_convert = attrs.migrate_convert();
             let migration_code = kv_codegen::migration_fallback(
                 krate,
                 &field_path,
                 quote! { self.#field_name },
                 &migrate_from_keys,
-                attrs.migrate_convert.as_ref(),
+                migrate_convert.as_ref(),
             );
             load_from_kv_migration_arms.push(kv_codegen::leaf_load_with_migration(
                 krate,
@@ -412,7 +415,7 @@ pub(crate) fn generate_struct_code(
     let mut all_migration_from_keys = Vec::new();
     for field in named_fields {
         let attrs = FieldAttrs::from_attrs(&field.attrs);
-        for from_key in &attrs.migrate_from {
+        for from_key in &attrs.migrate_from() {
             all_migration_from_keys.push(from_key.clone());
         }
     }
@@ -463,7 +466,7 @@ pub(crate) fn generate_struct_code(
         let field_name = field.ident.as_ref().unwrap();
         let field_ty = &field.ty;
         let attrs = FieldAttrs::from_attrs(&field.attrs);
-        let has_migration = !attrs.migrate_from.is_empty();
+        let has_migration = !attrs.migrate_from().is_empty();
         let is_leaf = attrs.opaque || has_migration;
 
         if !is_leaf {

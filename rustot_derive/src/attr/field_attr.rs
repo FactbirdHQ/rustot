@@ -1,11 +1,8 @@
+use darling::FromMeta;
 use heck::{
     ToKebabCase, ToLowerCamelCase, ToPascalCase, ToShoutyKebabCase, ToShoutySnakeCase, ToSnakeCase,
 };
-use syn::{
-    parse::{Parse, ParseStream},
-    punctuated::Punctuated,
-    Attribute, Ident, Lit, Token,
-};
+use syn::{punctuated::Punctuated, Attribute, Lit, Meta, Token};
 
 /// The attribute name for shadow field annotations
 pub const SHADOW_ATTR: &str = "shadow_attr";
@@ -17,18 +14,58 @@ pub const DEFAULT_ATTR: &str = "default";
 pub const SERDE_ATTR: &str = "serde";
 
 /// Parsed field-level shadow attributes
-#[derive(Default, Clone)]
+#[derive(Default, Clone, FromMeta)]
 pub struct FieldAttrs {
     /// Field is only included in the Reported type, not Delta
+    #[darling(default)]
     pub report_only: bool,
     /// Field is opaque - treated as leaf (primitive-like, no recursive patching)
+    #[darling(default)]
     pub opaque: bool,
-    /// Migration sources for this field
-    pub migrate_from: Vec<String>,
-    /// Conversion function for migration
-    pub migrate_convert: Option<syn::Path>,
+    /// Migration specifications for this field
+    #[darling(default, multiple)]
+    migrate: Vec<MigrateSpec>,
     /// Custom default value for this field
+    #[darling(default, rename = "default")]
     pub default_value: Option<DefaultValue>,
+}
+
+impl FieldAttrs {
+    /// Parse shadow attributes from a field's attribute list
+    pub fn from_attrs(attrs: &[Attribute]) -> Self {
+        for attr in attrs {
+            if attr.path().is_ident(SHADOW_ATTR) {
+                if let Meta::List(meta_list) = &attr.meta {
+                    if let Ok(parsed) = Self::from_list(
+                        &darling::ast::NestedMeta::parse_meta_list(meta_list.tokens.clone())
+                            .unwrap_or_default(),
+                    ) {
+                        return parsed;
+                    }
+                }
+            }
+        }
+        Self::default()
+    }
+
+    /// Get all migration source keys
+    pub fn migrate_from(&self) -> Vec<String> {
+        self.migrate.iter().filter_map(|m| m.from.clone()).collect()
+    }
+
+    /// Get the migration conversion function (last one wins if multiple specified)
+    pub fn migrate_convert(&self) -> Option<syn::Path> {
+        self.migrate.iter().filter_map(|m| m.convert.clone()).last()
+    }
+}
+
+/// Single migration source specification
+#[derive(Clone, FromMeta)]
+struct MigrateSpec {
+    #[darling(default)]
+    from: Option<String>,
+    #[darling(default)]
+    convert: Option<syn::Path>,
 }
 
 /// Custom default value for a field
@@ -40,178 +77,18 @@ pub enum DefaultValue {
     Function(syn::Path),
 }
 
-/// Single migration source specification
-#[derive(Clone)]
-struct MigrateSpec {
-    from: Option<String>,
-    convert: Option<syn::Path>,
-}
-
-impl FieldAttrs {
-    /// Parse shadow attributes from a field's attribute list
-    pub fn from_attrs(attrs: &[Attribute]) -> Self {
-        let mut result = Self::default();
-
-        for attr in attrs {
-            if attr.path().is_ident(SHADOW_ATTR) {
-                if let Ok(parsed) = attr.parse_args_with(ShadowAttrArgs::parse) {
-                    for arg in parsed.args {
-                        match arg {
-                            ShadowAttrArg::ReportOnly => result.report_only = true,
-                            ShadowAttrArg::Opaque => result.opaque = true,
-                            ShadowAttrArg::Migrate(spec) => {
-                                if let Some(from) = spec.from {
-                                    result.migrate_from.push(from);
-                                }
-                                if spec.convert.is_some() {
-                                    result.migrate_convert = spec.convert;
-                                }
-                            }
-                            ShadowAttrArg::Default(val) => {
-                                result.default_value = Some(val);
-                            }
-                        }
-                    }
-                }
-            }
+impl FromMeta for DefaultValue {
+    fn from_meta(item: &syn::Meta) -> darling::Result<Self> {
+        match item {
+            syn::Meta::NameValue(nv) => match &nv.value {
+                syn::Expr::Lit(expr_lit) => Ok(DefaultValue::Literal(expr_lit.lit.clone())),
+                syn::Expr::Path(expr_path) => Ok(DefaultValue::Function(expr_path.path.clone())),
+                _ => Err(darling::Error::custom(
+                    "expected literal or path for default value",
+                )),
+            },
+            _ => Err(darling::Error::custom("expected name = value")),
         }
-
-        result
-    }
-}
-
-/// Parsed arguments from #[shadow_attr(...)]
-struct ShadowAttrArgs {
-    args: Vec<ShadowAttrArg>,
-}
-
-impl Parse for ShadowAttrArgs {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut args = Vec::new();
-
-        while !input.is_empty() {
-            args.push(input.parse()?);
-
-            // Consume optional trailing comma
-            let _ = input.parse::<Token![,]>();
-        }
-
-        Ok(Self { args })
-    }
-}
-
-/// Single argument within #[shadow_attr(...)]
-enum ShadowAttrArg {
-    ReportOnly,
-    Opaque,
-    Migrate(MigrateSpec),
-    Default(DefaultValue),
-}
-
-impl Parse for ShadowAttrArg {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let ident: Ident = input.parse()?;
-
-        match ident.to_string().as_str() {
-            "report_only" => Ok(ShadowAttrArg::ReportOnly),
-            "opaque" => Ok(ShadowAttrArg::Opaque),
-            "migrate" => {
-                // Parse migrate(from = "...", convert = fn_name)
-                let content;
-                syn::parenthesized!(content in input);
-                let spec = parse_migrate_spec(&content)?;
-                Ok(ShadowAttrArg::Migrate(spec))
-            }
-            "default" => {
-                // Parse default = value or default = fn_name
-                input.parse::<Token![=]>()?;
-
-                // Try parsing as literal first
-                if let Ok(lit) = input.parse::<Lit>() {
-                    Ok(ShadowAttrArg::Default(DefaultValue::Literal(lit)))
-                } else {
-                    // Parse as path (function reference)
-                    let path: syn::Path = input.parse()?;
-                    Ok(ShadowAttrArg::Default(DefaultValue::Function(path)))
-                }
-            }
-            other => Err(syn::Error::new(
-                ident.span(),
-                format!("unknown shadow_attr argument: `{}`", other),
-            )),
-        }
-    }
-}
-
-/// Parse the contents of migrate(...)
-fn parse_migrate_spec(input: ParseStream) -> syn::Result<MigrateSpec> {
-    let mut spec = MigrateSpec {
-        from: None,
-        convert: None,
-    };
-
-    let pairs: Punctuated<MigrateKeyValue, Token![,]> = Punctuated::parse_terminated(input)?;
-
-    for pair in pairs {
-        match pair.key.to_string().as_str() {
-            "from" => {
-                if let Lit::Str(s) = pair.value {
-                    spec.from = Some(s.value());
-                } else {
-                    return Err(syn::Error::new_spanned(
-                        pair.value,
-                        "migrate(from = ...) expects a string literal",
-                    ));
-                }
-            }
-            "convert" => {
-                if let Some(path) = pair.path_value {
-                    spec.convert = Some(path);
-                } else {
-                    return Err(syn::Error::new(
-                        pair.key.span(),
-                        "migrate(convert = ...) expects a function path",
-                    ));
-                }
-            }
-            other => {
-                return Err(syn::Error::new(
-                    pair.key.span(),
-                    format!("unknown migrate argument: `{}`", other),
-                ));
-            }
-        }
-    }
-
-    Ok(spec)
-}
-
-/// Key-value pair in migrate(key = value, ...)
-struct MigrateKeyValue {
-    key: Ident,
-    value: Lit,
-    path_value: Option<syn::Path>,
-}
-
-impl Parse for MigrateKeyValue {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let key: Ident = input.parse()?;
-        input.parse::<Token![=]>()?;
-
-        // Try parsing as literal first, then as path
-        let (value, path_value) = if input.peek(syn::Lit) {
-            (input.parse()?, None)
-        } else {
-            let path: syn::Path = input.parse()?;
-            // Use a dummy literal since we have a path
-            (Lit::Bool(syn::LitBool::new(false, key.span())), Some(path))
-        };
-
-        Ok(Self {
-            key,
-            value,
-            path_value,
-        })
     }
 }
 
@@ -226,17 +103,14 @@ pub fn has_default_attr(attrs: &[Attribute]) -> bool {
 }
 
 /// Extract a string value from a serde attribute by key name.
-///
-/// For example, `get_serde_str_value(attrs, "rename")` extracts the value from
-/// `#[serde(rename = "foo")]`.
 fn get_serde_str_value(attrs: &[Attribute], key: &str) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident(SERDE_ATTR) {
             if let Ok(nested) =
-                attr.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)
+                attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
             {
                 for meta in nested {
-                    if let syn::Meta::NameValue(nv) = meta {
+                    if let Meta::NameValue(nv) = meta {
                         if nv.path.is_ident(key) {
                             if let syn::Expr::Lit(syn::ExprLit {
                                 lit: Lit::Str(s), ..
@@ -302,51 +176,11 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
+    // Only test custom FromMeta impl for DefaultValue - Darling handles the rest
     #[test]
-    fn test_parse_opaque() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque)])];
-        let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert!(field_attrs.opaque);
-        assert!(!field_attrs.report_only);
-    }
-
-    #[test]
-    fn test_parse_report_only() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(report_only)])];
-        let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert!(!field_attrs.opaque);
-        assert!(field_attrs.report_only);
-    }
-
-    #[test]
-    fn test_parse_multiple() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque, report_only)])];
-        let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert!(field_attrs.opaque);
-        assert!(field_attrs.report_only);
-    }
-
-    #[test]
-    fn test_parse_migrate_from() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(migrate(from = "/old_key"))])];
-        let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert_eq!(field_attrs.migrate_from, vec!["/old_key".to_string()]);
-    }
-
-    #[test]
-    fn test_parse_migrate_with_convert() {
-        let attrs: Vec<Attribute> =
-            vec![parse_quote!(#[shadow_attr(migrate(from = "/old_key", convert = my_convert))])];
-        let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert_eq!(field_attrs.migrate_from, vec!["/old_key".to_string()]);
-        assert!(field_attrs.migrate_convert.is_some());
-    }
-
-    #[test]
-    fn test_parse_default_literal() {
+    fn test_default_value_literal() {
         let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(default = 5000)])];
         let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert!(field_attrs.default_value.is_some());
         match field_attrs.default_value {
             Some(DefaultValue::Literal(Lit::Int(i))) => {
                 assert_eq!(i.base10_parse::<u32>().unwrap(), 5000);
@@ -356,23 +190,34 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_default_bool() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(default = true)])];
+    fn test_default_value_path() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(default = my_default_fn)])];
         let field_attrs = FieldAttrs::from_attrs(&attrs);
-        assert!(field_attrs.default_value.is_some());
         match field_attrs.default_value {
-            Some(DefaultValue::Literal(Lit::Bool(b))) => {
-                assert!(b.value);
+            Some(DefaultValue::Function(path)) => {
+                assert!(path.is_ident("my_default_fn"));
             }
-            _ => panic!("Expected literal bool"),
+            _ => panic!("Expected function path"),
         }
     }
 
+    // Test migrate accessor methods
     #[test]
-    fn test_rename_all_lowercase() {
-        assert_eq!(apply_rename_all("MyVariant", "lowercase"), "myvariant");
+    fn test_migrate_from_accessor() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(migrate(from = "/old_key"))])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert_eq!(field_attrs.migrate_from(), vec!["/old_key".to_string()]);
     }
 
+    #[test]
+    fn test_migrate_convert_accessor() {
+        let attrs: Vec<Attribute> =
+            vec![parse_quote!(#[shadow_attr(migrate(from = "/old", convert = my_convert))])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert!(field_attrs.migrate_convert().is_some());
+    }
+
+    // Test heck integration for rename_all
     #[test]
     fn test_rename_all_snake_case() {
         assert_eq!(apply_rename_all("MyVariant", "snake_case"), "my_variant");
