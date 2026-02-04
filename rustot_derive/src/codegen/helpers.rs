@@ -48,29 +48,16 @@ pub fn build_const_max_expr(
 ///
 /// This is a convenience wrapper around `build_const_max_expr` that handles
 /// the common pattern of `const_max(base, max(items...))`.
+///
+/// Equivalent to `build_const_max_expr([base].into_iter().chain(items), fallback)`,
+/// but uses `base` as the fallback when `items` is empty.
 pub fn build_max_key_len_expr(
     items: impl IntoIterator<Item = TokenStream>,
     base: TokenStream,
 ) -> TokenStream {
-    let items: Vec<_> = items.into_iter().collect();
-
-    if items.is_empty() {
-        return base;
-    }
-
-    let mut expr = items[0].clone();
-    for item in &items[1..] {
-        expr = quote! { const_max(#expr, #item) };
-    }
-
-    quote! {
-        {
-            const fn const_max(a: usize, b: usize) -> usize {
-                if a > b { a } else { b }
-            }
-            const_max(#base, #expr)
-        }
-    }
+    // Prepend base to items and compute max of all
+    let all_items = std::iter::once(base.clone()).chain(items);
+    build_const_max_expr(all_items, base)
 }
 
 #[cfg(test)]

@@ -1,4 +1,59 @@
 //! Code generation for enum types (simple and adjacently-tagged)
+//!
+//! This module generates `ShadowNode` and `KVPersist` implementations for enum types.
+//! Enums are routed to different codegen paths based on their serde tagging strategy.
+//!
+//! # Enum Tagging Strategies
+//!
+//! ## Externally Tagged (default)
+//!
+//! ```ignore
+//! enum State { Off, On(Config) }
+//! // JSON: {"Off": null} or {"On": {...config...}}
+//! ```
+//!
+//! This is the serde default. The variant name is the JSON key.
+//!
+//! ## Internally Tagged
+//!
+//! ```ignore
+//! #[serde(tag = "mode")]
+//! enum State { Off, On }
+//! // JSON: {"mode": "Off"} or {"mode": "On"}
+//! ```
+//!
+//! Only works for unit variants or variants with struct data (not newtype/tuple).
+//! The tag field appears inside the object alongside any variant data.
+//!
+//! **Detection**: `tag` attribute present, `content` attribute absent.
+//!
+//! ## Adjacently Tagged
+//!
+//! ```ignore
+//! #[serde(tag = "mode", content = "config")]
+//! enum State { Off, Running(Config) }
+//! // JSON: {"mode": "Off"} or {"mode": "Running", "config": {...}}
+//! ```
+//!
+//! The tag and content are sibling fields. This allows newtype variants.
+//!
+//! **Detection**: Both `tag` and `content` attributes present.
+//! **Codegen**: Routed to [`adjacently_tagged`](super::adjacently_tagged) module.
+//!
+//! # Variant Types
+//!
+//! - **Unit variants**: `Off` - no associated data
+//! - **Newtype variants**: `Running(Config)` - wraps a single type that implements `ShadowNode`
+//! - **Struct variants**: Not currently supported (would need field-level handling)
+//!
+//! For newtype variants, the inner type must implement `ShadowNode`. The Delta/Reported
+//! types delegate to the inner type's Delta/Reported.
+//!
+//! # KV Storage
+//!
+//! Enums use a special `/_variant` key to store the current variant name. Newtype variants
+//! also store their inner data under `/{variant_name}/...` paths, delegating to the inner
+//! type's `KVPersist` implementation.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -11,7 +66,8 @@ use crate::attr::{
 
 use super::adjacently_tagged::generate_adjacently_tagged_enum_code;
 use super::helpers::{build_const_max_expr, build_max_key_len_expr};
-use super::kv_codegen;
+use super::kv_codegen::{self, VARIANT_KEY_PATH};
+use super::CodegenOutput;
 
 /// Generate code for an enum type
 pub(crate) fn generate_enum_code(
@@ -20,7 +76,7 @@ pub(crate) fn generate_enum_code(
     reported_name: &Ident,
     is_adjacently_tagged: bool,
     krate: &TokenStream,
-) -> syn::Result<(TokenStream, TokenStream, TokenStream, TokenStream)> {
+) -> syn::Result<CodegenOutput> {
     if is_adjacently_tagged {
         generate_adjacently_tagged_enum_code(input, delta_name, reported_name, krate)
     } else {
@@ -34,7 +90,7 @@ pub(crate) fn generate_simple_enum_code(
     delta_name: &Ident,
     reported_name: &Ident,
     krate: &TokenStream,
-) -> syn::Result<(TokenStream, TokenStream, TokenStream, TokenStream)> {
+) -> syn::Result<CodegenOutput> {
     let name = &input.ident;
     let vis = &input.vis;
 
@@ -46,7 +102,10 @@ pub(crate) fn generate_simple_enum_code(
     // Get rename_all from enum attributes
     let rename_all = get_serde_rename_all(&input.attrs);
 
-    // Check if internally-tagged (has tag but no content)
+    // Detect internally-tagged enums: #[serde(tag = "...")] without content.
+    // Internally-tagged enums embed the tag inside the object, which only works
+    // for unit variants or variants with struct data (not newtype).
+    // For parse_delta, this affects how we locate the variant name in JSON.
     let (tag_key, content_key) = get_serde_tag_content(&input.attrs);
     let is_internally_tagged = tag_key.is_some() && content_key.is_none();
     let tag_key_str = tag_key.clone().unwrap_or_default();
@@ -76,8 +135,7 @@ pub(crate) fn generate_simple_enum_code(
     let mut max_key_len_items = Vec::new();
     let mut variant_name_arms = Vec::new();
 
-    // "_variant" key path length
-    let variant_key_len = "/_variant".len();
+    let variant_key_len = VARIANT_KEY_PATH.len();
 
     for variant in variants {
         let variant_ident = &variant.ident;
@@ -144,7 +202,7 @@ pub(crate) fn generate_simple_enum_code(
                     Self::Delta::#variant_ident => {
                         let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                         let _ = variant_key.push_str(prefix);
-                        let _ = variant_key.push_str("/_variant");
+                        let _ = variant_key.push_str(#VARIANT_KEY_PATH);
                         kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
                     }
                 });
@@ -249,7 +307,7 @@ pub(crate) fn generate_simple_enum_code(
                 // persist_delta: write _variant key and delegate to inner
                 let variant_key_ident =
                     syn::Ident::new("variant_key", proc_macro2::Span::call_site());
-                let variant_key_code = kv_codegen::build_key(&variant_key_ident, "/_variant");
+                let variant_key_code = kv_codegen::build_key(&variant_key_ident, VARIANT_KEY_PATH);
                 let inner_prefix_ident =
                     syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
                 let inner_prefix_code = kv_codegen::build_key(&inner_prefix_ident, &variant_path);
@@ -648,10 +706,10 @@ pub(crate) fn generate_simple_enum_code(
         }
     };
 
-    Ok((
+    Ok(CodegenOutput {
         delta_type,
         reported_type,
         shadow_node_impl,
         reported_union_fields_impl,
-    ))
+    })
 }

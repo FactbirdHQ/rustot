@@ -1,6 +1,11 @@
 //! Code generation for adjacently-tagged enum types
 //!
-//! For an enum like:
+//! Adjacently-tagged enums use `#[serde(tag = "...", content = "...")]` to serialize
+//! as a struct with separate fields for the discriminant and content. This is used
+//! when variant data needs to be independently updatable from the variant selection.
+//!
+//! # Example
+//!
 //! ```ignore
 //! #[shadow_node]
 //! #[serde(tag = "mode", content = "config", rename_all = "lowercase")]
@@ -11,11 +16,40 @@
 //! }
 //! ```
 //!
-//! Generates:
-//! - `PortModeVariant { Inactive, Sio }` - discriminant enum
-//! - `DeltaPortModeConfig { Sio(DeltaSioConfig) }` - config delta enum (variants with data only)
-//! - `DeltaPortMode { mode: Option<...>, config: Option<...> }` - struct delta
-//! - `ReportedPortMode { Inactive, Sio(...) }` - reported enum with custom Serialize
+//! # Why Adjacently-Tagged Needs Special Handling
+//!
+//! With adjacently-tagged enums, a delta can update:
+//! 1. Just the variant (mode), without changing config
+//! 2. Just the config, without changing variant
+//! 3. Both mode and config together
+//!
+//! This requires a **struct delta** with optional `mode` and `config` fields, rather than
+//! the enum delta used for externally-tagged enums.
+//!
+//! # Generated Types
+//!
+//! For `PortMode` above, this generates:
+//!
+//! - **`PortModeVariant`**: A unit enum for the discriminant (`Inactive`, `Sio`)
+//!   - Used as `Delta.mode: Option<PortModeVariant>`
+//!   - Serializes to the tag field value (e.g., `"inactive"`, `"sio"`)
+//!
+//! - **`DeltaPortModeConfig`**: Config delta enum (only variants with data)
+//!   - `DeltaPortModeConfig::Sio(DeltaSioConfig)`
+//!   - Used as `Delta.config: Option<DeltaPortModeConfig>`
+//!   - Unit variants like `Inactive` have no config to delta
+//!
+//! - **`DeltaPortMode`**: Struct with optional fields
+//!   - `mode: Option<PortModeVariant>` - changes which variant is active
+//!   - `config: Option<DeltaPortModeConfig>` - updates inner data of active variant
+//!
+//! - **`ReportedPortMode`**: Matches the original enum structure
+//!   - Custom `Serialize` impl to output adjacently-tagged format
+//!
+//! # KV Storage
+//!
+//! Uses the same `/_variant` key pattern as simple enums. When the variant has data,
+//! inner fields are stored under `/{variant_name}/...` prefixes.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -26,7 +60,8 @@ use crate::attr::{
 };
 
 use super::helpers::{build_const_max_expr, build_max_key_len_expr};
-use super::kv_codegen;
+use super::kv_codegen::{self, VARIANT_KEY_PATH};
+use super::CodegenOutput;
 
 /// Generate code for an adjacently-tagged enum type
 pub(crate) fn generate_adjacently_tagged_enum_code(
@@ -34,7 +69,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     delta_name: &Ident,
     reported_name: &Ident,
     krate: &TokenStream,
-) -> syn::Result<(TokenStream, TokenStream, TokenStream, TokenStream)> {
+) -> syn::Result<CodegenOutput> {
     let name = &input.ident;
     let vis = &input.vis;
 
@@ -110,7 +145,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     let mut max_key_len_items = Vec::new();
 
     // "_variant" key path length
-    let variant_key_len = "/_variant".len();
+    let variant_key_len = VARIANT_KEY_PATH.len();
 
     for variant in variants {
         let variant_ident = &variant.ident;
@@ -268,12 +303,14 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 });
 
                 // persist_delta config arm: delegate to inner
-                persist_delta_config_arms.push(kv_codegen::enum_variant_persist_delta_inner_arm(
-                    krate,
-                    &variant_path,
-                    quote! { #delta_config_name::#variant_ident },
-                    inner_ty,
-                ));
+                let prefix_ident = syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
+                let prefix_code = kv_codegen::build_key(&prefix_ident, &variant_path);
+                persist_delta_config_arms.push(quote! {
+                    #delta_config_name::#variant_ident(ref inner_delta) => {
+                        #prefix_code
+                        <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &#prefix_ident).await?;
+                    }
+                });
 
                 // collect_valid_keys: delegate to inner (all variants, not just active)
                 collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
@@ -752,7 +789,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     // Build variant key path
                     let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
                     let _ = variant_key.push_str(prefix);
-                    let _ = variant_key.push_str("/_variant");
+                    let _ = variant_key.push_str(#VARIANT_KEY_PATH);
 
                     // Handle mode (variant switch) - only write if mode is Some
                     if let Some(ref new_mode) = delta.mode {
@@ -799,10 +836,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         }
     };
 
-    Ok((
+    Ok(CodegenOutput {
         delta_type,
         reported_type,
         shadow_node_impl,
         reported_union_fields_impl,
-    ))
+    })
 }
