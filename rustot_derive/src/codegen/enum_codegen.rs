@@ -4,7 +4,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident};
 
-use crate::attr::{apply_rename_all, get_serde_rename, get_serde_rename_all, has_default_attr};
+use crate::attr::{
+    apply_rename_all, get_serde_rename, get_serde_rename_all, get_serde_tag_content, has_default_attr,
+};
 
 use super::adjacently_tagged::generate_adjacently_tagged_enum_code;
 
@@ -41,8 +43,17 @@ pub(crate) fn generate_simple_enum_code(
     // Get rename_all from enum attributes
     let rename_all = get_serde_rename_all(&input.attrs);
 
+    // Check if internally-tagged (has tag but no content)
+    let (tag_key, content_key) = get_serde_tag_content(&input.attrs);
+    let is_internally_tagged = tag_key.is_some() && content_key.is_none();
+    let tag_key_str = tag_key.clone().unwrap_or_default();
+
     // Find default variant
     let default_variant = variants.iter().find(|v| has_default_attr(&v.attrs));
+
+    // Track if we have any newtype variants (requires special parse_delta)
+    let mut has_newtype_variants = false;
+    let mut parse_delta_arms: Vec<TokenStream> = Vec::new();
 
     // Collect variant info
     let mut delta_variants = Vec::new();
@@ -133,6 +144,22 @@ pub(crate) fn generate_simple_enum_code(
                         kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
                     }
                 });
+
+                // parse_delta arm for unit variant
+                // Different handling for internally-tagged vs externally-tagged enums
+                if is_internally_tagged {
+                    // Internally-tagged: match on tag value
+                    parse_delta_arms.push(quote! {
+                        #serde_name => Ok(Self::Delta::#variant_ident),
+                    });
+                } else {
+                    // Externally-tagged: check if variant name is a key
+                    parse_delta_arms.push(quote! {
+                        if scanner.field_bytes(#serde_name).is_some() {
+                            return Ok(Self::Delta::#variant_ident);
+                        }
+                    });
+                }
             }
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 // Newtype variant - delegate to inner ShadowNode
@@ -243,6 +270,53 @@ pub(crate) fn generate_simple_enum_code(
                         <#inner_ty as #krate::shadows::KVPersist>::collect_valid_prefixes::<KEY_LEN>(&inner_prefix, prefixes);
                     }
                 });
+
+                // Mark that we have newtype variants
+                has_newtype_variants = true;
+
+                // parse_delta arm for newtype variant - delegate to inner type's parse_delta
+                // Different handling for internally-tagged vs externally-tagged enums
+                if is_internally_tagged {
+                    // Internally-tagged: tag field contains variant name, rest of JSON is variant data
+                    parse_delta_arms.push(quote! {
+                        #serde_name => {
+                            // Build nested path for the inner type
+                            let mut nested_path: ::heapless::String<128> = ::heapless::String::new();
+                            let _ = nested_path.push_str(path);
+                            if !path.is_empty() {
+                                let _ = nested_path.push('/');
+                            }
+                            let _ = nested_path.push_str(#serde_name);
+                            // Parse the whole JSON into the inner delta type
+                            // The inner type's parse_delta will ignore the tag field
+                            let inner_delta = <#inner_ty as #krate::shadows::ShadowNode>::parse_delta(
+                                json,
+                                &nested_path,
+                                resolver
+                            ).await?;
+                            Ok(Self::Delta::#variant_ident(inner_delta))
+                        }
+                    });
+                } else {
+                    // Externally-tagged: variant name is the object key, value is variant data
+                    parse_delta_arms.push(quote! {
+                        if let Some(content_bytes) = scanner.field_bytes(#serde_name) {
+                            // Build nested path for the inner type
+                            let mut nested_path: ::heapless::String<128> = ::heapless::String::new();
+                            let _ = nested_path.push_str(path);
+                            if !path.is_empty() {
+                                let _ = nested_path.push('/');
+                            }
+                            let _ = nested_path.push_str(#serde_name);
+                            let inner_delta = <#inner_ty as #krate::shadows::ShadowNode>::parse_delta(
+                                content_bytes,
+                                &nested_path,
+                                resolver
+                            ).await?;
+                            return Ok(Self::Delta::#variant_ident(inner_delta));
+                        }
+                    });
+                }
             }
             _ => {
                 return Err(syn::Error::new_spanned(
@@ -354,19 +428,39 @@ pub(crate) fn generate_simple_enum_code(
         TokenStream::new()
     };
 
-    // Generate Delta type
-    let delta_type = quote! {
-        #[derive(
-            ::serde::Serialize,
-            ::serde::Deserialize,
-            Clone,
-        )]
-        #(#serde_attrs)*
-        #vis enum #delta_name {
-            #(#delta_variants)*
-        }
+    // Generate Delta type - only include Deserialize when we can use serde directly
+    // (i.e., when there are no newtype variants). Struct deltas no longer have Deserialize,
+    // so any enum with newtype variants needs custom parsing.
+    let needs_custom_parsing = has_newtype_variants;
+    let delta_type = if needs_custom_parsing {
+        // No Deserialize - we use custom parse_delta
+        quote! {
+            #[derive(
+                ::serde::Serialize,
+                Clone,
+            )]
+            #(#serde_attrs)*
+            #vis enum #delta_name {
+                #(#delta_variants)*
+            }
 
-        #delta_default_impl
+            #delta_default_impl
+        }
+    } else {
+        // Can use serde directly
+        quote! {
+            #[derive(
+                ::serde::Serialize,
+                ::serde::Deserialize,
+                Clone,
+            )]
+            #(#serde_attrs)*
+            #vis enum #delta_name {
+                #(#delta_variants)*
+            }
+
+            #delta_default_impl
+        }
     };
 
     // Generate Reported type
@@ -380,6 +474,75 @@ pub(crate) fn generate_simple_enum_code(
         #reported_default_impl
     };
 
+    // Generate variant_at_path match arms
+    let variant_at_path_arms: Vec<TokenStream> = variant_names
+        .iter()
+        .enumerate()
+        .map(|(i, serde_name)| {
+            let variant_ident = &variants.iter().nth(i).unwrap().ident;
+            let has_data = !matches!(&variants.iter().nth(i).unwrap().fields, Fields::Unit);
+            if has_data {
+                quote! {
+                    Self::#variant_ident(_) => {
+                        let mut s = ::heapless::String::<32>::new();
+                        let _ = s.push_str(#serde_name);
+                        Some(s)
+                    }
+                }
+            } else {
+                quote! {
+                    Self::#variant_ident => {
+                        let mut s = ::heapless::String::<32>::new();
+                        let _ = s.push_str(#serde_name);
+                        Some(s)
+                    }
+                }
+            }
+        })
+        .collect();
+
+    // Generate parse_delta body based on whether we need custom parsing
+    let variant_name_strs: Vec<_> = variant_names.iter().map(|s| s.as_str()).collect();
+    let parse_delta_body = if needs_custom_parsing {
+        if is_internally_tagged {
+            // Internally-tagged enum: tag field contains variant name
+            // JSON: { "kind": "Wpa", "ssid": "...", "password": "..." }
+            quote! {
+                // Extract the tag field using FieldScanner
+                let scanner = #krate::shadows::tag_scanner::FieldScanner::scan(json, &[#tag_key_str])
+                    .map_err(#krate::shadows::ParseError::Scan)?;
+
+                let tag_str = scanner.field_str(#tag_key_str)
+                    .ok_or(#krate::shadows::ParseError::MissingVariant)?;
+
+                match tag_str {
+                    #(#parse_delta_arms)*
+                    _ => Err(#krate::shadows::ParseError::UnknownVariant),
+                }
+            }
+        } else {
+            // Externally-tagged enum: variant name is the object key
+            // JSON: { "Wpa": { "ssid": "...", "password": "..." } }
+            quote! {
+                // Scan for variant names as keys
+                let scanner = #krate::shadows::tag_scanner::FieldScanner::scan(json, &[#(#variant_name_strs),*])
+                    .map_err(#krate::shadows::ParseError::Scan)?;
+
+                // Try each variant (arms include the if-let checks)
+                #(#parse_delta_arms)*
+
+                Err(#krate::shadows::ParseError::MissingVariant)
+            }
+        }
+    } else {
+        // Simple enums (unit variants only) use serde directly
+        quote! {
+            ::serde_json_core::from_slice(json)
+                .map(|(v, _)| v)
+                .map_err(|_| #krate::shadows::ParseError::Deserialize)
+        }
+    };
+
     // Generate ShadowNode impl (always available)
     let shadow_node_impl = quote! {
         impl #krate::shadows::ShadowNode for #name {
@@ -388,9 +551,29 @@ pub(crate) fn generate_simple_enum_code(
 
             const SCHEMA_HASH: u64 = #schema_hash_const;
 
+            fn parse_delta<R: #krate::shadows::VariantResolver>(
+                json: &[u8],
+                path: &str,
+                resolver: &R,
+            ) -> impl ::core::future::Future<Output = Result<Self::Delta, #krate::shadows::ParseError>> {
+                async move {
+                    #parse_delta_body
+                }
+            }
+
             fn apply_delta(&mut self, delta: &Self::Delta) {
                 match delta {
                     #(#apply_delta_arms)*
+                }
+            }
+
+            fn variant_at_path(&self, path: &str) -> Option<::heapless::String<32>> {
+                if path.is_empty() {
+                    match self {
+                        #(#variant_at_path_arms)*
+                    }
+                } else {
+                    None
                 }
             }
 

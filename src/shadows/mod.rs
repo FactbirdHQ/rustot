@@ -1,5 +1,6 @@
 pub mod data_types;
 pub mod error;
+pub mod tag_scanner;
 pub mod topics;
 
 // Shadow storage modules
@@ -61,14 +62,19 @@ impl LoadFieldResult {
 // Re-export hash functions (for derive macro use)
 pub use hash::{fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64, FNV1A_INIT};
 
+// Re-export tag scanner for adjacently-tagged enum deserialization
+pub use tag_scanner::{FieldScanner, ScanError, TaggedJsonScan};
+
 // The impl_opaque! macro is exported at crate root via #[macro_export]
 
 // Re-export new error types
 pub use error::KvError;
 
 pub use data_types::Patch;
-pub use error::Error;
+pub use error::{Error, ParseError};
 use serde::Serialize;
+
+use core::future::Future;
 
 // =============================================================================
 // KV-based Shadow Storage Traits
@@ -127,6 +133,46 @@ pub fn serialize_null_fields<S: serde::ser::SerializeMap>(
     Ok(())
 }
 
+// =============================================================================
+// Variant Resolution for Delta Parsing
+// =============================================================================
+
+/// Resolves variant names during delta parsing.
+///
+/// When parsing an adjacently-tagged enum delta where the tag field is missing
+/// from the JSON, the resolver provides the current variant name as fallback.
+/// This allows content-only updates to be applied to the existing variant.
+///
+/// ## Implementations
+///
+/// - **InMemory**: Uses `ShadowNode::variant_at_path()` on current state
+/// - **KV Store**: Fetches `/_variant` key from storage
+///
+/// ## Example
+///
+/// ```ignore
+/// // JSON delta without tag: {"config": {"timeout": 30}}
+/// // Resolver provides current variant: "sio"
+/// // Result: Update SIO variant's config.timeout to 30
+/// ```
+pub trait VariantResolver {
+    /// Resolve the current variant name at the given path.
+    ///
+    /// Returns `None` if no variant is stored (first initialization).
+    fn resolve(&self, path: &str) -> impl Future<Output = Option<heapless::String<32>>>;
+}
+
+/// Null resolver that never provides fallback variants.
+///
+/// Used when no fallback is available (e.g., fresh state with no history).
+pub struct NullResolver;
+
+impl VariantResolver for NullResolver {
+    fn resolve(&self, _path: &str) -> impl Future<Output = Option<heapless::String<32>>> {
+        core::future::ready(None)
+    }
+}
+
 /// Core shadow type trait - clean, no KV awareness.
 ///
 /// Implemented by both top-level shadow structs (`#[shadow_root]`) and nested
@@ -159,7 +205,6 @@ pub trait ShadowNode: Default + Clone + Sized {
     ///
     /// - `Default`: Create empty delta for `update_desired()` pattern
     /// - `Serialize`: Send delta to cloud via MQTT (device→cloud desired updates)
-    /// - `DeserializeOwned`: Receive delta from cloud via MQTT (cloud→device)
     ///
     /// ## Delta Type Shapes
     ///
@@ -176,18 +221,17 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// ```
     ///
     /// For **adjacently-tagged enums** (`#[serde(tag="...", content="...")]`),
-    /// the Delta is a struct with optional tag and content fields to support
-    /// partial updates:
+    /// the Delta is a proper enum representing the variant change:
     /// ```ignore
     /// #[serde(tag = "mode", content = "config")]
     /// enum PortMode { Inactive, Sio(SioConfig) }
-    /// // Delta - struct shape for partial updates:
-    /// struct DeltaPortMode {
-    ///     mode: Option<PortModeVariant>,
-    ///     config: Option<DeltaPortModeConfig>,
+    /// // Delta - enum shape:
+    /// enum DeltaPortMode {
+    ///     Inactive,
+    ///     Sio(DeltaSioConfig),
     /// }
     /// ```
-    type Delta: Default + Serialize + serde::de::DeserializeOwned;
+    type Delta: Default + Serialize;
 
     /// Reported type for serialization to cloud.
     ///
@@ -215,6 +259,20 @@ pub trait ShadowNode: Default + Clone + Sized {
     // Core Methods
     // =========================================================================
 
+    /// Parse JSON delta using resolver for missing variants.
+    ///
+    /// Uses `FieldScanner` to extract fields and recursively calls `parse_delta`
+    /// on nested types. For adjacently-tagged enums, the resolver provides
+    /// variant fallback when the tag field is missing.
+    ///
+    /// The `path` parameter is the current path in the shadow tree (e.g., "config/port").
+    /// It's used to construct full paths when calling the resolver for nested enums.
+    fn parse_delta<R: VariantResolver>(
+        json: &[u8],
+        path: &str,
+        resolver: &R,
+    ) -> impl Future<Output = Result<Self::Delta, ParseError>>;
+
     /// Apply delta to state (pure mutation, no storage, no serialization).
     ///
     /// This method updates self with delta values. It does NOT persist
@@ -226,6 +284,17 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// delta after applying, which is needed for patterns like `wait_delta()`
     /// that return the delta to the caller.
     fn apply_delta(&mut self, delta: &Self::Delta);
+
+    /// Get the variant name at a given path.
+    ///
+    /// Returns `Some(variant_name)` if the path points to an adjacently-tagged enum.
+    /// Returns `None` for other types or if path doesn't match.
+    ///
+    /// This is used by the InMemory resolver to provide variant fallback
+    /// when delta JSON is missing the tag field.
+    fn variant_at_path(&self, _path: &str) -> Option<heapless::String<32>> {
+        None
+    }
 
     /// Convert this state into its reported representation.
     fn into_reported(self) -> Self::Reported;

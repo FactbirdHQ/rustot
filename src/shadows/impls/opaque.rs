@@ -38,6 +38,18 @@ macro_rules! impl_opaque {
 
             const SCHEMA_HASH: u64 = $crate::shadows::fnv1a_hash(stringify!($ty).as_bytes());
 
+            fn parse_delta<R: $crate::shadows::VariantResolver>(
+                json: &[u8],
+                _path: &str,
+                _resolver: &R,
+            ) -> impl ::core::future::Future<Output = Result<Self::Delta, $crate::shadows::ParseError>> {
+                async move {
+                    ::serde_json_core::from_slice(json)
+                        .map(|(v, _)| v)
+                        .map_err(|_| $crate::shadows::ParseError::Deserialize)
+                }
+            }
+
             fn apply_delta(&mut self, delta: &Self::Delta) {
                 *self = delta.clone();
             }
@@ -153,6 +165,18 @@ impl crate::shadows::ShadowNode for core::time::Duration {
     type Reported = core::time::Duration;
 
     const SCHEMA_HASH: u64 = crate::shadows::fnv1a_hash(b"core::time::Duration");
+
+    fn parse_delta<R: crate::shadows::VariantResolver>(
+        json: &[u8],
+        _path: &str,
+        _resolver: &R,
+    ) -> impl ::core::future::Future<Output = Result<Self::Delta, crate::shadows::ParseError>> {
+        async move {
+            ::serde_json_core::from_slice(json)
+                .map(|(v, _)| v)
+                .map_err(|_| crate::shadows::ParseError::Deserialize)
+        }
+    }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
         *self = *delta;

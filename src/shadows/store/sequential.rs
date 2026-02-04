@@ -12,11 +12,11 @@ use heapless::String;
 use sequential_storage::cache::{KeyCacheImpl, NoCache};
 use sequential_storage::map::{MapConfig, MapStorage};
 
-use super::{KVStore, StateStore};
+use super::{ApplyJsonError, KVStore, StateStore};
 use crate::shadows::commit::CommitStats;
 use crate::shadows::error::KvError;
 use crate::shadows::migration::LoadResult;
-use crate::shadows::KVPersist;
+use crate::shadows::{KVPersist, VariantResolver};
 
 /// Suffix for schema hash keys.
 const SCHEMA_HASH_SUFFIX: &str = "/__schema_hash__";
@@ -405,6 +405,74 @@ impl<
             orphans_removed,
             schema_hash_updated: true,
         })
+    }
+
+    fn resolver<'a>(&'a self, prefix: &'a str) -> impl VariantResolver + 'a {
+        KvResolver::<Self, MAX_KEY_LEN> {
+            kv: self,
+            prefix,
+        }
+    }
+
+    async fn apply_json_delta(
+        &self,
+        prefix: &str,
+        json: &[u8],
+    ) -> Result<St::Delta, ApplyJsonError<Self::Error>> {
+        let resolver =
+            <Self as StateStore<St>>::resolver(self, prefix);
+        let delta = St::parse_delta(json, "", &resolver)
+            .await
+            .map_err(ApplyJsonError::Parse)?;
+
+        // Persist delta directly (avoids method dispatch ambiguity)
+        St::persist_delta::<Self, MAX_KEY_LEN>(&delta, self, prefix)
+            .await
+            .map_err(|e| match e {
+                KvError::Kv(kv_err) => ApplyJsonError::Store(kv_err),
+                _ => ApplyJsonError::Store(SequentialKVStoreError::KeyTooLong),
+            })?;
+
+        Ok(delta)
+    }
+}
+
+/// Resolver for KV stores that fetches `_variant` keys on demand.
+struct KvResolver<'a, K, const MAX_KEY_LEN: usize> {
+    kv: &'a K,
+    prefix: &'a str,
+}
+
+impl<K: KVStore, const MAX_KEY_LEN: usize> VariantResolver for KvResolver<'_, K, MAX_KEY_LEN> {
+    async fn resolve(&self, path: &str) -> Option<heapless::String<32>> {
+        // Build the variant key: prefix/path/_variant
+        // KV keys always have format {prefix}/{field_path} where field_path starts with /
+        // So the full key is {prefix}/{path}/_variant (slash always present between components)
+        let mut key: heapless::String<MAX_KEY_LEN> = heapless::String::new();
+        if key.push_str(self.prefix).is_err() {
+            return None;
+        }
+        if key.push('/').is_err() {
+            return None;
+        }
+        if key.push_str(path).is_err() {
+            return None;
+        }
+        if key.push_str("/_variant").is_err() {
+            return None;
+        }
+
+        // Fetch the variant name from storage
+        let mut buf = [0u8; 64];
+        match self.kv.fetch(&key, &mut buf).await {
+            Ok(Some(bytes)) => {
+                // Try to parse as UTF-8 string
+                core::str::from_utf8(bytes)
+                    .ok()
+                    .and_then(|s| heapless::String::try_from(s).ok())
+            }
+            _ => None,
+        }
     }
 }
 

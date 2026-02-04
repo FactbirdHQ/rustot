@@ -82,6 +82,46 @@ pub struct EnumFieldMeta {
     pub variants: &'static [&'static str],
 }
 
+/// Error type for delta parsing operations.
+///
+/// Returned by `ShadowNode::parse_delta()` when JSON parsing fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ParseError {
+    /// JSON scanning failed (malformed JSON)
+    Scan(super::tag_scanner::ScanError),
+
+    /// Serde deserialization failed
+    Deserialize,
+
+    /// Unknown enum variant name
+    UnknownVariant,
+
+    /// Missing variant tag and no fallback available
+    MissingVariant,
+
+    /// Content present but wrong type for variant
+    ContentTypeMismatch,
+}
+
+impl From<super::tag_scanner::ScanError> for ParseError {
+    fn from(e: super::tag_scanner::ScanError) -> Self {
+        ParseError::Scan(e)
+    }
+}
+
+impl core::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ParseError::Scan(e) => write!(f, "JSON scan error: {}", e),
+            ParseError::Deserialize => write!(f, "deserialization failed"),
+            ParseError::UnknownVariant => write!(f, "unknown enum variant"),
+            ParseError::MissingVariant => write!(f, "missing variant tag with no fallback"),
+            ParseError::ContentTypeMismatch => write!(f, "content type mismatch for variant"),
+        }
+    }
+}
+
 impl From<ShadowError> for Error {
     fn from(e: ShadowError) -> Self {
         Self::ShadowError(e)
