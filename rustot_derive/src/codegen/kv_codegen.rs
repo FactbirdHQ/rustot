@@ -362,3 +362,72 @@ pub fn nested_collect_prefixes(
         }
     }
 }
+
+// =============================================================================
+// Enum variant KV helpers
+// =============================================================================
+
+/// Generates a match arm for loading a newtype enum variant from KV storage.
+///
+/// This handles the pattern of:
+/// 1. Setting self to the variant with a default inner value
+/// 2. Delegating to the inner type's load_from_kv
+pub fn enum_variant_load_arm(
+    krate: &TokenStream,
+    variant_path: &str,
+    serde_name: &str,
+    variant_ident: &syn::Ident,
+    inner_ty: &syn::Type,
+) -> TokenStream {
+    let prefix_ident = syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
+    let prefix_code = build_key(&prefix_ident, variant_path);
+
+    quote! {
+        #serde_name => {
+            *self = Self::#variant_ident(Default::default());
+            if let Self::#variant_ident(ref mut inner) = self {
+                #prefix_code
+                let inner_result = <#inner_ty as #krate::shadows::KVPersist>::load_from_kv::<K, KEY_LEN>(inner, &#prefix_ident, kv).await?;
+                result.merge(inner_result);
+            }
+        }
+    }
+}
+
+/// Generates a match arm for persisting a newtype enum variant to KV storage.
+pub fn enum_variant_persist_arm(
+    krate: &TokenStream,
+    variant_path: &str,
+    variant_ident: &syn::Ident,
+    inner_ty: &syn::Type,
+) -> TokenStream {
+    let prefix_ident = syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
+    let prefix_code = build_key(&prefix_ident, variant_path);
+
+    quote! {
+        Self::#variant_ident(ref inner) => {
+            #prefix_code
+            <#inner_ty as #krate::shadows::KVPersist>::persist_to_kv::<K, KEY_LEN>(inner, &#prefix_ident, kv).await?;
+        }
+    }
+}
+
+/// Generates a match arm for persisting a newtype delta variant's inner data.
+///
+/// This is used for the config/inner data delegation, not the variant key write.
+pub fn enum_variant_persist_delta_inner_arm(
+    krate: &TokenStream,
+    variant_path: &str,
+    delta_variant_path: TokenStream,
+    inner_ty: &syn::Type,
+) -> TokenStream {
+    let prefix_ident = syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
+    let prefix_code = build_key(&prefix_ident, variant_path);
+
+    quote! {
+        #delta_variant_path(ref inner_delta) => {
+            #prefix_code
+            <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &#prefix_ident).await?;
+        }
+    }
+}
