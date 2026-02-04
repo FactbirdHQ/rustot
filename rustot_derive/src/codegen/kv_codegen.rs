@@ -2,9 +2,23 @@
 //!
 //! This module provides reusable code generation patterns for KVPersist trait implementations.
 //! These helpers eliminate duplication between struct, enum, and adjacently-tagged enum codegen.
+//!
+//! # std vs no_std
+//!
+//! The generated code uses `#[cfg(feature = "std")]` to switch between:
+//! - **std**: Uses allocating functions (`fetch_to_vec`, `to_allocvec`)
+//! - **no_std**: Uses fixed-size buffers based on `MAX_VALUE_LEN`
+//!
+//! This module provides internal helpers to generate these conditional blocks consistently.
 
 use proc_macro2::TokenStream;
 use quote::quote;
+
+/// The KV key path suffix used to store enum variant discriminants.
+///
+/// For an enum stored under prefix `/foo`, the variant name is stored at `/foo/_variant`.
+/// This allows loading/persisting the variant independently of the variant's inner data.
+pub const VARIANT_KEY_PATH: &str = "/_variant";
 
 /// Generates code to build a heapless::String key from a prefix and path.
 ///
@@ -22,6 +36,68 @@ pub fn build_key(var_name: &syn::Ident, path: &str) -> TokenStream {
     }
 }
 
+// =============================================================================
+// Internal helpers for std/no_std conditional code generation
+// =============================================================================
+
+/// Generates cfg-conditional code for fetching from KV and deserializing with postcard.
+///
+/// Returns (data_binding, fetch_code) where:
+/// - `data_binding` is the name to use for the deserialized data in the on_some block
+/// - `fetch_code` wraps on_some/on_none in cfg-conditional fetch logic
+fn kv_fetch_and_handle(
+    krate: &TokenStream,
+    key_expr: &TokenStream,
+    on_some: impl Fn(TokenStream) -> TokenStream,
+    on_none: TokenStream,
+) -> TokenStream {
+    let on_some_nostd = on_some(quote! { data });
+    let on_some_std = on_some(quote! { &data });
+
+    quote! {
+        #[cfg(not(feature = "std"))]
+        {
+            let mut __fetch_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
+            if let Some(data) = kv.fetch(#key_expr, &mut __fetch_buf).await.map_err(#krate::shadows::KvError::Kv)? {
+                #on_some_nostd
+            } else {
+                #on_none
+            }
+        }
+        #[cfg(feature = "std")]
+        {
+            if let Some(data) = kv.fetch_to_vec(#key_expr).await.map_err(#krate::shadows::KvError::Kv)? {
+                #on_some_std
+            } else {
+                #on_none
+            }
+        }
+    }
+}
+
+/// Generates cfg-conditional code for serializing with postcard and storing to KV.
+fn kv_serialize_and_store(
+    krate: &TokenStream,
+    key_expr: &TokenStream,
+    value_expr: &TokenStream,
+) -> TokenStream {
+    quote! {
+        #[cfg(not(feature = "std"))]
+        {
+            let mut __ser_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
+            let bytes = ::postcard::to_slice(#value_expr, &mut __ser_buf)
+                .map_err(|_| #krate::shadows::KvError::Serialization)?;
+            kv.store(#key_expr, bytes).await.map_err(#krate::shadows::KvError::Kv)?;
+        }
+        #[cfg(feature = "std")]
+        {
+            let bytes = ::postcard::to_allocvec(#value_expr)
+                .map_err(|_| #krate::shadows::KvError::Serialization)?;
+            kv.store(#key_expr, &bytes).await.map_err(#krate::shadows::KvError::Kv)?;
+        }
+    }
+}
+
 /// Generates code for loading a leaf field from KV storage.
 ///
 /// Handles both std and no_std environments with appropriate buffer management.
@@ -33,29 +109,24 @@ pub fn leaf_load(
 ) -> TokenStream {
     let key_ident = syn::Ident::new("full_key", proc_macro2::Span::call_site());
     let key_code = build_key(&key_ident, field_path);
+    let key_expr = quote! { &#key_ident };
+
+    let fetch_code = kv_fetch_and_handle(
+        krate,
+        &key_expr,
+        |data_ref| {
+            quote! {
+                #field_access = ::postcard::from_bytes(#data_ref).map_err(|_| #krate::shadows::KvError::Serialization)?;
+                result.loaded += 1;
+            }
+        },
+        on_missing,
+    );
 
     quote! {
         {
             #key_code
-            #[cfg(not(feature = "std"))]
-            {
-                let mut __fetch_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                if let Some(data) = kv.fetch(&#key_ident, &mut __fetch_buf).await.map_err(#krate::shadows::KvError::Kv)? {
-                    #field_access = ::postcard::from_bytes(data).map_err(|_| #krate::shadows::KvError::Serialization)?;
-                    result.loaded += 1;
-                } else {
-                    #on_missing
-                }
-            }
-            #[cfg(feature = "std")]
-            {
-                if let Some(data) = kv.fetch_to_vec(&#key_ident).await.map_err(#krate::shadows::KvError::Kv)? {
-                    #field_access = ::postcard::from_bytes(&data).map_err(|_| #krate::shadows::KvError::Serialization)?;
-                    result.loaded += 1;
-                } else {
-                    #on_missing
-                }
-            }
+            #fetch_code
         }
     }
 }
@@ -73,43 +144,33 @@ pub fn leaf_load_with_migration(
 ) -> TokenStream {
     let key_ident = syn::Ident::new("full_key", proc_macro2::Span::call_site());
     let key_code = build_key(&key_ident, field_path);
+    let key_expr = quote! { &#key_ident };
+
+    // Clone migration_code since it's used in both branches
+    let migration_code_clone = migration_code.clone();
+    let fetch_code = kv_fetch_and_handle(
+        krate,
+        &key_expr,
+        |data_ref| {
+            quote! {
+                match ::postcard::from_bytes(#data_ref) {
+                    Ok(val) => {
+                        #field_access = val;
+                        result.loaded += 1;
+                    }
+                    Err(_) => {
+                        #migration_code_clone
+                    }
+                }
+            }
+        },
+        migration_code,
+    );
 
     quote! {
         {
             #key_code
-            #[cfg(not(feature = "std"))]
-            {
-                let mut __fetch_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                if let Some(data) = kv.fetch(&#key_ident, &mut __fetch_buf).await.map_err(#krate::shadows::KvError::Kv)? {
-                    match ::postcard::from_bytes(data) {
-                        Ok(val) => {
-                            #field_access = val;
-                            result.loaded += 1;
-                        }
-                        Err(_) => {
-                            #migration_code
-                        }
-                    }
-                } else {
-                    #migration_code
-                }
-            }
-            #[cfg(feature = "std")]
-            {
-                if let Some(data) = kv.fetch_to_vec(&#key_ident).await.map_err(#krate::shadows::KvError::Kv)? {
-                    match ::postcard::from_bytes(&data) {
-                        Ok(val) => {
-                            #field_access = val;
-                            result.loaded += 1;
-                        }
-                        Err(_) => {
-                            #migration_code
-                        }
-                    }
-                } else {
-                    #migration_code
-                }
-            }
+            #fetch_code
         }
     }
 }
@@ -196,23 +257,14 @@ pub fn migration_fallback(
 pub fn leaf_persist(krate: &TokenStream, field_path: &str, value_expr: TokenStream) -> TokenStream {
     let key_ident = syn::Ident::new("full_key", proc_macro2::Span::call_site());
     let key_code = build_key(&key_ident, field_path);
+    let key_expr = quote! { &#key_ident };
+    let value_ref = quote! { &#value_expr };
+    let store_code = kv_serialize_and_store(krate, &key_expr, &value_ref);
 
     quote! {
         {
             #key_code
-            #[cfg(not(feature = "std"))]
-            {
-                let mut __ser_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                let bytes = ::postcard::to_slice(&#value_expr, &mut __ser_buf)
-                    .map_err(|_| #krate::shadows::KvError::Serialization)?;
-                kv.store(&#key_ident, bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-            }
-            #[cfg(feature = "std")]
-            {
-                let bytes = ::postcard::to_allocvec(&#value_expr)
-                    .map_err(|_| #krate::shadows::KvError::Serialization)?;
-                kv.store(&#key_ident, &bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-            }
+            #store_code
         }
     }
 }
@@ -225,23 +277,14 @@ pub fn leaf_persist_delta(
 ) -> TokenStream {
     let key_ident = syn::Ident::new("full_key", proc_macro2::Span::call_site());
     let key_code = build_key(&key_ident, field_path);
+    let key_expr = quote! { &#key_ident };
+    let value_ref = quote! { val };
+    let store_code = kv_serialize_and_store(krate, &key_expr, &value_ref);
 
     quote! {
         if let Some(ref val) = delta.#field_name {
             #key_code
-            #[cfg(not(feature = "std"))]
-            {
-                let mut __ser_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                let bytes = ::postcard::to_slice(val, &mut __ser_buf)
-                    .map_err(|_| #krate::shadows::KvError::Serialization)?;
-                kv.store(&#key_ident, bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-            }
-            #[cfg(feature = "std")]
-            {
-                let bytes = ::postcard::to_allocvec(val)
-                    .map_err(|_| #krate::shadows::KvError::Serialization)?;
-                kv.store(&#key_ident, &bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-            }
+            #store_code
         }
     }
 }
@@ -416,26 +459,6 @@ pub fn enum_variant_persist_arm(
     }
 }
 
-/// Generates a match arm for persisting a newtype delta variant's inner data.
-///
-/// This is used for the config/inner data delegation, not the variant key write.
-pub fn enum_variant_persist_delta_inner_arm(
-    krate: &TokenStream,
-    variant_path: &str,
-    delta_variant_path: TokenStream,
-    inner_ty: &syn::Type,
-) -> TokenStream {
-    let prefix_ident = syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
-    let prefix_code = build_key(&prefix_ident, variant_path);
-
-    quote! {
-        #delta_variant_path(ref inner_delta) => {
-            #prefix_code
-            <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &#prefix_ident).await?;
-        }
-    }
-}
-
 // =============================================================================
 // Enum KVPersist method body generators
 // =============================================================================
@@ -448,7 +471,7 @@ pub fn enum_load_from_kv_body(
     load_variant_arms: &[TokenStream],
 ) -> TokenStream {
     let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
-    let variant_key_code = build_key(&variant_key_ident, "/_variant");
+    let variant_key_code = build_key(&variant_key_ident, VARIANT_KEY_PATH);
 
     quote! {
         async move {
@@ -485,7 +508,7 @@ pub fn enum_persist_to_kv_body(
     persist_variant_arms: &[TokenStream],
 ) -> TokenStream {
     let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
-    let variant_key_code = build_key(&variant_key_ident, "/_variant");
+    let variant_key_code = build_key(&variant_key_ident, VARIANT_KEY_PATH);
 
     quote! {
         async move {
@@ -513,7 +536,7 @@ pub fn enum_persist_to_kv_body(
 /// This is shared between simple enums and adjacently-tagged enums.
 pub fn enum_collect_valid_keys_body(collect_keys_arms: &[TokenStream]) -> TokenStream {
     let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
-    let variant_key_code = build_key(&variant_key_ident, "/_variant");
+    let variant_key_code = build_key(&variant_key_ident, VARIANT_KEY_PATH);
 
     quote! {
         // Add _variant key

@@ -7,7 +7,7 @@ use quote::quote;
 use syn::DeriveInput;
 
 use attr::{ShadowNodeParams, ShadowRootParams};
-use codegen::{generate_shadow_node, ShadowNodeConfig};
+use codegen::generate_shadow_node;
 
 // =============================================================================
 // KV-based shadow macros (Phase 8)
@@ -118,15 +118,8 @@ fn shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
     // Strip shadow_attr from the original definition
     let original = strip_shadow_attrs(&derive_input);
 
-    // Generate shadow node code
-    let config = ShadowNodeConfig {
-        is_root: true,
-        name: params.name,
-        topic_prefix: params.topic_prefix,
-        max_payload_len: params.max_payload_len,
-    };
-
-    let shadow_code = generate_shadow_node(&derive_input, &config)?;
+    // Generate shadow node code (with ShadowRoot impl)
+    let shadow_code = generate_shadow_node(&derive_input, Some(&params))?;
 
     Ok(quote! {
         #original
@@ -148,15 +141,8 @@ fn shadow_node_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
     // Strip shadow_attr from the original definition
     let original = strip_shadow_attrs(&derive_input);
 
-    // Generate shadow node code
-    let config = ShadowNodeConfig {
-        is_root: false,
-        name: None,
-        topic_prefix: None,
-        max_payload_len: None,
-    };
-
-    let shadow_code = generate_shadow_node(&derive_input, &config)?;
+    // Generate shadow node code (without ShadowRoot impl)
+    let shadow_code = generate_shadow_node(&derive_input, None)?;
 
     Ok(quote! {
         #original
