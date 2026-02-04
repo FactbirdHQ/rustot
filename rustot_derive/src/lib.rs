@@ -1,6 +1,7 @@
 mod attr;
 mod codegen;
 
+use darling::FromMeta;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::DeriveInput;
@@ -103,7 +104,16 @@ pub fn shadow_node(
 
 fn shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenStream> {
     let derive_input = syn::parse2::<DeriveInput>(input)?;
-    let params = syn::parse2::<ShadowRootParams>(attr)?;
+
+    // Parse attributes using Darling
+    let params = if attr.is_empty() {
+        ShadowRootParams::default()
+    } else {
+        let meta_list = darling::ast::NestedMeta::parse_meta_list(attr)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+        ShadowRootParams::from_list(&meta_list)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?
+    };
 
     // Strip shadow_attr from the original definition
     let original = strip_shadow_attrs(&derive_input);
@@ -111,9 +121,9 @@ fn shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
     // Generate shadow node code
     let config = ShadowNodeConfig {
         is_root: true,
-        name: params.name.map(|s| s.value()),
-        topic_prefix: params.topic_prefix.map(|s| s.value()),
-        max_payload_len: params.max_payload_len.map(|l| l.base10_parse().unwrap()),
+        name: params.name,
+        topic_prefix: params.topic_prefix,
+        max_payload_len: params.max_payload_len,
     };
 
     let shadow_code = generate_shadow_node(&derive_input, &config)?;
@@ -126,7 +136,14 @@ fn shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
 
 fn shadow_node_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenStream> {
     let derive_input = syn::parse2::<DeriveInput>(input)?;
-    let _params = syn::parse2::<ShadowNodeParams>(attr)?;
+
+    // Parse attributes using Darling (currently no params, but validates no unknown attrs)
+    if !attr.is_empty() {
+        let meta_list = darling::ast::NestedMeta::parse_meta_list(attr)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+        let _params = ShadowNodeParams::from_list(&meta_list)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+    }
 
     // Strip shadow_attr from the original definition
     let original = strip_shadow_attrs(&derive_input);
