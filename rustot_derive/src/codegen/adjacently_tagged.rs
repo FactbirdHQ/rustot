@@ -25,6 +25,9 @@ use crate::attr::{
     get_serde_rename_all, get_serde_tag_content, get_variant_serde_name, has_default_attr,
 };
 
+use super::helpers::{build_const_max_expr, build_max_key_len_expr};
+use super::kv_codegen;
+
 /// Generate code for an adjacently-tagged enum type
 pub(crate) fn generate_adjacently_tagged_enum_code(
     input: &DeriveInput,
@@ -282,24 +285,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 });
 
                 // collect_valid_keys: delegate to inner (all variants, not just active)
-                collect_valid_keys_arms.push(quote! {
-                    {
-                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = inner_prefix.push_str(prefix);
-                        let _ = inner_prefix.push_str(#variant_path);
-                        <#inner_ty as #krate::shadows::KVPersist>::collect_valid_keys::<KEY_LEN>(&inner_prefix, keys);
-                    }
-                });
+                collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(krate, &variant_path, inner_ty));
 
                 // collect_valid_prefixes: delegate to inner
-                collect_valid_prefixes_arms.push(quote! {
-                    {
-                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = inner_prefix.push_str(prefix);
-                        let _ = inner_prefix.push_str(#variant_path);
-                        <#inner_ty as #krate::shadows::KVPersist>::collect_valid_prefixes::<KEY_LEN>(&inner_prefix, prefixes);
-                    }
-                });
+                collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(krate, &variant_path, inner_ty));
 
                 // parse_delta config arm - call parse_delta on inner type (async)
                 parse_delta_config_arms.push(quote! {
@@ -330,41 +319,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     }
 
     // Build max_value_len const expression
-    let max_value_len_expr = if max_value_len_items.is_empty() {
-        quote! { 0 }
-    } else {
-        let mut expr = max_value_len_items[0].clone();
-        for item in &max_value_len_items[1..] {
-            expr = quote! { const_max(#expr, #item) };
-        }
-        quote! {
-            {
-                const fn const_max(a: usize, b: usize) -> usize {
-                    if a > b { a } else { b }
-                }
-                #expr
-            }
-        }
-    };
+    let max_value_len_expr = build_const_max_expr(max_value_len_items, quote! { 0 });
 
     // Build MAX_KEY_LEN const expression (max of _variant key and variant paths)
-    let max_key_len_expr = if max_key_len_items.is_empty() {
-        // Just the _variant key
-        quote! { #variant_key_len }
-    } else {
-        let mut expr = max_key_len_items[0].clone();
-        for item in &max_key_len_items[1..] {
-            expr = quote! { const_max(#expr, #item) };
-        }
-        quote! {
-            {
-                const fn const_max(a: usize, b: usize) -> usize {
-                    if a > b { a } else { b }
-                }
-                const_max(#variant_key_len, #expr)
-            }
-        }
-    };
+    let max_key_len_expr = build_max_key_len_expr(max_key_len_items, quote! { #variant_key_len });
 
     // Build SCHEMA_HASH const
     let schema_hash_const = quote! {
