@@ -1,3 +1,4 @@
+use heck::{ToLowerCamelCase, ToPascalCase, ToShoutyKebabCase, ToShoutySnakeCase, ToSnakeCase, ToKebabCase};
 use syn::{
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
@@ -284,65 +285,14 @@ pub fn apply_rename_all(name: &str, convention: &str) -> String {
     match convention {
         "lowercase" => name.to_lowercase(),
         "UPPERCASE" => name.to_uppercase(),
-        "camelCase" => to_camel_case(name),
-        "snake_case" => to_snake_case(name),
-        "SCREAMING_SNAKE_CASE" => to_snake_case(name).to_uppercase(),
-        "kebab-case" => to_snake_case(name).replace('_', "-"),
-        "SCREAMING-KEBAB-CASE" => to_snake_case(name).to_uppercase().replace('_', "-"),
-        "PascalCase" => to_pascal_case(name),
+        "camelCase" => name.to_lower_camel_case(),
+        "snake_case" => name.to_snake_case(),
+        "SCREAMING_SNAKE_CASE" => name.to_shouty_snake_case(),
+        "kebab-case" => name.to_kebab_case(),
+        "SCREAMING-KEBAB-CASE" => name.to_shouty_kebab_case(),
+        "PascalCase" => name.to_pascal_case(),
         _ => name.to_string(),
     }
-}
-
-fn to_camel_case(s: &str) -> String {
-    let mut result = String::new();
-    let mut capitalize_next = false;
-
-    for (i, c) in s.chars().enumerate() {
-        if c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(c.to_ascii_uppercase());
-            capitalize_next = false;
-        } else if i == 0 {
-            result.push(c.to_ascii_lowercase());
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
-fn to_snake_case(s: &str) -> String {
-    let mut result = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(c.to_ascii_lowercase());
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
-fn to_pascal_case(s: &str) -> String {
-    let mut result = String::new();
-    let mut capitalize_next = true;
-
-    for c in s.chars() {
-        if c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(c.to_ascii_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 #[cfg(test)]
