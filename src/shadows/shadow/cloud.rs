@@ -2,7 +2,7 @@
 
 use core::ops::DerefMut;
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 
 use crate::mqtt::{
     DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS, ToPayload,
@@ -36,7 +36,7 @@ const CLASSIC_SHADOW: &str = "classic";
 impl<'a, 'm, S, C, K> Shadow<'a, 'm, S, C, K>
 where
     S: ShadowRoot + Clone,
-    S::Delta: Serialize + DeserializeOwned + Default,
+    S::Delta: Serialize + Default,
     S::Reported: Serialize + Default,
     C: MqttClient,
     K: StateStore<S>,
@@ -85,15 +85,16 @@ where
                             S::NAME.unwrap_or(CLASSIC_SHADOW),
                         );
 
-                        let mut buf = [0u8; 64];
-                        let parsed = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
+                        let resolver = self.store.resolver(Self::prefix());
+                        let parsed = DeltaResponse::parse::<S, _>(
                             delta_message.payload(),
-                            &mut buf,
-                        );
+                            &resolver,
+                        )
+                        .await;
 
                         Some(
                             parsed
-                                .map(|(delta, _)| delta.state)
+                                .map(|delta| delta.state)
                                 .map_err(|_| Error::InvalidPayload),
                         )
                     }
@@ -161,11 +162,10 @@ where
 
             match Topic::from_str(S::PREFIX, message.topic_name()) {
                 Some((Topic::UpdateAccepted, _, _)) => {
-                    let mut buf = [0u8; 64];
-                    let (response, _) = serde_json_core::from_slice_escaped::<
-                        AcceptedResponse<S::Delta, S::Delta>,
-                    >(message.payload(), &mut buf)
-                    .map_err(|_| Error::InvalidPayload)?;
+                    let resolver = self.store.resolver(Self::prefix());
+                    let response = AcceptedResponse::parse::<S, _>(message.payload(), &resolver)
+                        .await
+                        .map_err(|_| Error::InvalidPayload)?;
 
                     if response.client_token != Some(self.mqtt.client_id()) {
                         continue;
@@ -211,11 +211,10 @@ where
         // Persist shadow and return new shadow
         match Topic::from_str(S::PREFIX, get_message.topic_name()) {
             Some((Topic::GetAccepted, _, _)) => {
-                let mut buf = [0u8; 64];
-                let (response, _) = serde_json_core::from_slice_escaped::<
-                    AcceptedResponse<S::Delta, S::Delta>,
-                >(get_message.payload(), &mut buf)
-                .map_err(|_| Error::InvalidPayload)?;
+                let resolver = self.store.resolver(Self::prefix());
+                let response = AcceptedResponse::parse::<S, _>(get_message.payload(), &resolver)
+                    .await
+                    .map_err(|_| Error::InvalidPayload)?;
 
                 Ok(response.state)
             }

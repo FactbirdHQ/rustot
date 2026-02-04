@@ -41,6 +41,10 @@ pub(crate) fn generate_struct_code(
     let mut reported_serialize_arms = Vec::new();
     let mut opaque_field_types: Vec<syn::Type> = Vec::new();
 
+    // For parse_delta: collect field parsing info
+    let mut parse_delta_field_names: Vec<String> = Vec::new();
+    let mut parse_delta_arms: Vec<TokenStream> = Vec::new();
+
     // KVPersist-specific codegen (feature-gated)
     let mut migration_arms = Vec::new();
     let mut default_arms = Vec::new();
@@ -183,6 +187,43 @@ pub(crate) fn generate_struct_code(
                 map.serialize_entry(#serde_name, val)?;
             }
         });
+
+        // parse_delta field parsing (for non-report_only fields)
+        if !attrs.report_only {
+            parse_delta_field_names.push(serde_name.clone());
+
+            if is_leaf {
+                // Leaf field: use serde directly
+                parse_delta_arms.push(quote! {
+                    if let Some(field_bytes) = scanner.field_bytes(#serde_name) {
+                        delta.#field_name = Some(
+                            ::serde_json_core::from_slice(field_bytes)
+                                .map(|(v, _)| v)
+                                .map_err(|_| #krate::shadows::ParseError::Deserialize)?
+                        );
+                    }
+                });
+            } else {
+                // Nested ShadowNode: delegate to parse_delta
+                parse_delta_arms.push(quote! {
+                    if let Some(field_bytes) = scanner.field_bytes(#serde_name) {
+                        let mut nested_path: ::heapless::String<128> = ::heapless::String::new();
+                        let _ = nested_path.push_str(path);
+                        if !path.is_empty() {
+                            let _ = nested_path.push('/');
+                        }
+                        let _ = nested_path.push_str(#serde_name);
+                        delta.#field_name = Some(
+                            <#field_ty as #krate::shadows::ShadowNode>::parse_delta(
+                                field_bytes,
+                                &nested_path,
+                                resolver
+                            ).await?
+                        );
+                    }
+                });
+            }
+        }
 
         // =====================================================================
         // KVPersist-specific codegen
@@ -557,11 +598,10 @@ pub(crate) fn generate_struct_code(
         }
     }
 
-    // Generate Delta type
+    // Generate Delta type - always use FieldScanner, no Deserialize needed
     let delta_type = quote! {
         #[derive(
             ::serde::Serialize,
-            ::serde::Deserialize,
             Clone,
             Default,
         )]
@@ -598,6 +638,44 @@ pub(crate) fn generate_struct_code(
         quote! { where #(#bounds),* }
     };
 
+    // Build variant_at_path delegation for nested ShadowNode fields
+    let mut variant_at_path_arms = Vec::new();
+    for field in named_fields {
+        let field_name = field.ident.as_ref().unwrap();
+        let field_ty = &field.ty;
+        let attrs = FieldAttrs::from_attrs(&field.attrs);
+        let has_migration = !attrs.migrate_from.is_empty();
+        let is_leaf = attrs.opaque || has_migration;
+
+        if !is_leaf {
+            let serde_name = get_serde_rename(&field.attrs).unwrap_or_else(|| field_name.to_string());
+            let field_prefix = format!("{}/", serde_name);
+            variant_at_path_arms.push(quote! {
+                if path.starts_with(#field_prefix) {
+                    let rest = &path[#field_prefix.len()..];
+                    if let Some(v) = <#field_ty as #krate::shadows::ShadowNode>::variant_at_path(&self.#field_name, rest) {
+                        return Some(v);
+                    }
+                } else if path == #serde_name {
+                    if let Some(v) = <#field_ty as #krate::shadows::ShadowNode>::variant_at_path(&self.#field_name, "") {
+                        return Some(v);
+                    }
+                }
+            });
+        }
+    }
+
+    // Generate parse_delta body - always use FieldScanner
+    let field_name_strs: Vec<_> = parse_delta_field_names.iter().map(|s| s.as_str()).collect();
+    let parse_delta_body = quote! {
+        let scanner = #krate::shadows::tag_scanner::FieldScanner::scan(json, &[#(#field_name_strs),*])
+            .map_err(#krate::shadows::ParseError::Scan)?;
+
+        let mut delta = Self::Delta::default();
+        #(#parse_delta_arms)*
+        Ok(delta)
+    };
+
     // Generate ShadowNode impl (always available, no where clause needed)
     let shadow_node_impl = quote! {
         impl #krate::shadows::ShadowNode for #name {
@@ -606,8 +684,23 @@ pub(crate) fn generate_struct_code(
 
             const SCHEMA_HASH: u64 = #schema_hash_const;
 
+            fn parse_delta<R: #krate::shadows::VariantResolver>(
+                json: &[u8],
+                path: &str,
+                resolver: &R,
+            ) -> impl ::core::future::Future<Output = Result<Self::Delta, #krate::shadows::ParseError>> {
+                async move {
+                    #parse_delta_body
+                }
+            }
+
             fn apply_delta(&mut self, delta: &Self::Delta) {
                 #(#apply_delta_arms)*
+            }
+
+            fn variant_at_path(&self, path: &str) -> Option<::heapless::String<32>> {
+                #(#variant_at_path_arms)*
+                None
             }
 
             fn into_reported(self) -> Self::Reported {

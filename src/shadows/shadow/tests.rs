@@ -1058,6 +1058,7 @@ async fn test_apply_and_save_nested_struct_fields() {
 mod adjacently_tagged {
     use super::*;
     use rustot_derive::shadow_node;
+    use crate::shadows::store::StateStore;
 
     // Inner config type for Sio variant
     #[shadow_node]
@@ -1144,8 +1145,8 @@ mod adjacently_tagged {
         assert_eq!(copied, inactive);
     }
 
-    #[test]
-    fn test_adjacently_tagged_delta_serialization() {
+    #[tokio::test]
+    async fn test_adjacently_tagged_delta_serialization() {
         // Test JSON serialization of delta with mode and config
         let delta = DeltaPortMode {
             mode: Some(PortModeVariant::Sio),
@@ -1161,30 +1162,41 @@ mod adjacently_tagged {
         assert!(json.contains("\"sio\"")); // lowercase due to rename_all
         assert!(json.contains("\"polarity\""));
 
-        // Test deserialization
-        let parsed: DeltaPortMode = serde_json::from_str(&json).unwrap();
+        // Test deserialization using parse_delta
+        use crate::shadows::{NullResolver, ShadowNode};
+        let parsed = PortMode::parse_delta(json.as_bytes(), "", &NullResolver).await.unwrap();
         assert_eq!(parsed.mode, Some(PortModeVariant::Sio));
     }
 
-    #[test]
-    fn test_adjacently_tagged_mode_only_delta() {
+    #[tokio::test]
+    async fn test_adjacently_tagged_mode_only_delta() {
         // Test mode-only delta (no config)
-        let json = r#"{"mode": "inactive"}"#;
-        let delta: DeltaPortMode = serde_json::from_str(json).unwrap();
+        let json = br#"{"mode": "inactive"}"#;
+        use crate::shadows::{NullResolver, ShadowNode};
+        let delta = PortMode::parse_delta(json, "", &NullResolver).await.unwrap();
         assert_eq!(delta.mode, Some(PortModeVariant::Inactive));
         assert!(delta.config.is_none());
     }
 
-    #[test]
-    fn test_adjacently_tagged_config_only_delta() {
-        // Test config-only delta (partial update)
-        let json = r#"{"config": {"sio": {"polarity": true}}}"#;
-        let delta: DeltaPortMode = serde_json::from_str(json).unwrap();
-        assert!(delta.mode.is_none());
+    #[tokio::test]
+    async fn test_adjacently_tagged_config_only_delta() {
+        // Test config-only delta (partial update) with fallback mode from existing state
+        // For adjacently-tagged enums, the content field contains the raw config,
+        // not wrapped in a variant tag. The variant is determined by the mode field
+        // (or fallback from resolver).
+
+        // Set up InMemory store with current state set to Sio variant
+        let store = InMemory::<PortMode>::new();
+        store.set_state("/test", &PortMode::Sio(SioConfig { polarity: true })).await.unwrap();
+        let resolver = store.resolver("/test");
+
+        let json = br#"{"config": {"polarity": false}}"#;
+        let delta = PortMode::parse_delta(json, "", &resolver).await.unwrap();
+        assert!(delta.mode.is_some()); // fallback from resolver
         assert!(delta.config.is_some());
 
         if let Some(DeltaPortModeConfig::Sio(sio_config)) = delta.config {
-            assert_eq!(sio_config.polarity, Some(true));
+            assert_eq!(sio_config.polarity, Some(false));
         } else {
             panic!("Expected Sio config");
         }
@@ -1239,16 +1251,25 @@ mod adjacently_tagged {
 
     #[test]
     fn test_adjacently_tagged_reported_serialization() {
-        // Test flat union serialization of Reported type
+        // Test adjacently-tagged serialization with nested config
         let reported = ReportedPortMode::Sio(ReportedSioConfig {
             polarity: Some(true),
         });
 
         let json = serde_json::to_string(&reported).unwrap();
-        // Should serialize as a flat object with mode field
+
+        // Should serialize as adjacently-tagged: {"mode": "sio", "config": {...}}
         assert!(json.contains("\"mode\""));
         assert!(json.contains("\"sio\""));
+        assert!(json.contains("\"config\""), "config key should be present");
         assert!(json.contains("\"polarity\""));
+
+        // Test Inactive variant - should have mode and config with null fields
+        let inactive = ReportedPortMode::Inactive;
+        let json_inactive = serde_json::to_string(&inactive).unwrap();
+        assert!(json_inactive.contains("\"mode\""));
+        assert!(json_inactive.contains("\"inactive\""));
+        assert!(json_inactive.contains("\"config\""));
     }
 
     #[test]

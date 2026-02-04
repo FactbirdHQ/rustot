@@ -4,7 +4,8 @@
 //! - `Vec<T>` — opaque leaf type
 //! - `HashMap<K, V>` — map collection with per-entry Patch deltas
 
-use crate::shadows::{fnv1a_hash, ReportedUnionFields, ShadowNode};
+use crate::shadows::{fnv1a_hash, ParseError, ReportedUnionFields, ShadowNode, VariantResolver};
+use core::future::Future;
 use serde::ser::SerializeMap;
 use std::collections::HashMap;
 use std::string::String;
@@ -12,8 +13,6 @@ use std::vec::Vec;
 
 #[cfg(feature = "shadows_kv_persist")]
 use crate::shadows::{KVPersist, KVStore, KvError, LoadFieldResult, MapKey, MigrationSource};
-#[cfg(feature = "shadows_kv_persist")]
-use core::future::Future;
 #[cfg(feature = "shadows_kv_persist")]
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -29,6 +28,16 @@ impl ShadowNode for String {
     type Reported = String;
 
     const SCHEMA_HASH: u64 = fnv1a_hash(b"String");
+
+    fn parse_delta<R: VariantResolver>(
+        json: &[u8],
+        _path: &str,
+        _resolver: &R,
+    ) -> impl Future<Output = Result<Self::Delta, ParseError>> {
+        async move {
+            serde_json::from_slice(json).map_err(|_| ParseError::Deserialize)
+        }
+    }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
         *self = delta.clone();
@@ -130,6 +139,16 @@ where
     type Reported = Vec<T>;
 
     const SCHEMA_HASH: u64 = fnv1a_hash(b"Vec");
+
+    fn parse_delta<R: VariantResolver>(
+        json: &[u8],
+        _path: &str,
+        _resolver: &R,
+    ) -> impl Future<Output = Result<Self::Delta, ParseError>> {
+        async move {
+            serde_json::from_slice(json).map_err(|_| ParseError::Deserialize)
+        }
+    }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
         *self = delta.clone();
@@ -260,11 +279,24 @@ impl<K, V> ShadowNode for HashMap<K, V>
 where
     K: Clone + Eq + Hash + Default + serde::Serialize + serde::de::DeserializeOwned,
     V: ShadowNode,
+    V::Delta: serde::de::DeserializeOwned,
 {
     type Delta = HashMapDelta<K, V::Delta>;
     type Reported = HashMapReported<K, V::Reported>;
 
     const SCHEMA_HASH: u64 = fnv1a_hash(b"HashMap");
+
+    fn parse_delta<R: VariantResolver>(
+        json: &[u8],
+        _path: &str,
+        _resolver: &R,
+    ) -> impl Future<Output = Result<Self::Delta, ParseError>> {
+        async move {
+            // HashMap deltas are deserialized as regular JSON
+            // The inner V::Delta types handle their own parsing if needed
+            serde_json::from_slice(json).map_err(|_| ParseError::Deserialize)
+        }
+    }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
         if let Some(ref patches) = delta.0 {
@@ -301,6 +333,7 @@ impl<K, V> KVPersist for HashMap<K, V>
 where
     K: MapKey + Default + Hash,
     V: KVPersist,
+    V::Delta: serde::de::DeserializeOwned,
 {
     // "/{key}" + sub-key length
     const MAX_KEY_LEN: usize = 1 + K::MAX_KEY_DISPLAY_LEN + V::MAX_KEY_LEN;
