@@ -370,8 +370,8 @@ where
                 .await
                 .map_err(|_| Error::DaoWrite)?;
 
-            // Acknowledge to cloud
-            self.update_shadow(None, Some(state.clone().into_reported()))
+            // Acknowledge to cloud with only the changed fields
+            self.update_shadow(None, Some(state.into_partial_reported(delta)))
                 .await?;
 
             state
@@ -482,7 +482,8 @@ where
                 .apply_and_save(&delta)
                 .await
                 .map_err(|_| Error::DaoWrite)?;
-            self.update_shadow(None, Some(state.clone().into_reported()))
+            // Acknowledge with only the changed fields
+            self.update_shadow(None, Some(state.into_partial_reported(&delta)))
                 .await?;
             state
         } else {

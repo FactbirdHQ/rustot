@@ -60,7 +60,7 @@ pub(crate) fn generate_simple_enum_code(
     let mut reported_variants = Vec::new();
     let mut variant_names = Vec::new();
     let mut apply_delta_arms = Vec::new();
-    let mut into_reported_arms = Vec::new();
+    let mut into_partial_reported_arms = Vec::new();
     let mut schema_hash_code = Vec::new();
 
     // KVPersist-specific codegen (feature-gated)
@@ -103,8 +103,9 @@ pub(crate) fn generate_simple_enum_code(
                     }
                 });
 
-                into_reported_arms.push(quote! {
-                    Self::#variant_ident => Self::Reported::#variant_ident,
+                // into_partial_reported: for unit variants, return the reported variant
+                into_partial_reported_arms.push(quote! {
+                    Self::Delta::#variant_ident => Self::Reported::#variant_ident,
                 });
 
                 // Schema hash for unit variant
@@ -183,8 +184,21 @@ pub(crate) fn generate_simple_enum_code(
                     }
                 });
 
-                into_reported_arms.push(quote! {
-                    Self::#variant_ident(inner) => Self::Reported::#variant_ident(inner.into_reported()),
+                // into_partial_reported: delegate to inner's into_partial_reported
+                // Note: apply_delta is called first, so self is already in the correct variant
+                into_partial_reported_arms.push(quote! {
+                    Self::Delta::#variant_ident(ref inner_delta) => {
+                        match self {
+                            Self::#variant_ident(ref inner) => {
+                                Self::Reported::#variant_ident(inner.into_partial_reported(inner_delta))
+                            }
+                            _ => {
+                                // Self not in expected variant - shouldn't happen if apply_delta was called first
+                                // Fall back to default
+                                Self::Reported::#variant_ident(Default::default())
+                            }
+                        }
+                    }
                 });
 
                 // Schema hash for newtype variant
@@ -577,9 +591,9 @@ pub(crate) fn generate_simple_enum_code(
                 }
             }
 
-            fn into_reported(self) -> Self::Reported {
-                match self {
-                    #(#into_reported_arms)*
+            fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {
+                match delta {
+                    #(#into_partial_reported_arms)*
                 }
             }
         }

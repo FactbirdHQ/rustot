@@ -296,8 +296,12 @@ pub trait ShadowNode: Default + Clone + Sized {
         None
     }
 
-    /// Convert this state into its reported representation.
-    fn into_reported(self) -> Self::Reported;
+    /// Convert to reported representation containing only fields present in delta.
+    ///
+    /// Used for efficient acknowledgment - reports only changed fields.
+    /// AWS IoT Shadow merges partial updates, so unchanged fields keep
+    /// their cloud values.
+    fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported;
 }
 
 // =============================================================================
