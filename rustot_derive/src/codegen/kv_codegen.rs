@@ -431,3 +431,92 @@ pub fn enum_variant_persist_delta_inner_arm(
         }
     }
 }
+
+// =============================================================================
+// Enum KVPersist method body generators
+// =============================================================================
+
+/// Generates the body of `load_from_kv` for enum types.
+///
+/// This is shared between simple enums and adjacently-tagged enums.
+pub fn enum_load_from_kv_body(
+    krate: &TokenStream,
+    load_variant_arms: &[TokenStream],
+) -> TokenStream {
+    let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
+    let variant_key_code = build_key(&variant_key_ident, "/_variant");
+
+    quote! {
+        async move {
+            let mut result = #krate::shadows::LoadFieldResult::default();
+
+            // Read _variant key (variant names are short, 128 bytes is plenty)
+            #variant_key_code
+
+            let mut __vbuf = [0u8; 128];
+            let variant_name = match kv.fetch(&#variant_key_ident, &mut __vbuf).await.map_err(#krate::shadows::KvError::Kv)? {
+                Some(data) => core::str::from_utf8(data).map_err(|_| #krate::shadows::KvError::InvalidVariant)?,
+                None => {
+                    *self = Self::default();
+                    return Ok(result);
+                }
+            };
+
+            match variant_name {
+                #(#load_variant_arms)*
+                _ => return Err(#krate::shadows::KvError::UnknownVariant),
+            }
+
+            Ok(result)
+        }
+    }
+}
+
+/// Generates the body of `persist_to_kv` for enum types.
+///
+/// This is shared between simple enums and adjacently-tagged enums.
+pub fn enum_persist_to_kv_body(
+    krate: &TokenStream,
+    variant_name_arms: &[TokenStream],
+    persist_variant_arms: &[TokenStream],
+) -> TokenStream {
+    let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
+    let variant_key_code = build_key(&variant_key_ident, "/_variant");
+
+    quote! {
+        async move {
+            // Write _variant key
+            #variant_key_code
+
+            // Write variant name
+            let variant_name: &str = match self {
+                #(#variant_name_arms)*
+            };
+            kv.store(&#variant_key_ident, variant_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
+
+            // Persist inner fields
+            match self {
+                #(#persist_variant_arms)*
+            }
+
+            Ok(())
+        }
+    }
+}
+
+/// Generates the body of `collect_valid_keys` for enum types.
+///
+/// This is shared between simple enums and adjacently-tagged enums.
+pub fn enum_collect_valid_keys_body(collect_keys_arms: &[TokenStream]) -> TokenStream {
+    let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
+    let variant_key_code = build_key(&variant_key_ident, "/_variant");
+
+    quote! {
+        // Add _variant key
+        #variant_key_code
+        keys(&#variant_key_ident);
+
+        // Collect from all variants (not just active)
+        #(#collect_keys_arms)*
+    }
+}

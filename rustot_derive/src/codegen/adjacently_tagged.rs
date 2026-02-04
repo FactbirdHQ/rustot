@@ -315,6 +315,11 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // Build MAX_KEY_LEN const expression (max of _variant key and variant paths)
     let max_key_len_expr = build_max_key_len_expr(max_key_len_items, quote! { #variant_key_len });
 
+    // Generate enum KVPersist method bodies using shared helpers
+    let load_from_kv_body = kv_codegen::enum_load_from_kv_body(krate, &load_from_kv_variant_arms);
+    let persist_to_kv_body = kv_codegen::enum_persist_to_kv_body(krate, &variant_name_arms, &persist_to_kv_variant_arms);
+    let collect_valid_keys_body = kv_codegen::enum_collect_valid_keys_body(&collect_valid_keys_arms);
+
     // Build SCHEMA_HASH const
     let schema_hash_const = quote! {
         {
@@ -710,30 +715,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 prefix: &str,
                 kv: &K,
             ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
-                async move {
-                    let mut result = #krate::shadows::LoadFieldResult::default();
-
-                    // Read _variant key (variant names are short, 128 bytes is plenty)
-                    let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = variant_key.push_str(prefix);
-                    let _ = variant_key.push_str("/_variant");
-
-                    let mut __vbuf = [0u8; 128];
-                    let variant_name = match kv.fetch(&variant_key, &mut __vbuf).await.map_err(#krate::shadows::KvError::Kv)? {
-                        Some(data) => core::str::from_utf8(data).map_err(|_| #krate::shadows::KvError::InvalidVariant)?,
-                        None => {
-                            *self = Self::default();
-                            return Ok(result);
-                        }
-                    };
-
-                    match variant_name {
-                        #(#load_from_kv_variant_arms)*
-                        _ => return Err(#krate::shadows::KvError::UnknownVariant),
-                    }
-
-                    Ok(result)
-                }
+                #load_from_kv_body
             }
 
             fn load_from_kv_with_migration<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
@@ -750,25 +732,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 prefix: &str,
                 kv: &K,
             ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
-                async move {
-                    // Write _variant key
-                    let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = variant_key.push_str(prefix);
-                    let _ = variant_key.push_str("/_variant");
-
-                    // Write variant name
-                    let variant_name: &str = match self {
-                        #(#variant_name_arms)*
-                    };
-                    kv.store(&variant_key, variant_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
-
-                    // Persist inner fields
-                    match self {
-                        #(#persist_to_kv_variant_arms)*
-                    }
-
-                    Ok(())
-                }
+                #persist_to_kv_body
             }
 
             fn persist_delta<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
@@ -801,14 +765,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             }
 
             fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-                // Add _variant key
-                let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                let _ = variant_key.push_str(prefix);
-                let _ = variant_key.push_str("/_variant");
-                keys(&variant_key);
-
-                // Collect from all variants (not just active)
-                #(#collect_valid_keys_arms)*
+                #collect_valid_keys_body
             }
 
             fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
