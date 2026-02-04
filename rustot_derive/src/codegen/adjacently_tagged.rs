@@ -244,28 +244,21 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 max_key_len_items.push(quote! { #variant_path_len + <#inner_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN });
 
                 // load_from_kv arm: construct variant, delegate to inner
-                load_from_kv_variant_arms.push(quote! {
-                    #serde_name => {
-                        *self = Self::#variant_ident(Default::default());
-                        if let Self::#variant_ident(ref mut inner) = self {
-                            let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                            let _ = inner_prefix.push_str(prefix);
-                            let _ = inner_prefix.push_str(#variant_path);
-                            let inner_result = <#inner_ty as #krate::shadows::KVPersist>::load_from_kv::<K, KEY_LEN>(inner, &inner_prefix, kv).await?;
-                            result.merge(inner_result);
-                        }
-                    }
-                });
+                load_from_kv_variant_arms.push(kv_codegen::enum_variant_load_arm(
+                    krate,
+                    &variant_path,
+                    &serde_name,
+                    variant_ident,
+                    inner_ty,
+                ));
 
                 // persist_to_kv arm: delegate to inner
-                persist_to_kv_variant_arms.push(quote! {
-                    Self::#variant_ident(ref inner) => {
-                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = inner_prefix.push_str(prefix);
-                        let _ = inner_prefix.push_str(#variant_path);
-                        <#inner_ty as #krate::shadows::KVPersist>::persist_to_kv::<K, KEY_LEN>(inner, &inner_prefix, kv).await?;
-                    }
-                });
+                persist_to_kv_variant_arms.push(kv_codegen::enum_variant_persist_arm(
+                    krate,
+                    &variant_path,
+                    variant_ident,
+                    inner_ty,
+                ));
 
                 // persist_delta mode arm: write _variant key
                 persist_delta_mode_arms.push(quote! {
@@ -275,14 +268,12 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 });
 
                 // persist_delta config arm: delegate to inner
-                persist_delta_config_arms.push(quote! {
-                    #delta_config_name::#variant_ident(ref inner_delta) => {
-                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = inner_prefix.push_str(prefix);
-                        let _ = inner_prefix.push_str(#variant_path);
-                        <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &inner_prefix).await?;
-                    }
-                });
+                persist_delta_config_arms.push(kv_codegen::enum_variant_persist_delta_inner_arm(
+                    krate,
+                    &variant_path,
+                    quote! { #delta_config_name::#variant_ident },
+                    inner_ty,
+                ));
 
                 // collect_valid_keys: delegate to inner (all variants, not just active)
                 collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(krate, &variant_path, inner_ty));

@@ -229,41 +229,34 @@ pub(crate) fn generate_simple_enum_code(
                 });
 
                 // load_from_kv arm: construct variant, delegate to inner
-                load_from_kv_variant_arms.push(quote! {
-                    #serde_name => {
-                        *self = Self::#variant_ident(Default::default());
-                        if let Self::#variant_ident(ref mut inner) = self {
-                            let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                            let _ = inner_prefix.push_str(prefix);
-                            let _ = inner_prefix.push_str(#variant_path);
-                            let inner_result = <#inner_ty as #krate::shadows::KVPersist>::load_from_kv::<K, KEY_LEN>(inner, &inner_prefix, kv).await?;
-                            result.merge(inner_result);
-                        }
-                    }
-                });
+                load_from_kv_variant_arms.push(kv_codegen::enum_variant_load_arm(
+                    krate,
+                    &variant_path,
+                    &serde_name,
+                    variant_ident,
+                    inner_ty,
+                ));
 
                 // persist_to_kv arm: delegate to inner
-                persist_to_kv_variant_arms.push(quote! {
-                    Self::#variant_ident(ref inner) => {
-                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = inner_prefix.push_str(prefix);
-                        let _ = inner_prefix.push_str(#variant_path);
-                        <#inner_ty as #krate::shadows::KVPersist>::persist_to_kv::<K, KEY_LEN>(inner, &inner_prefix, kv).await?;
-                    }
-                });
+                persist_to_kv_variant_arms.push(kv_codegen::enum_variant_persist_arm(
+                    krate,
+                    &variant_path,
+                    variant_ident,
+                    inner_ty,
+                ));
 
                 // persist_delta: write _variant key and delegate to inner
+                let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
+                let variant_key_code = kv_codegen::build_key(&variant_key_ident, "/_variant");
+                let inner_prefix_ident = syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
+                let inner_prefix_code = kv_codegen::build_key(&inner_prefix_ident, &variant_path);
                 persist_delta_arms.push(quote! {
                     Self::Delta::#variant_ident(ref inner_delta) => {
-                        let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = variant_key.push_str(prefix);
-                        let _ = variant_key.push_str("/_variant");
-                        kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
+                        #variant_key_code
+                        kv.store(&#variant_key_ident, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
 
-                        let mut inner_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = inner_prefix.push_str(prefix);
-                        let _ = inner_prefix.push_str(#variant_path);
-                        <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &inner_prefix).await?;
+                        #inner_prefix_code
+                        <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &#inner_prefix_ident).await?;
                     }
                 });
 
