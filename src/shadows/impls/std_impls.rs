@@ -43,8 +43,8 @@ impl ShadowNode for String {
         *self = delta.clone();
     }
 
-    fn into_reported(self) -> Self::Reported {
-        self
+    fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
+        self.clone()
     }
 }
 
@@ -154,8 +154,8 @@ where
         *self = delta.clone();
     }
 
-    fn into_reported(self) -> Self::Reported {
-        self
+    fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
+        self.clone()
     }
 }
 
@@ -319,10 +319,23 @@ where
         }
     }
 
-    fn into_reported(self) -> Self::Reported {
+    fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {
         let mut reported = HashMap::new();
-        for (k, v) in self.into_iter() {
-            reported.insert(k, v.into_reported());
+        if let Some(ref patches) = delta.0 {
+            for (key, patch) in patches.iter() {
+                match patch {
+                    Patch::Set(inner_delta) => {
+                        // Include the entry's partial reported (after apply_delta)
+                        if let Some(v) = self.get(key) {
+                            reported.insert(key.clone(), v.into_partial_reported(inner_delta));
+                        }
+                    }
+                    Patch::Unset => {
+                        // Unset entries cannot be represented in HashMapReported
+                        // The user must handle explicit null reporting separately
+                    }
+                }
+            }
         }
         HashMapReported(reported)
     }
@@ -537,15 +550,6 @@ mod tests {
         let delta = HashMapDelta::<String, u32>(None);
         map.apply_delta(&delta);
         assert_eq!(map.get("a"), Some(&42));
-    }
-
-    #[test]
-    fn test_hashmap_into_reported() {
-        let mut map: HashMap<String, u32> = HashMap::new();
-        map.insert("a".to_string(), 42);
-
-        let reported = map.into_reported();
-        assert_eq!(reported.0.get("a"), Some(&42));
     }
 
     #[cfg(feature = "shadows_kv_persist")]

@@ -54,8 +54,8 @@ macro_rules! impl_opaque {
                 *self = delta.clone();
             }
 
-            fn into_reported(self) -> Self::Reported {
-                self
+            fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
+                self.clone()
             }
         }
 
@@ -182,8 +182,8 @@ impl crate::shadows::ShadowNode for core::time::Duration {
         *self = *delta;
     }
 
-    fn into_reported(self) -> Self::Reported {
-        self
+    fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
+        *self
     }
 }
 
@@ -305,16 +305,6 @@ mod tests {
         // Schema hash should be deterministic
         assert_eq!(<u32 as ShadowNode>::SCHEMA_HASH, fnv1a_hash(b"u32"));
         assert_eq!(<bool as ShadowNode>::SCHEMA_HASH, fnv1a_hash(b"bool"));
-    }
-
-    #[test]
-    fn test_into_reported_identity() {
-        // into_reported should return self for primitives
-        let x: u32 = 42;
-        assert_eq!(ShadowNode::into_reported(x), 42);
-
-        let b: bool = true;
-        assert_eq!(ShadowNode::into_reported(b), true);
     }
 
     #[test]

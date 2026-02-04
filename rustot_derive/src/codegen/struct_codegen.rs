@@ -36,7 +36,7 @@ pub(crate) fn generate_struct_code(
     let mut reported_fields = Vec::new();
     let mut field_names = Vec::new();
     let mut apply_delta_arms = Vec::new();
-    let mut into_reported_arms = Vec::new();
+    let mut into_partial_reported_arms = Vec::new();
     let mut schema_hash_code = Vec::new();
     let mut reported_serialize_arms = Vec::new();
     let mut opaque_field_types: Vec<syn::Type> = Vec::new();
@@ -144,14 +144,27 @@ pub(crate) fn generate_struct_code(
             }
         }
 
-        // Into reported
-        if is_leaf {
-            into_reported_arms.push(quote! {
-                #field_name: Some(self.#field_name),
+        // Into partial reported - only include fields present in delta
+        if attrs.report_only {
+            // Report-only fields are never in delta, so always None in partial
+            into_partial_reported_arms.push(quote! {
+                #field_name: None,
+            });
+        } else if is_leaf {
+            into_partial_reported_arms.push(quote! {
+                #field_name: if delta.#field_name.is_some() {
+                    Some(self.#field_name.clone())
+                } else {
+                    None
+                },
             });
         } else {
-            into_reported_arms.push(quote! {
-                #field_name: Some(self.#field_name.into_reported()),
+            into_partial_reported_arms.push(quote! {
+                #field_name: if let Some(ref inner_delta) = delta.#field_name {
+                    Some(self.#field_name.into_partial_reported(inner_delta))
+                } else {
+                    None
+                },
             });
         }
 
@@ -703,9 +716,9 @@ pub(crate) fn generate_struct_code(
                 None
             }
 
-            fn into_reported(self) -> Self::Reported {
+            fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {
                 #reported_name {
-                    #(#into_reported_arms)*
+                    #(#into_partial_reported_arms)*
                 }
             }
         }

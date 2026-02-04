@@ -45,8 +45,8 @@ impl<const N: usize> ShadowNode for heapless::String<N> {
         *self = delta.clone();
     }
 
-    fn into_reported(self) -> Self::Reported {
-        self
+    fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
+        self.clone()
     }
 }
 
@@ -164,8 +164,8 @@ where
         *self = delta.clone();
     }
 
-    fn into_reported(self) -> Self::Reported {
-        self
+    fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
+        self.clone()
     }
 }
 
@@ -345,10 +345,23 @@ where
         }
     }
 
-    fn into_reported(self) -> Self::Reported {
+    fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {
         let mut reported = heapless::LinearMap::new();
-        for (k, v) in self.into_iter() {
-            let _ = reported.insert(k, v.into_reported());
+        if let Some(ref patches) = delta.0 {
+            for (key, patch) in patches.iter() {
+                match patch {
+                    Patch::Set(inner_delta) => {
+                        // Include the entry's partial reported (after apply_delta)
+                        if let Some(v) = self.get(key) {
+                            let _ = reported.insert(key.clone(), v.into_partial_reported(inner_delta));
+                        }
+                    }
+                    Patch::Unset => {
+                        // Unset entries cannot be represented in LinearMapReported
+                        // The user must handle explicit null reporting separately
+                    }
+                }
+            }
         }
         LinearMapReported(reported)
     }
@@ -615,27 +628,6 @@ mod tests {
         assert_eq!(
             map.get(&heapless::String::<4>::try_from("a").unwrap()),
             Some(&42)
-        );
-    }
-
-    #[test]
-    fn test_linear_map_into_reported() {
-        let mut map: heapless::LinearMap<heapless::String<4>, u32, 4> = heapless::LinearMap::new();
-        let _ = map.insert(heapless::String::try_from("a").unwrap(), 42);
-        let _ = map.insert(heapless::String::try_from("b").unwrap(), 99);
-
-        let reported = map.into_reported();
-        assert_eq!(
-            reported
-                .0
-                .get(&heapless::String::<4>::try_from("a").unwrap()),
-            Some(&42)
-        );
-        assert_eq!(
-            reported
-                .0
-                .get(&heapless::String::<4>::try_from("b").unwrap()),
-            Some(&99)
         );
     }
 

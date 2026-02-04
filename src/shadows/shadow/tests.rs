@@ -1228,28 +1228,6 @@ mod adjacently_tagged {
     }
 
     #[test]
-    fn test_adjacently_tagged_into_reported() {
-        // Test into_reported() conversion
-        let port_mode = PortMode::Sio(SioConfig { polarity: true });
-        let reported = port_mode.into_reported();
-
-        match reported {
-            ReportedPortMode::Sio(config) => {
-                assert_eq!(config.polarity, Some(true));
-            }
-            _ => panic!("Expected Sio variant"),
-        }
-
-        // Test Inactive variant
-        let inactive = PortMode::Inactive;
-        let reported_inactive = inactive.into_reported();
-        match reported_inactive {
-            ReportedPortMode::Inactive => {}
-            _ => panic!("Expected Inactive variant"),
-        }
-    }
-
-    #[test]
     fn test_adjacently_tagged_reported_serialization() {
         // Test adjacently-tagged serialization with nested config
         let reported = ReportedPortMode::Sio(ReportedSioConfig {
@@ -1360,5 +1338,142 @@ mod adjacently_tagged {
             }
             _ => panic!("Expected IoLink variant"),
         }
+    }
+
+    // =========================================================================
+    // into_partial_reported Tests
+    // =========================================================================
+
+    #[test]
+    fn test_adjacently_tagged_into_partial_reported_mode_change() {
+        use crate::shadows::ShadowNode;
+        // When mode changes, full reported should be returned
+        let mut port_mode = PortMode::Inactive;
+        let delta = DeltaPortMode {
+            mode: Some(PortModeVariant::Sio),
+            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                polarity: Some(true),
+            })),
+        };
+        port_mode.apply_delta(&delta);
+
+        let reported = port_mode.into_partial_reported(&delta);
+        let json = serde_json::to_string(&reported).unwrap();
+
+        // Mode changed, so full state should be reported (same as into_reported)
+        assert!(json.contains("\"mode\""));
+        assert!(json.contains("\"sio\""));
+        assert!(json.contains("\"config\""));
+        assert!(json.contains("\"polarity\""));
+    }
+
+    #[test]
+    fn test_adjacently_tagged_into_partial_reported_config_only() {
+        use crate::shadows::ShadowNode;
+        // When only config changes (no mode change), the adjacently-tagged enum
+        // still reports its full state (mode + config) because that's how
+        // AWS expects it. The optimization happens at the parent struct level.
+        let mut port_mode = PortMode::Sio(SioConfig { polarity: false });
+        let delta = DeltaPortMode {
+            mode: None,
+            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                polarity: Some(true),
+            })),
+        };
+        port_mode.apply_delta(&delta);
+
+        let partial = port_mode.into_partial_reported(&delta);
+        let partial_json = serde_json::to_string(&partial).unwrap();
+
+        // Adjacently-tagged enums always report complete state (mode + config)
+        // since that's how AWS expects the serialization format
+        assert!(partial_json.contains("\"mode\""));
+        assert!(partial_json.contains("\"polarity\""));
+    }
+
+    // Test the real optimization: struct-level partial reporting with nested adjacently-tagged enum
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    pub struct ConfigWithAdjacent {
+        pub simple_field: u32,
+        pub adjacent: PortMode,
+    }
+
+    #[test]
+    fn test_struct_with_adjacent_partial_reported() {
+        use crate::shadows::ShadowNode;
+
+        let mut config = ConfigWithAdjacent {
+            simple_field: 100,
+            adjacent: PortMode::Sio(SioConfig { polarity: false }),
+        };
+
+        // Delta only changes the adjacent field (config portion)
+        let delta = DeltaConfigWithAdjacent {
+            simple_field: None,
+            adjacent: Some(DeltaPortMode {
+                mode: None,
+                config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                    polarity: Some(true),
+                })),
+            }),
+        };
+        config.apply_delta(&delta);
+
+        let partial = config.into_partial_reported(&delta);
+        let partial_json = serde_json::to_string(&partial).unwrap();
+
+        // Partial should ONLY have adjacent (the field that was in delta)
+        assert!(!partial_json.contains("\"simple_field\""), "partial should NOT have simple_field");
+        assert!(partial_json.contains("\"adjacent\""), "partial should have adjacent");
+        assert!(partial_json.contains("\"mode\""), "adjacent's mode should be present");
+        assert!(partial_json.contains("\"polarity\""), "adjacent's polarity should be present");
+    }
+
+    #[test]
+    fn test_struct_into_partial_reported_only_delta_fields() {
+        use crate::shadows::ShadowNode;
+        // Test with IoLinkConfig which has cycle_time field
+        let mut config = IoLinkConfig { cycle_time: 1000 };
+        let delta = DeltaIoLinkConfig { cycle_time: Some(2000) };
+        config.apply_delta(&delta);
+
+        let partial = config.into_partial_reported(&delta);
+        let partial_json = serde_json::to_string(&partial).unwrap();
+
+        // Partial should have cycle_time since it was in delta
+        assert!(partial_json.contains("\"cycle_time\""));
+    }
+
+    // Multi-field struct for testing partial reported
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    pub struct MultiFieldConfig {
+        pub alpha: u32,
+        pub beta: u32,
+        pub gamma: bool,
+    }
+
+    #[test]
+    fn test_struct_into_partial_reported_excludes_unchanged_fields() {
+        use crate::shadows::ShadowNode;
+
+        let mut config = MultiFieldConfig { alpha: 1, beta: 2, gamma: true };
+
+        // Delta only changes alpha
+        let delta = DeltaMultiFieldConfig {
+            alpha: Some(10),
+            beta: None,
+            gamma: None,
+        };
+        config.apply_delta(&delta);
+
+        let partial = config.into_partial_reported(&delta);
+        let partial_json = serde_json::to_string(&partial).unwrap();
+
+        // Partial should ONLY have alpha (the field that was in delta)
+        assert!(partial_json.contains("\"alpha\""), "partial should have alpha");
+        assert!(!partial_json.contains("\"beta\""), "partial should NOT have beta");
+        assert!(!partial_json.contains("\"gamma\""), "partial should NOT have gamma");
     }
 }

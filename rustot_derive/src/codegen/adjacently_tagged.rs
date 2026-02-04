@@ -76,8 +76,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // For apply_delta - config application
     let mut config_apply_arms = Vec::new();
 
-    // For into_reported
-    let mut into_reported_arms = Vec::new();
+    // For into_partial_reported - match on self and construct Reported directly
+    let mut into_partial_reported_arms = Vec::new();
 
     // For variant name matching
     let mut variant_name_arms = Vec::new();
@@ -137,7 +137,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     }
                 });
 
-                into_reported_arms.push(quote! {
+                // into_partial_reported: unit variant has no inner state
+                into_partial_reported_arms.push(quote! {
                     Self::#variant_ident => Self::Reported::#variant_ident,
                 });
 
@@ -205,8 +206,15 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     }
                 });
 
-                into_reported_arms.push(quote! {
-                    Self::#variant_ident(inner) => Self::Reported::#variant_ident(inner.into_reported()),
+                // into_partial_reported: get inner delta from config if matching, else use default
+                into_partial_reported_arms.push(quote! {
+                    Self::#variant_ident(ref inner) => {
+                        let inner_delta = match &delta.config {
+                            Some(#delta_config_name::#variant_ident(d)) => d.clone(),
+                            _ => Default::default(),
+                        };
+                        Self::Reported::#variant_ident(inner.into_partial_reported(&inner_delta))
+                    }
                 });
 
                 max_value_len_items.push(quote! {
@@ -720,9 +728,12 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 }
             }
 
-            fn into_reported(self) -> Self::Reported {
+            fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {
+                // For adjacently-tagged enums, always report full variant state
+                // (the enum is the atomic unit - you can't partially report it)
+                let _ = delta; // delta is used to get inner delta for newtype variants
                 match self {
-                    #(#into_reported_arms)*
+                    #(#into_partial_reported_arms)*
                 }
             }
         }
