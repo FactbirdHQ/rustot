@@ -353,7 +353,8 @@ where
                     Patch::Set(inner_delta) => {
                         // Include the entry's partial reported (after apply_delta)
                         if let Some(v) = self.get(key) {
-                            let _ = reported.insert(key.clone(), v.into_partial_reported(inner_delta));
+                            let _ =
+                                reported.insert(key.clone(), v.into_partial_reported(inner_delta));
                         }
                     }
                     Patch::Unset => {

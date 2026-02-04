@@ -647,7 +647,10 @@ mod tests {
         let scan = TaggedJsonScan::scan(json, "mode", "config").unwrap();
 
         assert_eq!(scan.tag_str(), Some("sio"));
-        assert_eq!(scan.content_bytes(), Some(br#"{"polarity": "pnp"}"#.as_slice()));
+        assert_eq!(
+            scan.content_bytes(),
+            Some(br#"{"polarity": "pnp"}"#.as_slice())
+        );
     }
 
     #[test]
@@ -656,7 +659,10 @@ mod tests {
         let scan = TaggedJsonScan::scan(json, "mode", "config").unwrap();
 
         assert_eq!(scan.tag_str(), Some("sio"));
-        assert_eq!(scan.content_bytes(), Some(br#"{"polarity": "pnp"}"#.as_slice()));
+        assert_eq!(
+            scan.content_bytes(),
+            Some(br#"{"polarity": "pnp"}"#.as_slice())
+        );
     }
 
     #[test]
@@ -674,7 +680,10 @@ mod tests {
         let scan = TaggedJsonScan::scan(json, "mode", "config").unwrap();
 
         assert_eq!(scan.tag_str(), None);
-        assert_eq!(scan.content_bytes(), Some(br#"{"polarity": "pnp"}"#.as_slice()));
+        assert_eq!(
+            scan.content_bytes(),
+            Some(br#"{"polarity": "pnp"}"#.as_slice())
+        );
     }
 
     #[test]
@@ -798,7 +807,10 @@ mod tests {
     fn test_error_expected_object() {
         let json = br#"["not", "an", "object"]"#;
         let result = TaggedJsonScan::scan(json, "mode", "config");
-        assert!(matches!(result, Err(ScanError::Expected { expected: b'{', .. })));
+        assert!(matches!(
+            result,
+            Err(ScanError::Expected { expected: b'{', .. })
+        ));
     }
 
     #[test]
@@ -884,7 +896,8 @@ mod tests {
 
     #[test]
     fn test_field_scanner_all_json_types() {
-        let json = br#"{"str": "hello", "num": 42, "bool": true, "null": null, "arr": [1], "obj": {}}"#;
+        let json =
+            br#"{"str": "hello", "num": 42, "bool": true, "null": null, "arr": [1], "obj": {}}"#;
         let scanner =
             FieldScanner::scan(json, &["str", "num", "bool", "null", "arr", "obj"]).unwrap();
 

@@ -276,10 +276,18 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 ));
 
                 // collect_valid_keys: delegate to inner (all variants, not just active)
-                collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(krate, &variant_path, inner_ty));
+                collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
+                    krate,
+                    &variant_path,
+                    inner_ty,
+                ));
 
                 // collect_valid_prefixes: delegate to inner
-                collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(krate, &variant_path, inner_ty));
+                collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(
+                    krate,
+                    &variant_path,
+                    inner_ty,
+                ));
 
                 // parse_delta config arm - call parse_delta on inner type (async)
                 parse_delta_config_arms.push(quote! {
@@ -317,8 +325,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
     // Generate enum KVPersist method bodies using shared helpers
     let load_from_kv_body = kv_codegen::enum_load_from_kv_body(krate, &load_from_kv_variant_arms);
-    let persist_to_kv_body = kv_codegen::enum_persist_to_kv_body(krate, &variant_name_arms, &persist_to_kv_variant_arms);
-    let collect_valid_keys_body = kv_codegen::enum_collect_valid_keys_body(&collect_valid_keys_arms);
+    let persist_to_kv_body =
+        kv_codegen::enum_persist_to_kv_body(krate, &variant_name_arms, &persist_to_kv_variant_arms);
+    let collect_valid_keys_body =
+        kv_codegen::enum_collect_valid_keys_body(&collect_valid_keys_arms);
 
     // Build SCHEMA_HASH const
     let schema_hash_const = quote! {
@@ -597,9 +607,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         .iter()
         .zip(variant_names.iter())
         .map(|(ident, serde_name)| {
-            let has_data = variants_with_data
-                .iter()
-                .any(|(v, _)| v.ident == *ident);
+            let has_data = variants_with_data.iter().any(|(v, _)| v.ident == *ident);
             if has_data {
                 quote! {
                     Self::#ident(_) => {

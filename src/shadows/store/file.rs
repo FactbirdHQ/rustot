@@ -418,8 +418,7 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
         prefix: &str,
         json: &[u8],
     ) -> Result<St::Delta, ApplyJsonError<Self::Error>> {
-        let resolver =
-            <Self as StateStore<St>>::resolver(self, prefix);
+        let resolver = <Self as StateStore<St>>::resolver(self, prefix);
         let delta = St::parse_delta(json, "", &resolver)
             .await
             .map_err(ApplyJsonError::Parse)?;

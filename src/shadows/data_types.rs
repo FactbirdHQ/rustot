@@ -153,9 +153,8 @@ impl<'a, D> AcceptedResponse<'a, D, D> {
         S: ShadowNode<Delta = D>,
         Res: VariantResolver,
     {
-        let scanner =
-            FieldScanner::scan(json, &["state", "timestamp", "version", "clientToken"])
-                .map_err(ParseError::Scan)?;
+        let scanner = FieldScanner::scan(json, &["state", "timestamp", "version", "clientToken"])
+            .map_err(ParseError::Scan)?;
 
         // Parse timestamp (default to 0 if missing)
         let timestamp = scanner
@@ -224,9 +223,8 @@ impl<'a, U> DeltaResponse<'a, U> {
         S: ShadowNode<Delta = U>,
         R: VariantResolver,
     {
-        let scanner =
-            FieldScanner::scan(json, &["state", "timestamp", "version", "clientToken"])
-                .map_err(ParseError::Scan)?;
+        let scanner = FieldScanner::scan(json, &["state", "timestamp", "version", "clientToken"])
+            .map_err(ParseError::Scan)?;
 
         // Parse timestamp (default to 0 if missing)
         let timestamp = scanner

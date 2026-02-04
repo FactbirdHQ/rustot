@@ -86,11 +86,8 @@ where
                         );
 
                         let resolver = self.store.resolver(Self::prefix());
-                        let parsed = DeltaResponse::parse::<S, _>(
-                            delta_message.payload(),
-                            &resolver,
-                        )
-                        .await;
+                        let parsed =
+                            DeltaResponse::parse::<S, _>(delta_message.payload(), &resolver).await;
 
                         Some(
                             parsed
