@@ -9,6 +9,8 @@
 
 mod adjacently_tagged;
 mod enum_codegen;
+mod helpers;
+mod kv_codegen;
 mod struct_codegen;
 
 use proc_macro2::{Span, TokenStream};

@@ -222,8 +222,11 @@ pub fn has_default_attr(attrs: &[Attribute]) -> bool {
     get_attr(attrs, DEFAULT_ATTR).is_some()
 }
 
-/// Extract serde rename from field attributes
-pub fn get_serde_rename(attrs: &[Attribute]) -> Option<String> {
+/// Extract a string value from a serde attribute by key name.
+///
+/// For example, `get_serde_str_value(attrs, "rename")` extracts the value from
+/// `#[serde(rename = "foo")]`.
+fn get_serde_str_value(attrs: &[Attribute], key: &str) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident(SERDE_ATTR) {
             if let Ok(nested) =
@@ -231,7 +234,7 @@ pub fn get_serde_rename(attrs: &[Attribute]) -> Option<String> {
             {
                 for meta in nested {
                     if let syn::Meta::NameValue(nv) = meta {
-                        if nv.path.is_ident("rename") {
+                        if nv.path.is_ident(key) {
                             if let syn::Expr::Lit(syn::ExprLit {
                                 lit: Lit::Str(s), ..
                             }) = nv.value
@@ -245,67 +248,24 @@ pub fn get_serde_rename(attrs: &[Attribute]) -> Option<String> {
         }
     }
     None
+}
+
+/// Extract serde rename from field attributes
+pub fn get_serde_rename(attrs: &[Attribute]) -> Option<String> {
+    get_serde_str_value(attrs, "rename")
 }
 
 /// Extract serde rename_all from type/variant attributes
 pub fn get_serde_rename_all(attrs: &[Attribute]) -> Option<String> {
-    for attr in attrs {
-        if attr.path().is_ident(SERDE_ATTR) {
-            if let Ok(nested) =
-                attr.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)
-            {
-                for meta in nested {
-                    if let syn::Meta::NameValue(nv) = meta {
-                        if nv.path.is_ident("rename_all") {
-                            if let syn::Expr::Lit(syn::ExprLit {
-                                lit: Lit::Str(s), ..
-                            }) = nv.value
-                            {
-                                return Some(s.value());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+    get_serde_str_value(attrs, "rename_all")
 }
 
 /// Extract serde tag and content for adjacently-tagged enums
 pub fn get_serde_tag_content(attrs: &[Attribute]) -> (Option<String>, Option<String>) {
-    let mut tag = None;
-    let mut content = None;
-
-    for attr in attrs {
-        if attr.path().is_ident(SERDE_ATTR) {
-            if let Ok(nested) =
-                attr.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)
-            {
-                for meta in nested {
-                    if let syn::Meta::NameValue(nv) = meta {
-                        if nv.path.is_ident("tag") {
-                            if let syn::Expr::Lit(syn::ExprLit {
-                                lit: Lit::Str(s), ..
-                            }) = nv.value
-                            {
-                                tag = Some(s.value());
-                            }
-                        } else if nv.path.is_ident("content") {
-                            if let syn::Expr::Lit(syn::ExprLit {
-                                lit: Lit::Str(s), ..
-                            }) = nv.value
-                            {
-                                content = Some(s.value());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    (tag, content)
+    (
+        get_serde_str_value(attrs, "tag"),
+        get_serde_str_value(attrs, "content"),
+    )
 }
 
 /// Get the serde-renamed variant name, respecting explicit renames and rename_all

@@ -6,6 +6,9 @@ use syn::{Data, DeriveInput, Fields, Ident};
 
 use crate::attr::{get_serde_rename, DefaultValue, FieldAttrs};
 
+use super::helpers::build_const_max_expr;
+use super::kv_codegen;
+
 /// Generate code for a struct type
 pub(crate) fn generate_struct_code(
     input: &DeriveInput,
@@ -287,202 +290,47 @@ pub(crate) fn generate_struct_code(
             max_key_len_items.push(quote! { #field_path_len });
 
             // load_from_kv
-            load_from_kv_arms.push(quote! {
-                {
-                    let mut full_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = full_key.push_str(prefix);
-                    let _ = full_key.push_str(#field_path);
-                    #[cfg(not(feature = "std"))]
-                    {
-                        let mut __fetch_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                        if let Some(data) = kv.fetch(&full_key, &mut __fetch_buf).await.map_err(#krate::shadows::KvError::Kv)? {
-                            self.#field_name = ::postcard::from_bytes(data).map_err(|_| #krate::shadows::KvError::Serialization)?;
-                            result.loaded += 1;
-                        } else {
-                            <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
-                            result.defaulted += 1;
-                        }
-                    }
-                    #[cfg(feature = "std")]
-                    {
-                        if let Some(data) = kv.fetch_to_vec(&full_key).await.map_err(#krate::shadows::KvError::Kv)? {
-                            self.#field_name = ::postcard::from_bytes(&data).map_err(|_| #krate::shadows::KvError::Serialization)?;
-                            result.loaded += 1;
-                        } else {
-                            <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
-                            result.defaulted += 1;
-                        }
-                    }
-                }
-            });
+            let on_missing = quote! {
+                <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
+                result.defaulted += 1;
+            };
+            load_from_kv_arms.push(kv_codegen::leaf_load(
+                krate,
+                &field_path,
+                quote! { self.#field_name },
+                on_missing,
+            ));
 
             // load_from_kv_with_migration
             let migrate_from_keys: Vec<_> = attrs.migrate_from.iter().collect();
-            let migration_code = if migrate_from_keys.is_empty() {
-                quote! {
-                    // No migration sources, apply default
-                    <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
-                    result.defaulted += 1;
-                }
-            } else {
-                let convert_expr = if let Some(ref convert) = attrs.migrate_convert {
-                    quote! { Some(#convert) }
-                } else {
-                    quote! { None }
-                };
-                quote! {
-                    // Try migration sources
-                    let mut migrated = false;
-                    let sources: &[#krate::shadows::MigrationSource] = &[
-                        #(#krate::shadows::MigrationSource {
-                            key: #migrate_from_keys,
-                            convert: #convert_expr,
-                        }),*
-                    ];
-                    for source in sources {
-                        let mut old_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = old_key.push_str(prefix);
-                        let _ = old_key.push_str(source.key);
-                        #[cfg(not(feature = "std"))]
-                        {
-                            let mut fetch_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                            if let Some(old_data) = kv.fetch(&old_key, &mut fetch_buf).await.map_err(#krate::shadows::KvError::Kv)? {
-                                let value_bytes = if let Some(convert_fn) = source.convert {
-                                    let mut convert_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                                    let new_len = convert_fn(old_data, &mut convert_buf).map_err(#krate::shadows::KvError::Migration)?;
-                                    fetch_buf[..new_len].copy_from_slice(&convert_buf[..new_len]);
-                                    &fetch_buf[..new_len]
-                                } else {
-                                    old_data
-                                };
-                                self.#field_name = ::postcard::from_bytes(value_bytes).map_err(|_| #krate::shadows::KvError::Serialization)?;
-                                kv.store(&full_key, value_bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                                result.migrated += 1;
-                                migrated = true;
-                                break;
-                            }
-                        }
-                        #[cfg(feature = "std")]
-                        {
-                            if let Some(old_data) = kv.fetch_to_vec(&old_key).await.map_err(#krate::shadows::KvError::Kv)? {
-                                let value_bytes: ::std::vec::Vec<u8> = if let Some(convert_fn) = source.convert {
-                                    let mut convert_buf = vec![0u8; old_data.len() * 2 + 64];
-                                    let new_len = convert_fn(&old_data, &mut convert_buf).map_err(#krate::shadows::KvError::Migration)?;
-                                    convert_buf[..new_len].to_vec()
-                                } else {
-                                    old_data
-                                };
-                                self.#field_name = ::postcard::from_bytes(&value_bytes).map_err(|_| #krate::shadows::KvError::Serialization)?;
-                                kv.store(&full_key, &value_bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                                result.migrated += 1;
-                                migrated = true;
-                                break;
-                            }
-                        }
-                    }
-                    if !migrated {
-                        <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
-                        result.defaulted += 1;
-                    }
-                }
-            };
-
-            load_from_kv_migration_arms.push(quote! {
-                {
-                    let mut full_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = full_key.push_str(prefix);
-                    let _ = full_key.push_str(#field_path);
-                    #[cfg(not(feature = "std"))]
-                    {
-                        let mut __fetch_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                        if let Some(data) = kv.fetch(&full_key, &mut __fetch_buf).await.map_err(#krate::shadows::KvError::Kv)? {
-                            match ::postcard::from_bytes(data) {
-                                Ok(val) => {
-                                    self.#field_name = val;
-                                    result.loaded += 1;
-                                }
-                                Err(_) => {
-                                    #migration_code
-                                }
-                            }
-                        } else {
-                            #migration_code
-                        }
-                    }
-                    #[cfg(feature = "std")]
-                    {
-                        if let Some(data) = kv.fetch_to_vec(&full_key).await.map_err(#krate::shadows::KvError::Kv)? {
-                            match ::postcard::from_bytes(&data) {
-                                Ok(val) => {
-                                    self.#field_name = val;
-                                    result.loaded += 1;
-                                }
-                                Err(_) => {
-                                    #migration_code
-                                }
-                            }
-                        } else {
-                            #migration_code
-                        }
-                    }
-                }
-            });
+            let migration_code = kv_codegen::migration_fallback(
+                krate,
+                &field_path,
+                quote! { self.#field_name },
+                &migrate_from_keys,
+                attrs.migrate_convert.as_ref(),
+            );
+            load_from_kv_migration_arms.push(kv_codegen::leaf_load_with_migration(
+                krate,
+                &field_path,
+                quote! { self.#field_name },
+                migration_code,
+            ));
 
             // persist_to_kv
-            persist_to_kv_arms.push(quote! {
-                {
-                    let mut full_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = full_key.push_str(prefix);
-                    let _ = full_key.push_str(#field_path);
-                    #[cfg(not(feature = "std"))]
-                    {
-                        let mut __ser_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                        let bytes = ::postcard::to_slice(&self.#field_name, &mut __ser_buf)
-                            .map_err(|_| #krate::shadows::KvError::Serialization)?;
-                        kv.store(&full_key, bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                    }
-                    #[cfg(feature = "std")]
-                    {
-                        let bytes = ::postcard::to_allocvec(&self.#field_name)
-                            .map_err(|_| #krate::shadows::KvError::Serialization)?;
-                        kv.store(&full_key, &bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                    }
-                }
-            });
+            persist_to_kv_arms.push(kv_codegen::leaf_persist(
+                krate,
+                &field_path,
+                quote! { self.#field_name },
+            ));
 
             // persist_delta (for non-report_only fields)
             if !attrs.report_only {
-                persist_delta_arms.push(quote! {
-                    if let Some(ref val) = delta.#field_name {
-                        let mut full_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = full_key.push_str(prefix);
-                        let _ = full_key.push_str(#field_path);
-                        #[cfg(not(feature = "std"))]
-                        {
-                            let mut __ser_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                            let bytes = ::postcard::to_slice(val, &mut __ser_buf)
-                                .map_err(|_| #krate::shadows::KvError::Serialization)?;
-                            kv.store(&full_key, bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                        }
-                        #[cfg(feature = "std")]
-                        {
-                            let bytes = ::postcard::to_allocvec(val)
-                                .map_err(|_| #krate::shadows::KvError::Serialization)?;
-                            kv.store(&full_key, &bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                        }
-                    }
-                });
+                persist_delta_arms.push(kv_codegen::leaf_persist_delta(krate, &field_path, field_name));
             }
 
             // collect_valid_keys
-            collect_valid_keys_arms.push(quote! {
-                {
-                    let mut key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = key.push_str(prefix);
-                    let _ = key.push_str(#field_path);
-                    keys(&key);
-                }
-            });
+            collect_valid_keys_arms.push(kv_codegen::leaf_collect_keys(&field_path));
         } else {
             // Nested ShadowNode field: delegate
 
@@ -492,106 +340,52 @@ pub(crate) fn generate_struct_code(
             );
 
             // load_from_kv
-            load_from_kv_arms.push(quote! {
-                {
-                    let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = nested_prefix.push_str(prefix);
-                    let _ = nested_prefix.push_str(#field_path);
-                    let inner = <#field_ty as #krate::shadows::KVPersist>::load_from_kv::<K, KEY_LEN>(&mut self.#field_name, &nested_prefix, kv).await?;
-                    result.merge(inner);
-                }
-            });
+            load_from_kv_arms.push(kv_codegen::nested_load(
+                krate,
+                &field_path,
+                field_ty,
+                quote! { &mut self.#field_name },
+            ));
 
             // load_from_kv_with_migration
-            load_from_kv_migration_arms.push(quote! {
-                {
-                    let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = nested_prefix.push_str(prefix);
-                    let _ = nested_prefix.push_str(#field_path);
-                    let inner = <#field_ty as #krate::shadows::KVPersist>::load_from_kv_with_migration::<K, KEY_LEN>(&mut self.#field_name, &nested_prefix, kv).await?;
-                    result.merge(inner);
-                }
-            });
+            load_from_kv_migration_arms.push(kv_codegen::nested_load_with_migration(
+                krate,
+                &field_path,
+                field_ty,
+                quote! { &mut self.#field_name },
+            ));
 
             // persist_to_kv
-            persist_to_kv_arms.push(quote! {
-                {
-                    let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = nested_prefix.push_str(prefix);
-                    let _ = nested_prefix.push_str(#field_path);
-                    <#field_ty as #krate::shadows::KVPersist>::persist_to_kv::<K, KEY_LEN>(&self.#field_name, &nested_prefix, kv).await?;
-                }
-            });
+            persist_to_kv_arms.push(kv_codegen::nested_persist(
+                krate,
+                &field_path,
+                field_ty,
+                quote! { &self.#field_name },
+            ));
 
             // persist_delta (for non-report_only fields)
             if !attrs.report_only {
-                persist_delta_arms.push(quote! {
-                    if let Some(ref inner_delta) = delta.#field_name {
-                        let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = nested_prefix.push_str(prefix);
-                        let _ = nested_prefix.push_str(#field_path);
-                        <#field_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &nested_prefix).await?;
-                    }
-                });
+                persist_delta_arms.push(kv_codegen::nested_persist_delta(
+                    krate,
+                    &field_path,
+                    field_ty,
+                    field_name,
+                ));
             }
 
             // collect_valid_keys
-            collect_valid_keys_arms.push(quote! {
-                {
-                    let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = nested_prefix.push_str(prefix);
-                    let _ = nested_prefix.push_str(#field_path);
-                    <#field_ty as #krate::shadows::KVPersist>::collect_valid_keys::<KEY_LEN>(&nested_prefix, keys);
-                }
-            });
+            collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(krate, &field_path, field_ty));
 
             // collect_valid_prefixes
-            collect_valid_prefixes_arms.push(quote! {
-                {
-                    let mut nested_prefix: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                    let _ = nested_prefix.push_str(prefix);
-                    let _ = nested_prefix.push_str(#field_path);
-                    <#field_ty as #krate::shadows::KVPersist>::collect_valid_prefixes::<KEY_LEN>(&nested_prefix, prefixes);
-                }
-            });
+            collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(krate, &field_path, field_ty));
         }
     }
 
     // Build max_value_len const expression
-    let max_value_len_expr = if max_value_len_items.is_empty() {
-        quote! { 0 }
-    } else {
-        let mut expr = max_value_len_items[0].clone();
-        for item in &max_value_len_items[1..] {
-            expr = quote! { const_max(#expr, #item) };
-        }
-        quote! {
-            {
-                const fn const_max(a: usize, b: usize) -> usize {
-                    if a > b { a } else { b }
-                }
-                #expr
-            }
-        }
-    };
+    let max_value_len_expr = build_const_max_expr(max_value_len_items, quote! { 0 });
 
     // Build MAX_KEY_LEN const expression (max of field paths)
-    let max_key_len_expr = if max_key_len_items.is_empty() {
-        quote! { 0 }
-    } else {
-        let mut expr = max_key_len_items[0].clone();
-        for item in &max_key_len_items[1..] {
-            expr = quote! { const_max(#expr, #item) };
-        }
-        quote! {
-            {
-                const fn const_max(a: usize, b: usize) -> usize {
-                    if a > b { a } else { b }
-                }
-                #expr
-            }
-        }
-    };
+    let max_key_len_expr = build_const_max_expr(max_key_len_items, quote! { 0 });
 
     // Build SCHEMA_HASH const
     let schema_hash_const = quote! {
