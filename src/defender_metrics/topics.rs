@@ -60,6 +60,7 @@ impl Topic {
         Ok(topic_path)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Topic> {
         let tt = s.splitn(7, '/').collect::<heapless::Vec<&str, 7>>();
         match (tt.first(), tt.get(1), tt.get(3), tt.get(4)) {

@@ -301,6 +301,7 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// Used for efficient acknowledgment - reports only changed fields.
     /// AWS IoT Shadow merges partial updates, so unchanged fields keep
     /// their cloud values.
+    #[allow(clippy::wrong_self_convention)]
     fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported;
 }
 

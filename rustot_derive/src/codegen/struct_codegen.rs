@@ -41,17 +41,21 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident};
 
-use crate::attr::{get_serde_rename, DefaultValue, FieldAttrs};
+#[cfg(feature = "kv_persist")]
+use crate::attr::DefaultValue;
+use crate::attr::{get_serde_rename, FieldAttrs};
 
+#[cfg(feature = "kv_persist")]
 use super::helpers::build_const_max_expr;
+#[cfg(feature = "kv_persist")]
 use super::kv_codegen;
 use super::CodegenOutput;
 
-/// All generated code fragments for a single struct field.
+/// All generated code fragments for a single struct field (ShadowNode only).
 ///
 /// This struct captures the complete output of processing one field,
-/// making it easier to understand what code is generated for each field
-/// without tracking ~20 separate collections.
+/// making it easier to understand what code is generated for each field.
+/// KVPersist codegen is handled separately in a cfg-gated block.
 struct FieldCodegen {
     /// The serde field name (for FIELD_NAMES constant)
     serde_name: String,
@@ -76,33 +80,6 @@ struct FieldCodegen {
     parse_delta_field_name: Option<String>,
     /// parse_delta() field parsing arm (None if report_only)
     parse_delta_arm: Option<TokenStream>,
-
-    // KVPersist codegen
-    /// migration_sources() match arm (None if no migrations)
-    migration_arm: Option<TokenStream>,
-    /// apply_field_default() match arm (None if no custom default)
-    default_arm: Option<TokenStream>,
-    /// MAX_VALUE_LEN expression component
-    max_value_len_item: TokenStream,
-    /// MAX_KEY_LEN expression component
-    max_key_len_item: TokenStream,
-    /// load_from_kv() arm
-    load_from_kv_arm: TokenStream,
-    /// load_from_kv_with_migration() arm
-    load_from_kv_migration_arm: TokenStream,
-    /// persist_to_kv() arm
-    persist_to_kv_arm: TokenStream,
-    /// persist_delta() arm (None if report_only)
-    persist_delta_arm: Option<TokenStream>,
-    /// collect_valid_keys() arm
-    collect_valid_keys_arm: TokenStream,
-    /// collect_valid_prefixes() arm (None for leaf fields)
-    collect_valid_prefixes_arm: Option<TokenStream>,
-
-    /// Migration source keys (for all_migration_keys)
-    migration_from_keys: Vec<String>,
-    /// Opaque field type for where clause (None if not opaque)
-    opaque_field_type: Option<syn::Type>,
 }
 
 /// Process a single struct field and generate all code fragments.
@@ -122,7 +99,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     let attrs = FieldAttrs::from_attrs(&field.attrs);
 
     let serde_name = get_serde_rename(&field.attrs).unwrap_or_else(|| field_name.to_string());
-    let field_path = format!("/{}", serde_name);
+    let _field_path = format!("/{}", serde_name);
 
     // A field is a "leaf" (direct KV storage) if it's opaque OR has migrations.
     // Fields with migrations must be leaves because migration logic operates on
@@ -225,11 +202,6 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         }
     };
 
-    // --- MAX_VALUE_LEN item ---
-    let max_value_len_item = quote! {
-        <#field_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
-    };
-
     // --- reported serialize arm ---
     let reported_serialize_arm = quote! {
         if let Some(ref val) = self.#field_name {
@@ -295,171 +267,6 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         })
     };
 
-    // =======================================================================
-    // KVPersist codegen
-    // =======================================================================
-
-    // --- Migration arm ---
-    let migrate_from = attrs.migrate_from();
-    let migration_from_keys: Vec<String> = migrate_from.iter().cloned().collect();
-    let migration_arm = if migrate_from.is_empty() {
-        None
-    } else {
-        let from_keys: Vec<_> = migrate_from.iter().collect();
-        let convert_expr = if let Some(convert) = attrs.migrate_convert() {
-            quote! { Some(#convert) }
-        } else {
-            quote! { None }
-        };
-        Some(quote! {
-            #field_path => {
-                const SOURCES: &[#krate::shadows::MigrationSource] = &[
-                    #(#krate::shadows::MigrationSource {
-                        key: #from_keys,
-                        convert: #convert_expr,
-                    }),*
-                ];
-                SOURCES
-            }
-        })
-    };
-
-    // --- Default arm ---
-    let default_arm = attrs.default_value.as_ref().map(|default_val| {
-        let value_expr = match default_val {
-            DefaultValue::Literal(lit) => quote! { #lit },
-            DefaultValue::Function(path) => quote! { #path() },
-        };
-        quote! {
-            #field_path => {
-                self.#field_name = #value_expr;
-                true
-            }
-        }
-    });
-
-    let field_path_len = field_path.len();
-
-    // --- KV operations (leaf vs nested) ---
-    let (
-        max_key_len_item,
-        load_from_kv_arm,
-        load_from_kv_migration_arm,
-        persist_to_kv_arm,
-        persist_delta_arm,
-        collect_valid_keys_arm,
-        collect_valid_prefixes_arm,
-    ) = if is_leaf {
-        // Leaf field: direct KV operations
-        let max_key_len_item = quote! { #field_path_len };
-
-        let on_missing = quote! {
-            <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
-            result.defaulted += 1;
-        };
-        let load_from_kv_arm =
-            kv_codegen::leaf_load(krate, &field_path, quote! { self.#field_name }, on_missing);
-
-        let migrate_from_vec = attrs.migrate_from();
-        let migrate_from_keys: Vec<_> = migrate_from_vec.iter().collect();
-        let migrate_convert = attrs.migrate_convert();
-        let migration_code = kv_codegen::migration_fallback(
-            krate,
-            &field_path,
-            quote! { self.#field_name },
-            &migrate_from_keys,
-            migrate_convert.as_ref(),
-        );
-        let load_from_kv_migration_arm = kv_codegen::leaf_load_with_migration(
-            krate,
-            &field_path,
-            quote! { self.#field_name },
-            migration_code,
-        );
-
-        let persist_to_kv_arm =
-            kv_codegen::leaf_persist(krate, &field_path, quote! { self.#field_name });
-
-        let persist_delta_arm = if attrs.report_only {
-            None
-        } else {
-            Some(kv_codegen::leaf_persist_delta(
-                krate,
-                &field_path,
-                field_name,
-            ))
-        };
-
-        let collect_valid_keys_arm = kv_codegen::leaf_collect_keys(&field_path);
-
-        (
-            max_key_len_item,
-            load_from_kv_arm,
-            load_from_kv_migration_arm,
-            persist_to_kv_arm,
-            persist_delta_arm,
-            collect_valid_keys_arm,
-            None, // leaf fields don't have prefixes
-        )
-    } else {
-        // Nested ShadowNode field: delegate
-        let max_key_len_item =
-            quote! { #field_path_len + <#field_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN };
-
-        let load_from_kv_arm = kv_codegen::nested_load(
-            krate,
-            &field_path,
-            field_ty,
-            quote! { &mut self.#field_name },
-        );
-
-        let load_from_kv_migration_arm = kv_codegen::nested_load_with_migration(
-            krate,
-            &field_path,
-            field_ty,
-            quote! { &mut self.#field_name },
-        );
-
-        let persist_to_kv_arm =
-            kv_codegen::nested_persist(krate, &field_path, field_ty, quote! { &self.#field_name });
-
-        let persist_delta_arm = if attrs.report_only {
-            None
-        } else {
-            Some(kv_codegen::nested_persist_delta(
-                krate,
-                &field_path,
-                field_ty,
-                field_name,
-            ))
-        };
-
-        let collect_valid_keys_arm = kv_codegen::nested_collect_keys(krate, &field_path, field_ty);
-
-        let collect_valid_prefixes_arm = Some(kv_codegen::nested_collect_prefixes(
-            krate,
-            &field_path,
-            field_ty,
-        ));
-
-        (
-            max_key_len_item,
-            load_from_kv_arm,
-            load_from_kv_migration_arm,
-            persist_to_kv_arm,
-            persist_delta_arm,
-            collect_valid_keys_arm,
-            collect_valid_prefixes_arm,
-        )
-    };
-
-    // --- Opaque field type ---
-    let opaque_field_type = if attrs.opaque {
-        Some(field_ty.clone())
-    } else {
-        None
-    };
-
     FieldCodegen {
         serde_name,
         delta_field,
@@ -471,18 +278,6 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         variant_at_path_arm,
         parse_delta_field_name,
         parse_delta_arm,
-        migration_arm,
-        default_arm,
-        max_value_len_item,
-        max_key_len_item,
-        load_from_kv_arm,
-        load_from_kv_migration_arm,
-        persist_to_kv_arm,
-        persist_delta_arm,
-        collect_valid_keys_arm,
-        collect_valid_prefixes_arm,
-        migration_from_keys,
-        opaque_field_type,
     }
 }
 
@@ -559,62 +354,6 @@ pub(crate) fn generate_struct_code(
         .filter_map(|f| f.parse_delta_arm.clone())
         .collect();
 
-    // KVPersist collections
-    let migration_arms: Vec<_> = field_codegens
-        .iter()
-        .filter_map(|f| f.migration_arm.clone())
-        .collect();
-    let default_arms: Vec<_> = field_codegens
-        .iter()
-        .filter_map(|f| f.default_arm.clone())
-        .collect();
-    let max_value_len_items: Vec<_> = field_codegens
-        .iter()
-        .map(|f| f.max_value_len_item.clone())
-        .collect();
-    let max_key_len_items: Vec<_> = field_codegens
-        .iter()
-        .map(|f| f.max_key_len_item.clone())
-        .collect();
-    let load_from_kv_arms: Vec<_> = field_codegens
-        .iter()
-        .map(|f| f.load_from_kv_arm.clone())
-        .collect();
-    let load_from_kv_migration_arms: Vec<_> = field_codegens
-        .iter()
-        .map(|f| f.load_from_kv_migration_arm.clone())
-        .collect();
-    let persist_to_kv_arms: Vec<_> = field_codegens
-        .iter()
-        .map(|f| f.persist_to_kv_arm.clone())
-        .collect();
-    let persist_delta_arms: Vec<_> = field_codegens
-        .iter()
-        .filter_map(|f| f.persist_delta_arm.clone())
-        .collect();
-    let collect_valid_keys_arms: Vec<_> = field_codegens
-        .iter()
-        .map(|f| f.collect_valid_keys_arm.clone())
-        .collect();
-    let collect_valid_prefixes_arms: Vec<_> = field_codegens
-        .iter()
-        .filter_map(|f| f.collect_valid_prefixes_arm.clone())
-        .collect();
-    let all_migration_from_keys: Vec<_> = field_codegens
-        .iter()
-        .flat_map(|f| f.migration_from_keys.clone())
-        .collect();
-    let opaque_field_types: Vec<_> = field_codegens
-        .iter()
-        .filter_map(|f| f.opaque_field_type.clone())
-        .collect();
-
-    // Build max_value_len const expression
-    let max_value_len_expr = build_const_max_expr(max_value_len_items, quote! { 0 });
-
-    // Build MAX_KEY_LEN const expression (max of field paths)
-    let max_key_len_expr = build_const_max_expr(max_key_len_items, quote! { 0 });
-
     // Generate Delta type - always use FieldScanner, no Deserialize needed
     let delta_type = quote! {
         #[derive(
@@ -635,16 +374,6 @@ pub(crate) fn generate_struct_code(
         }
     };
 
-    // Migration arms default
-    let migration_default = quote! {
-        _ => &[]
-    };
-
-    // Default arms default
-    let default_default = quote! {
-        _ => false
-    };
-
     // Build SCHEMA_HASH const
     let schema_hash_const = quote! {
         {
@@ -652,16 +381,6 @@ pub(crate) fn generate_struct_code(
             #(#schema_hash_code)*
             h
         }
-    };
-
-    // Generate where clause for opaque field types (KVPersist bound, feature-gated)
-    let kv_where_clause = if opaque_field_types.is_empty() {
-        quote! {}
-    } else {
-        let bounds = opaque_field_types.iter().map(|ty| {
-            quote! { #ty: #krate::shadows::KVPersist }
-        });
-        quote! { where #(#bounds),* }
     };
 
     // Generate parse_delta body - always use FieldScanner
@@ -675,7 +394,7 @@ pub(crate) fn generate_struct_code(
         Ok(delta)
     };
 
-    // Generate ShadowNode impl (always available, no where clause needed)
+    // Generate ShadowNode impl (always generated)
     let shadow_node_impl = quote! {
         impl #krate::shadows::ShadowNode for #name {
             type Delta = #delta_name;
@@ -708,86 +427,284 @@ pub(crate) fn generate_struct_code(
                 }
             }
         }
+    };
 
-        // KVPersist impl (feature-gated)
-        #[cfg(feature = "shadows_kv_persist")]
-        impl #krate::shadows::KVPersist for #name #kv_where_clause {
-            const MAX_KEY_LEN: usize = #max_key_len_expr;
-            const MAX_VALUE_LEN: usize = #max_value_len_expr;
+    // KVPersist impl (only generated when kv_persist feature is enabled)
+    #[cfg(feature = "kv_persist")]
+    let kv_persist_impl = {
+        // Generate KV code by iterating over fields
+        let mut migration_arms = Vec::new();
+        let mut default_arms = Vec::new();
+        let mut max_value_len_items = Vec::new();
+        let mut max_key_len_items = Vec::new();
+        let mut load_from_kv_arms = Vec::new();
+        let mut load_from_kv_migration_arms = Vec::new();
+        let mut persist_to_kv_arms = Vec::new();
+        let mut persist_delta_arms = Vec::new();
+        let mut collect_valid_keys_arms = Vec::new();
+        let mut collect_valid_prefixes_arms = Vec::new();
+        let mut all_migration_from_keys = Vec::new();
+        let mut opaque_field_types = Vec::new();
 
-            fn migration_sources(field_path: &str) -> &'static [#krate::shadows::MigrationSource] {
-                match field_path {
-                    #(#migration_arms)*
-                    #migration_default
+        for field in named_fields {
+            let field_name = field.ident.as_ref().unwrap();
+            let field_ty = &field.ty;
+            let attrs = FieldAttrs::from_attrs(&field.attrs);
+
+            let serde_name =
+                get_serde_rename(&field.attrs).unwrap_or_else(|| field_name.to_string());
+            let field_path = format!("/{}", serde_name);
+            let field_path_len = field_path.len();
+
+            let has_migration = !attrs.migrate_from().is_empty();
+            let is_leaf = attrs.opaque || has_migration;
+
+            // MAX_VALUE_LEN
+            max_value_len_items.push(quote! {
+                <#field_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
+            });
+
+            // Migration arm
+            let migrate_from = attrs.migrate_from();
+            if !migrate_from.is_empty() {
+                let from_keys: Vec<_> = migrate_from.iter().collect();
+                all_migration_from_keys.extend(migrate_from.iter().cloned());
+                let convert_expr = if let Some(convert) = attrs.migrate_convert() {
+                    quote! { Some(#convert) }
+                } else {
+                    quote! { None }
+                };
+                migration_arms.push(quote! {
+                    #field_path => {
+                        const SOURCES: &[#krate::shadows::MigrationSource] = &[
+                            #(#krate::shadows::MigrationSource {
+                                key: #from_keys,
+                                convert: #convert_expr,
+                            }),*
+                        ];
+                        SOURCES
+                    }
+                });
+            }
+
+            // Default arm
+            if let Some(default_val) = &attrs.default_value {
+                let value_expr = match default_val {
+                    DefaultValue::Literal(lit) => quote! { #lit },
+                    DefaultValue::Function(path) => quote! { #path() },
+                };
+                default_arms.push(quote! {
+                    #field_path => {
+                        self.#field_name = #value_expr;
+                        true
+                    }
+                });
+            }
+
+            // Opaque field type
+            if attrs.opaque {
+                opaque_field_types.push(field_ty.clone());
+            }
+
+            // KV operations (leaf vs nested)
+            if is_leaf {
+                max_key_len_items.push(quote! { #field_path_len });
+
+                let on_missing = quote! {
+                    <Self as #krate::shadows::KVPersist>::apply_field_default(self, #field_path);
+                    result.defaulted += 1;
+                };
+                load_from_kv_arms.push(kv_codegen::leaf_load(
+                    krate,
+                    &field_path,
+                    quote! { self.#field_name },
+                    on_missing,
+                ));
+
+                let migrate_from_vec = attrs.migrate_from();
+                let migrate_from_keys: Vec<_> = migrate_from_vec.iter().collect();
+                let migrate_convert = attrs.migrate_convert();
+                let migration_code = kv_codegen::migration_fallback(
+                    krate,
+                    &field_path,
+                    quote! { self.#field_name },
+                    &migrate_from_keys,
+                    migrate_convert.as_ref(),
+                );
+                load_from_kv_migration_arms.push(kv_codegen::leaf_load_with_migration(
+                    krate,
+                    &field_path,
+                    quote! { self.#field_name },
+                    migration_code,
+                ));
+
+                persist_to_kv_arms.push(kv_codegen::leaf_persist(
+                    krate,
+                    &field_path,
+                    quote! { self.#field_name },
+                ));
+
+                if !attrs.report_only {
+                    persist_delta_arms.push(kv_codegen::leaf_persist_delta(
+                        krate,
+                        &field_path,
+                        field_name,
+                    ));
                 }
-            }
 
-            fn all_migration_keys() -> impl Iterator<Item = &'static str> {
-                const MIGRATION_KEYS: &[&str] = &[#(#all_migration_from_keys),*];
-                MIGRATION_KEYS.iter().copied()
-            }
+                collect_valid_keys_arms.push(kv_codegen::leaf_collect_keys(&field_path));
+            } else {
+                max_key_len_items.push(
+                    quote! { #field_path_len + <#field_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN },
+                );
 
-            fn apply_field_default(&mut self, field_path: &str) -> bool {
-                match field_path {
-                    #(#default_arms)*
-                    #default_default
+                load_from_kv_arms.push(kv_codegen::nested_load(
+                    krate,
+                    &field_path,
+                    field_ty,
+                    quote! { &mut self.#field_name },
+                ));
+
+                load_from_kv_migration_arms.push(kv_codegen::nested_load_with_migration(
+                    krate,
+                    &field_path,
+                    field_ty,
+                    quote! { &mut self.#field_name },
+                ));
+
+                persist_to_kv_arms.push(kv_codegen::nested_persist(
+                    krate,
+                    &field_path,
+                    field_ty,
+                    quote! { &self.#field_name },
+                ));
+
+                if !attrs.report_only {
+                    persist_delta_arms.push(kv_codegen::nested_persist_delta(
+                        krate,
+                        &field_path,
+                        field_ty,
+                        field_name,
+                    ));
                 }
-            }
 
-            fn load_from_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
-                &mut self,
-                prefix: &str,
-                kv: &K,
-            ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
-                async move {
-                    let mut result = #krate::shadows::LoadFieldResult::default();
-                    #(#load_from_kv_arms)*
-                    Ok(result)
-                }
-            }
-
-            fn load_from_kv_with_migration<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
-                &mut self,
-                prefix: &str,
-                kv: &K,
-            ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
-                async move {
-                    let mut result = #krate::shadows::LoadFieldResult::default();
-                    #(#load_from_kv_migration_arms)*
-                    Ok(result)
-                }
-            }
-
-            fn persist_to_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
-                &self,
-                prefix: &str,
-                kv: &K,
-            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
-                async move {
-                    #(#persist_to_kv_arms)*
-                    Ok(())
-                }
-            }
-
-            fn persist_delta<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
-                delta: &Self::Delta,
-                kv: &K,
-                prefix: &str,
-            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
-                async move {
-                    #(#persist_delta_arms)*
-                    Ok(())
-                }
-            }
-
-            fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-                #(#collect_valid_keys_arms)*
-            }
-
-            fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
-                #(#collect_valid_prefixes_arms)*
+                collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
+                    krate,
+                    &field_path,
+                    field_ty,
+                ));
+                collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(
+                    krate,
+                    &field_path,
+                    field_ty,
+                ));
             }
         }
+
+        // Build const expressions
+        let max_value_len_expr = build_const_max_expr(max_value_len_items, quote! { 0 });
+        let max_key_len_expr = build_const_max_expr(max_key_len_items, quote! { 0 });
+
+        let migration_default = quote! { _ => &[] };
+        let default_default = quote! { _ => false };
+
+        let kv_where_clause = if opaque_field_types.is_empty() {
+            quote! {}
+        } else {
+            let bounds = opaque_field_types.iter().map(|ty| {
+                quote! { #ty: #krate::shadows::KVPersist }
+            });
+            quote! { where #(#bounds),* }
+        };
+
+        quote! {
+            impl #krate::shadows::KVPersist for #name #kv_where_clause {
+                const MAX_KEY_LEN: usize = #max_key_len_expr;
+                const MAX_VALUE_LEN: usize = #max_value_len_expr;
+
+                fn migration_sources(field_path: &str) -> &'static [#krate::shadows::MigrationSource] {
+                    match field_path {
+                        #(#migration_arms)*
+                        #migration_default
+                    }
+                }
+
+                fn all_migration_keys() -> impl Iterator<Item = &'static str> {
+                    const MIGRATION_KEYS: &[&str] = &[#(#all_migration_from_keys),*];
+                    MIGRATION_KEYS.iter().copied()
+                }
+
+                fn apply_field_default(&mut self, field_path: &str) -> bool {
+                    match field_path {
+                        #(#default_arms)*
+                        #default_default
+                    }
+                }
+
+                fn load_from_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                    &mut self,
+                    prefix: &str,
+                    kv: &K,
+                ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
+                    async move {
+                        let mut result = #krate::shadows::LoadFieldResult::default();
+                        #(#load_from_kv_arms)*
+                        Ok(result)
+                    }
+                }
+
+                fn load_from_kv_with_migration<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                    &mut self,
+                    prefix: &str,
+                    kv: &K,
+                ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
+                    async move {
+                        let mut result = #krate::shadows::LoadFieldResult::default();
+                        #(#load_from_kv_migration_arms)*
+                        Ok(result)
+                    }
+                }
+
+                fn persist_to_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                    &self,
+                    prefix: &str,
+                    kv: &K,
+                ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
+                    async move {
+                        #(#persist_to_kv_arms)*
+                        Ok(())
+                    }
+                }
+
+                fn persist_delta<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                    delta: &Self::Delta,
+                    kv: &K,
+                    prefix: &str,
+                ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
+                    async move {
+                        #(#persist_delta_arms)*
+                        Ok(())
+                    }
+                }
+
+                fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
+                    #(#collect_valid_keys_arms)*
+                }
+
+                fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
+                    #(#collect_valid_prefixes_arms)*
+                }
+            }
+        }
+    };
+
+    #[cfg(not(feature = "kv_persist"))]
+    let kv_persist_impl = quote! {};
+
+    // Combine ShadowNode and KVPersist impls
+    let shadow_node_impl = quote! {
+        #shadow_node_impl
+        #kv_persist_impl
     };
 
     // Generate ReportedUnionFields impl

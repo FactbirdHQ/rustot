@@ -166,16 +166,14 @@ impl crate::shadows::ShadowNode for core::time::Duration {
 
     const SCHEMA_HASH: u64 = crate::shadows::fnv1a_hash(b"core::time::Duration");
 
-    fn parse_delta<R: crate::shadows::VariantResolver>(
+    async fn parse_delta<R: crate::shadows::VariantResolver>(
         json: &[u8],
         _path: &str,
         _resolver: &R,
-    ) -> impl ::core::future::Future<Output = Result<Self::Delta, crate::shadows::ParseError>> {
-        async move {
-            ::serde_json_core::from_slice(json)
-                .map(|(v, _)| v)
-                .map_err(|_| crate::shadows::ParseError::Deserialize)
-        }
+    ) -> Result<Self::Delta, crate::shadows::ParseError> {
+        ::serde_json_core::from_slice(json)
+            .map(|(v, _)| v)
+            .map_err(|_| crate::shadows::ParseError::Deserialize)
     }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
@@ -216,70 +214,60 @@ impl crate::shadows::KVPersist for core::time::Duration {
         false
     }
 
-    fn load_from_kv<K: crate::shadows::KVStore, const KEY_LEN: usize>(
+    async fn load_from_kv<K: crate::shadows::KVStore, const KEY_LEN: usize>(
         &mut self,
         prefix: &str,
         kv: &K,
-    ) -> impl ::core::future::Future<
-        Output = Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>>,
-    > {
-        async move {
-            let mut result = crate::shadows::LoadFieldResult::default();
-            let mut buf = [0u8; 15];
-            match kv
-                .fetch(prefix, &mut buf)
-                .await
-                .map_err(crate::shadows::KvError::Kv)?
-            {
-                Some(data) => {
-                    *self = ::postcard::from_bytes(data)
-                        .map_err(|_| crate::shadows::KvError::Serialization)?;
-                    result.loaded += 1;
-                }
-                None => result.defaulted += 1,
+    ) -> Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>> {
+        let mut result = crate::shadows::LoadFieldResult::default();
+        let mut buf = [0u8; 15];
+        match kv
+            .fetch(prefix, &mut buf)
+            .await
+            .map_err(crate::shadows::KvError::Kv)?
+        {
+            Some(data) => {
+                *self = ::postcard::from_bytes(data)
+                    .map_err(|_| crate::shadows::KvError::Serialization)?;
+                result.loaded += 1;
             }
-            Ok(result)
+            None => result.defaulted += 1,
         }
+        Ok(result)
     }
 
-    fn load_from_kv_with_migration<K: crate::shadows::KVStore, const KEY_LEN: usize>(
+    async fn load_from_kv_with_migration<K: crate::shadows::KVStore, const KEY_LEN: usize>(
         &mut self,
         prefix: &str,
         kv: &K,
-    ) -> impl ::core::future::Future<
-        Output = Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>>,
-    > {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv)
+    ) -> Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>> {
+        self.load_from_kv::<K, KEY_LEN>(prefix, kv).await
     }
 
-    fn persist_to_kv<K: crate::shadows::KVStore, const KEY_LEN: usize>(
+    async fn persist_to_kv<K: crate::shadows::KVStore, const KEY_LEN: usize>(
         &self,
         prefix: &str,
         kv: &K,
-    ) -> impl ::core::future::Future<Output = Result<(), crate::shadows::KvError<K::Error>>> {
-        async move {
-            let mut buf = [0u8; 15];
-            let bytes = ::postcard::to_slice(self, &mut buf)
-                .map_err(|_| crate::shadows::KvError::Serialization)?;
-            kv.store(prefix, bytes)
-                .await
-                .map_err(crate::shadows::KvError::Kv)
-        }
+    ) -> Result<(), crate::shadows::KvError<K::Error>> {
+        let mut buf = [0u8; 15];
+        let bytes = ::postcard::to_slice(self, &mut buf)
+            .map_err(|_| crate::shadows::KvError::Serialization)?;
+        kv.store(prefix, bytes)
+            .await
+            .map_err(crate::shadows::KvError::Kv)
     }
 
-    fn persist_delta<K: crate::shadows::KVStore, const KEY_LEN: usize>(
+    async fn persist_delta<K: crate::shadows::KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K,
         prefix: &str,
-    ) -> impl ::core::future::Future<Output = Result<(), crate::shadows::KvError<K::Error>>> {
-        async move {
-            let mut buf = [0u8; 15];
-            let bytes = ::postcard::to_slice(delta, &mut buf)
-                .map_err(|_| crate::shadows::KvError::Serialization)?;
-            kv.store(prefix, bytes)
-                .await
-                .map_err(crate::shadows::KvError::Kv)
-        }
+    ) -> Result<(), crate::shadows::KvError<K::Error>> {
+        let mut buf = [0u8; 15];
+        let bytes = ::postcard::to_slice(delta, &mut buf)
+            .map_err(|_| crate::shadows::KvError::Serialization)?;
+        kv.store(prefix, bytes)
+            .await
+            .map_err(crate::shadows::KvError::Kv)
     }
 
     fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {

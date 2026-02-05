@@ -7,7 +7,6 @@
 //! All implementations are strictly no_std / no_alloc.
 
 use crate::shadows::{fnv1a_hash, ParseError, ReportedUnionFields, ShadowNode, VariantResolver};
-use core::future::Future;
 use serde::ser::SerializeMap;
 
 #[cfg(feature = "shadows_kv_persist")]
@@ -29,16 +28,14 @@ impl<const N: usize> ShadowNode for heapless::String<N> {
 
     const SCHEMA_HASH: u64 = fnv1a_hash(b"heapless::String");
 
-    fn parse_delta<R: VariantResolver>(
+    async fn parse_delta<R: VariantResolver>(
         json: &[u8],
         _path: &str,
         _resolver: &R,
-    ) -> impl Future<Output = Result<Self::Delta, ParseError>> {
-        async move {
-            serde_json_core::from_slice(json)
-                .map(|(v, _)| v)
-                .map_err(|_| ParseError::Deserialize)
-        }
+    ) -> Result<Self::Delta, ParseError> {
+        serde_json_core::from_slice(json)
+            .map(|(v, _)| v)
+            .map_err(|_| ParseError::Deserialize)
     }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
@@ -79,55 +76,49 @@ where
         false
     }
 
-    fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
+    async fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
         &mut self,
         prefix: &str,
         kv: &K,
-    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-        async move {
-            let mut result = LoadFieldResult::default();
-            let mut buf = [0u8; N + 5];
-            match kv.fetch(prefix, &mut buf).await.map_err(KvError::Kv)? {
-                Some(data) => {
-                    *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
-                    result.loaded += 1;
-                }
-                None => result.defaulted += 1,
+    ) -> Result<LoadFieldResult, KvError<K::Error>> {
+        let mut result = LoadFieldResult::default();
+        let mut buf = [0u8; N + 5];
+        match kv.fetch(prefix, &mut buf).await.map_err(KvError::Kv)? {
+            Some(data) => {
+                *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
+                result.loaded += 1;
             }
-            Ok(result)
+            None => result.defaulted += 1,
         }
+        Ok(result)
     }
 
-    fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
+    async fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
         &mut self,
         prefix: &str,
         kv: &K,
-    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv)
+    ) -> Result<LoadFieldResult, KvError<K::Error>> {
+        self.load_from_kv::<K, KEY_LEN>(prefix, kv).await
     }
 
-    fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
+    async fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
         prefix: &str,
         kv: &K,
-    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-        async move {
-            let mut buf = [0u8; N + 5];
-            let bytes = postcard::to_slice(self, &mut buf).map_err(|_| KvError::Serialization)?;
-            kv.store(prefix, bytes).await.map_err(KvError::Kv)
-        }
+    ) -> Result<(), KvError<K::Error>> {
+        let mut buf = [0u8; N + 5];
+        let bytes = postcard::to_slice(self, &mut buf).map_err(|_| KvError::Serialization)?;
+        kv.store(prefix, bytes).await.map_err(KvError::Kv)
     }
 
-    fn persist_delta<K: KVStore, const KEY_LEN: usize>(
+    async fn persist_delta<K: KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K,
         prefix: &str,
-    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-        async move {
-            let mut buf = [0u8; N + 5];
-            let bytes = postcard::to_slice(delta, &mut buf).map_err(|_| KvError::Serialization)?;
-            kv.store(prefix, bytes).await.map_err(KvError::Kv)
-        }
+    ) -> Result<(), KvError<K::Error>> {
+        let mut buf = [0u8; N + 5];
+        let bytes = postcard::to_slice(delta, &mut buf).map_err(|_| KvError::Serialization)?;
+        kv.store(prefix, bytes).await.map_err(KvError::Kv)
     }
 
     fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
@@ -148,16 +139,14 @@ where
 
     const SCHEMA_HASH: u64 = fnv1a_hash(b"heapless::Vec");
 
-    fn parse_delta<R: VariantResolver>(
+    async fn parse_delta<R: VariantResolver>(
         json: &[u8],
         _path: &str,
         _resolver: &R,
-    ) -> impl Future<Output = Result<Self::Delta, ParseError>> {
-        async move {
-            serde_json_core::from_slice(json)
-                .map(|(v, _)| v)
-                .map_err(|_| ParseError::Deserialize)
-        }
+    ) -> Result<Self::Delta, ParseError> {
+        serde_json_core::from_slice(json)
+            .map(|(v, _)| v)
+            .map_err(|_| ParseError::Deserialize)
     }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
@@ -202,55 +191,49 @@ where
         false
     }
 
-    fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
+    async fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
         &mut self,
         prefix: &str,
         kv: &K,
-    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-        async move {
-            let mut result = LoadFieldResult::default();
-            let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
-            match kv.fetch(prefix, &mut buf).await.map_err(KvError::Kv)? {
-                Some(data) => {
-                    *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
-                    result.loaded += 1;
-                }
-                None => result.defaulted += 1,
+    ) -> Result<LoadFieldResult, KvError<K::Error>> {
+        let mut result = LoadFieldResult::default();
+        let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
+        match kv.fetch(prefix, &mut buf).await.map_err(KvError::Kv)? {
+            Some(data) => {
+                *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
+                result.loaded += 1;
             }
-            Ok(result)
+            None => result.defaulted += 1,
         }
+        Ok(result)
     }
 
-    fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
+    async fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
         &mut self,
         prefix: &str,
         kv: &K,
-    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K::Error>>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv)
+    ) -> Result<LoadFieldResult, KvError<K::Error>> {
+        self.load_from_kv::<K, KEY_LEN>(prefix, kv).await
     }
 
-    fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
+    async fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
         prefix: &str,
         kv: &K,
-    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-        async move {
-            let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
-            let bytes = postcard::to_slice(self, &mut buf).map_err(|_| KvError::Serialization)?;
-            kv.store(prefix, bytes).await.map_err(KvError::Kv)
-        }
+    ) -> Result<(), KvError<K::Error>> {
+        let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
+        let bytes = postcard::to_slice(self, &mut buf).map_err(|_| KvError::Serialization)?;
+        kv.store(prefix, bytes).await.map_err(KvError::Kv)
     }
 
-    fn persist_delta<K: KVStore, const KEY_LEN: usize>(
+    async fn persist_delta<K: KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K,
         prefix: &str,
-    ) -> impl Future<Output = Result<(), KvError<K::Error>>> {
-        async move {
-            let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
-            let bytes = postcard::to_slice(delta, &mut buf).map_err(|_| KvError::Serialization)?;
-            kv.store(prefix, bytes).await.map_err(KvError::Kv)
-        }
+    ) -> Result<(), KvError<K::Error>> {
+        let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
+        let bytes = postcard::to_slice(delta, &mut buf).map_err(|_| KvError::Serialization)?;
+        kv.store(prefix, bytes).await.map_err(KvError::Kv)
     }
 
     fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
@@ -280,7 +263,11 @@ where
 ///
 /// `None` means "no changes to the map" (the map field itself was absent
 /// from the delta). `Some(map)` contains per-entry patches.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+///
+/// Note: This type does not derive `Deserialize` because we use `parse_delta`
+/// for JSON parsing to support value types with adjacently-tagged enums
+/// (which require alloc for serde Deserialize).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct LinearMapDelta<K: Eq, D, const N: usize>(
     pub Option<heapless::LinearMap<K, Patch<D>, N>>,
 );
@@ -301,27 +288,60 @@ impl<K: Eq + serde::Serialize, R: serde::Serialize, const N: usize> ReportedUnio
 
 impl<K, V, const N: usize> ShadowNode for heapless::LinearMap<K, V, N>
 where
-    K: Clone + Eq + Default + serde::Serialize + serde::de::DeserializeOwned,
+    K: Clone + Eq + Default + serde::Serialize + serde::de::DeserializeOwned + core::fmt::Display,
     V: ShadowNode,
-    V::Delta: serde::de::DeserializeOwned,
 {
     type Delta = LinearMapDelta<K, V::Delta, N>;
     type Reported = LinearMapReported<K, V::Reported, N>;
 
     const SCHEMA_HASH: u64 = fnv1a_hash(b"heapless::LinearMap");
 
-    fn parse_delta<R: VariantResolver>(
+    async fn parse_delta<R: VariantResolver>(
         json: &[u8],
-        _path: &str,
-        _resolver: &R,
-    ) -> impl Future<Output = Result<Self::Delta, ParseError>> {
-        async move {
-            // LinearMap deltas are deserialized as regular JSON
-            // The inner V::Delta types handle their own parsing if needed
-            serde_json_core::from_slice(json)
-                .map(|(v, _)| v)
-                .map_err(|_| ParseError::Deserialize)
+        path: &str,
+        resolver: &R,
+    ) -> Result<Self::Delta, ParseError> {
+        use crate::shadows::tag_scanner::ObjectScanner;
+
+        // Check for null (no changes)
+        if ObjectScanner::is_null_or_empty(json) {
+            return Ok(LinearMapDelta(None));
         }
+
+        let mut scanner = ObjectScanner::new(json).map_err(|_| ParseError::Deserialize)?;
+        let mut result: heapless::LinearMap<K, Patch<V::Delta>, N> = heapless::LinearMap::new();
+
+        while let Some((key_bytes, value_bytes)) =
+            scanner.next_entry().map_err(|_| ParseError::Deserialize)?
+        {
+            // Parse the key (key_bytes includes quotes)
+            let key: K = serde_json_core::from_slice(key_bytes)
+                .map(|(v, _)| v)
+                .map_err(|_| ParseError::Deserialize)?;
+
+            // Check for "unset" marker or null
+            let trimmed = core::str::from_utf8(value_bytes)
+                .map(|s| s.trim())
+                .unwrap_or("");
+            let patch = if trimmed == "\"unset\"" || trimmed == "null" {
+                Patch::Unset
+            } else {
+                // Build nested path for resolver
+                let mut nested_path = heapless::String::<128>::new();
+                let _ = nested_path.push_str(path);
+                let _ = nested_path.push_str("/");
+                // Use core::fmt::Write for key display
+                use core::fmt::Write;
+                let _ = write!(nested_path, "{}", &key);
+
+                let delta = V::parse_delta(value_bytes, &nested_path, resolver).await?;
+                Patch::Set(delta)
+            };
+
+            let _ = result.insert(key, patch);
+        }
+
+        Ok(LinearMapDelta(Some(result)))
     }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
@@ -403,7 +423,6 @@ impl<K, V, const N: usize> KVPersist for heapless::LinearMap<K, V, N>
 where
     K: MapKey + Default + Serialize + DeserializeOwned,
     V: KVPersist,
-    V::Delta: serde::de::DeserializeOwned,
     [(); N * (K::MAX_KEY_DISPLAY_LEN + 5) + 5]:,
 {
     // "/{key}" + sub-key length
@@ -437,136 +456,130 @@ where
         false
     }
 
-    fn load_from_kv<K2: KVStore, const KEY_LEN: usize>(
+    async fn load_from_kv<K2: KVStore, const KEY_LEN: usize>(
         &mut self,
         prefix: &str,
         kv: &K2,
-    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K2::Error>>> {
-        async move {
-            let mut result = LoadFieldResult::default();
+    ) -> Result<LoadFieldResult, KvError<K2::Error>> {
+        let mut result = LoadFieldResult::default();
 
+        let manifest_key = build_key::<KEY_LEN>(prefix, "/__keys__");
+
+        let mut buf = [0u8; N * (K::MAX_KEY_DISPLAY_LEN + 5) + 5];
+        let keys: heapless::Vec<K, N> = match kv
+            .fetch(&manifest_key, &mut buf)
+            .await
+            .map_err(KvError::Kv)?
+        {
+            Some(data) => postcard::from_bytes(data).map_err(|_| KvError::Serialization)?,
+            None => {
+                result.defaulted += 1;
+                return Ok(result);
+            }
+        };
+
+        for key in keys.iter() {
+            let entry_prefix = build_entry_prefix::<KEY_LEN>(prefix, key);
+
+            let mut value = V::default();
+            let inner = value.load_from_kv::<K2, KEY_LEN>(&entry_prefix, kv).await?;
+            result.merge(inner);
+
+            let _ = self.insert(key.clone(), value);
+        }
+
+        Ok(result)
+    }
+
+    async fn load_from_kv_with_migration<K2: KVStore, const KEY_LEN: usize>(
+        &mut self,
+        prefix: &str,
+        kv: &K2,
+    ) -> Result<LoadFieldResult, KvError<K2::Error>> {
+        self.load_from_kv::<K2, KEY_LEN>(prefix, kv).await
+    }
+
+    async fn persist_to_kv<K2: KVStore, const KEY_LEN: usize>(
+        &self,
+        prefix: &str,
+        kv: &K2,
+    ) -> Result<(), KvError<K2::Error>> {
+        let mut manifest_keys: heapless::Vec<K, N> = heapless::Vec::new();
+
+        for (key, value) in self.iter() {
+            let entry_prefix = build_entry_prefix::<KEY_LEN>(prefix, key);
+            value
+                .persist_to_kv::<K2, KEY_LEN>(&entry_prefix, kv)
+                .await?;
+            let _ = manifest_keys.push(key.clone());
+        }
+
+        // Write manifest
+        let manifest_key = build_key::<KEY_LEN>(prefix, "/__keys__");
+        let mut buf = [0u8; N * (K::MAX_KEY_DISPLAY_LEN + 5) + 5];
+        let bytes =
+            postcard::to_slice(&manifest_keys, &mut buf).map_err(|_| KvError::Serialization)?;
+        kv.store(&manifest_key, bytes).await.map_err(KvError::Kv)?;
+
+        Ok(())
+    }
+
+    async fn persist_delta<K2: KVStore, const KEY_LEN: usize>(
+        delta: &Self::Delta,
+        kv: &K2,
+        prefix: &str,
+    ) -> Result<(), KvError<K2::Error>> {
+        if let Some(ref patches) = delta.0 {
             let manifest_key = build_key::<KEY_LEN>(prefix, "/__keys__");
 
+            // Load existing manifest
             let mut buf = [0u8; N * (K::MAX_KEY_DISPLAY_LEN + 5) + 5];
-            let keys: heapless::Vec<K, N> = match kv
+            let mut manifest_keys: heapless::Vec<K, N> = match kv
                 .fetch(&manifest_key, &mut buf)
                 .await
                 .map_err(KvError::Kv)?
             {
-                Some(data) => postcard::from_bytes(data).map_err(|_| KvError::Serialization)?,
-                None => {
-                    result.defaulted += 1;
-                    return Ok(result);
-                }
+                Some(data) => postcard::from_bytes(data).unwrap_or_default(),
+                None => heapless::Vec::new(),
             };
 
-            for key in keys.iter() {
+            for (key, patch) in patches.iter() {
                 let entry_prefix = build_entry_prefix::<KEY_LEN>(prefix, key);
 
-                let mut value = V::default();
-                let inner = value.load_from_kv::<K2, KEY_LEN>(&entry_prefix, kv).await?;
-                result.merge(inner);
+                match patch {
+                    Patch::Set(d) => {
+                        V::persist_delta::<K2, KEY_LEN>(d, kv, &entry_prefix).await?;
 
-                let _ = self.insert(key.clone(), value);
-            }
-
-            Ok(result)
-        }
-    }
-
-    fn load_from_kv_with_migration<K2: KVStore, const KEY_LEN: usize>(
-        &mut self,
-        prefix: &str,
-        kv: &K2,
-    ) -> impl Future<Output = Result<LoadFieldResult, KvError<K2::Error>>> {
-        self.load_from_kv::<K2, KEY_LEN>(prefix, kv)
-    }
-
-    fn persist_to_kv<K2: KVStore, const KEY_LEN: usize>(
-        &self,
-        prefix: &str,
-        kv: &K2,
-    ) -> impl Future<Output = Result<(), KvError<K2::Error>>> {
-        async move {
-            let mut manifest_keys: heapless::Vec<K, N> = heapless::Vec::new();
-
-            for (key, value) in self.iter() {
-                let entry_prefix = build_entry_prefix::<KEY_LEN>(prefix, key);
-                value
-                    .persist_to_kv::<K2, KEY_LEN>(&entry_prefix, kv)
-                    .await?;
-                let _ = manifest_keys.push(key.clone());
-            }
-
-            // Write manifest
-            let manifest_key = build_key::<KEY_LEN>(prefix, "/__keys__");
-            let mut buf = [0u8; N * (K::MAX_KEY_DISPLAY_LEN + 5) + 5];
-            let bytes =
-                postcard::to_slice(&manifest_keys, &mut buf).map_err(|_| KvError::Serialization)?;
-            kv.store(&manifest_key, bytes).await.map_err(KvError::Kv)?;
-
-            Ok(())
-        }
-    }
-
-    fn persist_delta<K2: KVStore, const KEY_LEN: usize>(
-        delta: &Self::Delta,
-        kv: &K2,
-        prefix: &str,
-    ) -> impl Future<Output = Result<(), KvError<K2::Error>>> {
-        async move {
-            if let Some(ref patches) = delta.0 {
-                let manifest_key = build_key::<KEY_LEN>(prefix, "/__keys__");
-
-                // Load existing manifest
-                let mut buf = [0u8; N * (K::MAX_KEY_DISPLAY_LEN + 5) + 5];
-                let mut manifest_keys: heapless::Vec<K, N> = match kv
-                    .fetch(&manifest_key, &mut buf)
-                    .await
-                    .map_err(KvError::Kv)?
-                {
-                    Some(data) => postcard::from_bytes(data).unwrap_or_default(),
-                    None => heapless::Vec::new(),
-                };
-
-                for (key, patch) in patches.iter() {
-                    let entry_prefix = build_entry_prefix::<KEY_LEN>(prefix, key);
-
-                    match patch {
-                        Patch::Set(d) => {
-                            V::persist_delta::<K2, KEY_LEN>(d, kv, &entry_prefix).await?;
-
-                            // Add to manifest if not present
-                            if !manifest_keys.iter().any(|k| k == key) {
-                                let _ = manifest_keys.push(key.clone());
-                            }
-                        }
-                        Patch::Unset => {
-                            // Remove entry and any sub-keys
-                            kv.remove(&entry_prefix).await.map_err(KvError::Kv)?;
-
-                            let mut prefix_slash = build_entry_prefix::<KEY_LEN>(prefix, key);
-                            let _ = prefix_slash.push_str("/");
-                            let _ = kv
-                                .remove_if(&prefix_slash, |_| true)
-                                .await
-                                .map_err(KvError::Kv)?;
-
-                            // Remove from manifest
-                            manifest_keys.retain(|k| k != key);
+                        // Add to manifest if not present
+                        if !manifest_keys.iter().any(|k| k == key) {
+                            let _ = manifest_keys.push(key.clone());
                         }
                     }
-                }
+                    Patch::Unset => {
+                        // Remove entry and any sub-keys
+                        kv.remove(&entry_prefix).await.map_err(KvError::Kv)?;
 
-                // Write updated manifest
-                let mut wbuf = [0u8; N * (K::MAX_KEY_DISPLAY_LEN + 5) + 5];
-                let bytes = postcard::to_slice(&manifest_keys, &mut wbuf)
-                    .map_err(|_| KvError::Serialization)?;
-                kv.store(&manifest_key, bytes).await.map_err(KvError::Kv)?;
+                        let mut prefix_slash = build_entry_prefix::<KEY_LEN>(prefix, key);
+                        let _ = prefix_slash.push_str("/");
+                        let _ = kv
+                            .remove_if(&prefix_slash, |_| true)
+                            .await
+                            .map_err(KvError::Kv)?;
+
+                        // Remove from manifest
+                        manifest_keys.retain(|k| k != key);
+                    }
+                }
             }
 
-            Ok(())
+            // Write updated manifest
+            let mut wbuf = [0u8; N * (K::MAX_KEY_DISPLAY_LEN + 5) + 5];
+            let bytes = postcard::to_slice(&manifest_keys, &mut wbuf)
+                .map_err(|_| KvError::Serialization)?;
+            kv.store(&manifest_key, bytes).await.map_err(KvError::Kv)?;
         }
+
+        Ok(())
     }
 
     fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {

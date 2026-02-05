@@ -158,6 +158,7 @@ mod tests {
             );
         }
     }
+    #[cfg(feature = "metric_cbor")]
     #[test]
     fn serialize_version_cbor() {
         let test_cases: [(Version, [u8; 8]); 4] = [
@@ -189,6 +190,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "metric_cbor")]
     #[test]
     fn custom_serialization_cbor() {
         #[derive(Debug)]

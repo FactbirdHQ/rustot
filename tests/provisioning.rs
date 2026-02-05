@@ -1,3 +1,4 @@
+#![cfg(feature = "provision_cbor")]
 #![allow(async_fn_in_trait)]
 #![feature(type_alias_impl_trait)]
 
