@@ -52,6 +52,7 @@ pub enum Topic<'a> {
 }
 
 impl<'a> Topic<'a> {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &'a str) -> Option<Self> {
         let tt = s.splitn(8, '/').collect::<heapless::Vec<&str, 8>>();
         Some(match (tt.first(), tt.get(1), tt.get(2), tt.get(3)) {

@@ -9,7 +9,9 @@
 
 mod adjacently_tagged;
 mod enum_codegen;
+#[cfg(feature = "kv_persist")]
 mod helpers;
+#[cfg(feature = "kv_persist")]
 mod kv_codegen;
 mod struct_codegen;
 

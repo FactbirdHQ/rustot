@@ -45,6 +45,7 @@
 
 /// Error type for JSON scanning operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ScanError {
     /// Unexpected end of input
     UnexpectedEof,
@@ -228,6 +229,107 @@ impl<'a> FieldScanner<'a> {
             }
         }
         false
+    }
+}
+
+/// Public scanner for iterating over JSON object entries.
+///
+/// This scanner allows extracting key-value pairs from a JSON object
+/// without knowing the keys ahead of time. Used for parsing LinearMap
+/// deltas where keys are dynamic.
+///
+/// # Example
+///
+/// ```ignore
+/// let json = br#"{"key1": {"nested": 1}, "key2": "value"}"#;
+/// let mut scanner = ObjectScanner::new(json)?;
+///
+/// while let Some((key_bytes, value_bytes)) = scanner.next_entry()? {
+///     // key_bytes includes quotes: b"\"key1\""
+///     // value_bytes is the raw JSON value
+/// }
+/// ```
+pub struct ObjectScanner<'a> {
+    inner: Scanner<'a>,
+    finished: bool,
+}
+
+impl<'a> ObjectScanner<'a> {
+    /// Create a new object scanner for the given JSON bytes.
+    ///
+    /// Returns an error if the JSON doesn't start with an object.
+    pub fn new(json: &'a [u8]) -> Result<Self, ScanError> {
+        let mut inner = Scanner::new(json);
+        inner.skip_whitespace();
+        inner.expect(b'{')?;
+        Ok(Self {
+            inner,
+            finished: false,
+        })
+    }
+
+    /// Get the next key-value entry from the object.
+    ///
+    /// Returns `Ok(Some((key_bytes, value_bytes)))` for each entry,
+    /// `Ok(None)` when the object is complete, or `Err` on malformed JSON.
+    ///
+    /// The key_bytes includes the surrounding quotes (e.g., `"\"key\""`).
+    /// The value_bytes is the raw JSON value.
+    #[allow(clippy::type_complexity)]
+    pub fn next_entry(&mut self) -> Result<Option<(&'a [u8], &'a [u8])>, ScanError> {
+        if self.finished {
+            return Ok(None);
+        }
+
+        self.inner.skip_whitespace();
+
+        // Check for end of object
+        if self.inner.peek() == Some(b'}') {
+            self.inner.advance();
+            self.finished = true;
+            return Ok(None);
+        }
+
+        // Parse key (as quoted string)
+        let key_start = self.inner.pos;
+        self.inner.skip_string()?;
+        let key_end = self.inner.pos;
+        let key_bytes = &self.inner.input[key_start..key_end];
+
+        // Expect colon
+        self.inner.skip_whitespace();
+        self.inner.expect(b':')?;
+        self.inner.skip_whitespace();
+
+        // Get value span
+        let (value_start, value_end) = self.inner.skip_value()?;
+        let value_bytes = &self.inner.input[value_start..value_end];
+
+        // Handle comma or end
+        self.inner.skip_whitespace();
+        match self.inner.peek() {
+            Some(b',') => {
+                self.inner.advance();
+            }
+            Some(b'}') => {
+                // Don't consume yet - will be consumed on next call
+            }
+            found => {
+                return Err(ScanError::Expected {
+                    expected: b'}',
+                    found,
+                });
+            }
+        }
+
+        Ok(Some((key_bytes, value_bytes)))
+    }
+
+    /// Check if the JSON represents a null value or is empty whitespace.
+    pub fn is_null_or_empty(json: &[u8]) -> bool {
+        let trimmed = json.iter().copied().filter(|b| !b.is_ascii_whitespace());
+        let bytes: heapless::Vec<u8, 8> = trimmed.take(8).collect();
+        bytes.is_empty() || bytes.as_slice() == b"null"
     }
 }
 

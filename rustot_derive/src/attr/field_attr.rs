@@ -23,9 +23,11 @@ pub struct FieldAttrs {
     #[darling(default)]
     pub opaque: bool,
     /// Migration specifications for this field
+    #[cfg(feature = "kv_persist")]
     #[darling(default, multiple)]
     migrate: Vec<MigrateSpec>,
     /// Custom default value for this field
+    #[cfg(feature = "kv_persist")]
     #[darling(default, rename = "default")]
     pub default_value: Option<DefaultValue>,
 }
@@ -49,17 +51,29 @@ impl FieldAttrs {
     }
 
     /// Get all migration source keys
+    #[cfg(feature = "kv_persist")]
     pub fn migrate_from(&self) -> Vec<String> {
         self.migrate.iter().filter_map(|m| m.from.clone()).collect()
     }
 
+    /// Get all migration source keys (always empty when kv_persist is disabled)
+    #[cfg(not(feature = "kv_persist"))]
+    pub fn migrate_from(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Get the migration conversion function (last one wins if multiple specified)
+    #[cfg(feature = "kv_persist")]
     pub fn migrate_convert(&self) -> Option<syn::Path> {
-        self.migrate.iter().filter_map(|m| m.convert.clone()).last()
+        self.migrate
+            .iter()
+            .filter_map(|m| m.convert.clone())
+            .next_back()
     }
 }
 
 /// Single migration source specification
+#[cfg(feature = "kv_persist")]
 #[derive(Clone, FromMeta)]
 struct MigrateSpec {
     #[darling(default)]
@@ -69,6 +83,7 @@ struct MigrateSpec {
 }
 
 /// Custom default value for a field
+#[cfg(feature = "kv_persist")]
 #[derive(Clone)]
 pub enum DefaultValue {
     /// Literal value: `#[shadow_attr(default = 5000)]`
@@ -77,6 +92,7 @@ pub enum DefaultValue {
     Function(syn::Path),
 }
 
+#[cfg(feature = "kv_persist")]
 impl FromMeta for DefaultValue {
     fn from_meta(item: &syn::Meta) -> darling::Result<Self> {
         match item {
@@ -177,6 +193,7 @@ mod tests {
     use syn::parse_quote;
 
     // Only test custom FromMeta impl for DefaultValue - Darling handles the rest
+    #[cfg(feature = "kv_persist")]
     #[test]
     fn test_default_value_literal() {
         let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(default = 5000)])];
@@ -189,6 +206,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "kv_persist")]
     #[test]
     fn test_default_value_path() {
         let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(default = my_default_fn)])];
@@ -202,6 +220,7 @@ mod tests {
     }
 
     // Test migrate accessor methods
+    #[cfg(feature = "kv_persist")]
     #[test]
     fn test_migrate_from_accessor() {
         let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(migrate(from = "/old_key"))])];
@@ -209,6 +228,7 @@ mod tests {
         assert_eq!(field_attrs.migrate_from(), vec!["/old_key".to_string()]);
     }
 
+    #[cfg(feature = "kv_persist")]
     #[test]
     fn test_migrate_convert_accessor() {
         let attrs: Vec<Attribute> =

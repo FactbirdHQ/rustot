@@ -1,3 +1,4 @@
+#![cfg(all(feature = "shadows_kv_persist", feature = "std"))]
 #![allow(async_fn_in_trait)]
 #![feature(type_alias_impl_trait)]
 

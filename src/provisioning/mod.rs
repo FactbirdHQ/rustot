@@ -35,8 +35,8 @@ pub struct Credentials<'a> {
 pub struct FleetProvisioner;
 
 impl FleetProvisioner {
-    pub async fn provision<'m, Cfg, M: MqttClient>(
-        mqtt: &'m M,
+    pub async fn provision<Cfg, M: MqttClient>(
+        mqtt: &M,
         template_name: &str,
         parameters: Option<impl Serialize>,
         credential_handler: &mut impl CredentialHandler,
@@ -55,8 +55,8 @@ impl FleetProvisioner {
         .await
     }
 
-    pub async fn provision_csr<'m, Cfg, M: MqttClient>(
-        mqtt: &'m M,
+    pub async fn provision_csr<Cfg, M: MqttClient>(
+        mqtt: &M,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: &str,
@@ -77,8 +77,8 @@ impl FleetProvisioner {
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub async fn provision_cbor<'m, Cfg, M: MqttClient>(
-        mqtt: &'m M,
+    pub async fn provision_cbor<Cfg, M: MqttClient>(
+        mqtt: &M,
         template_name: &str,
         parameters: Option<impl Serialize>,
         credential_handler: &mut impl CredentialHandler,
@@ -98,8 +98,8 @@ impl FleetProvisioner {
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub async fn provision_csr_cbor<'m, Cfg, M: MqttClient>(
-        mqtt: &'m M,
+    pub async fn provision_csr_cbor<Cfg, M: MqttClient>(
+        mqtt: &M,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: &str,
@@ -119,8 +119,8 @@ impl FleetProvisioner {
         .await
     }
 
-    async fn provision_inner<'m, Cfg, M: MqttClient>(
-        mqtt: &'m M,
+    async fn provision_inner<Cfg, M: MqttClient>(
+        mqtt: &M,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: Option<&str>,

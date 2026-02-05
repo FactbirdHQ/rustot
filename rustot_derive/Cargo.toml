@@ -11,6 +11,11 @@ readme = "../README.md"
 [lib]
 proc-macro = true
 
+[features]
+default = []
+# When enabled, generates KVPersist trait implementations
+kv_persist = []
+
 [dependencies]
 syn = { version = "2", features = ["extra-traits"] }
 quote = "1"

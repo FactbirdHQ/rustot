@@ -34,14 +34,12 @@ pub struct JobEventData<'a> {
 pub struct Updater;
 
 impl Updater {
-    pub async fn check_for_job<'a, C: ControlInterface>(
-        control: &C,
-    ) -> Result<(), error::OtaError> {
+    pub async fn check_for_job<C: ControlInterface>(control: &C) -> Result<(), error::OtaError> {
         control.request_job().await?;
         Ok(())
     }
 
-    pub async fn perform_ota<'a, 'b, C: ControlInterface, D: DataInterface>(
+    pub async fn perform_ota<C: ControlInterface, D: DataInterface>(
         control: &C,
         data: &D,
         file_ctx: FileContext,
@@ -262,7 +260,7 @@ impl Updater {
         }
     }
 
-    async fn ingest_data_block<'a, D: DataInterface>(
+    async fn ingest_data_block<D: DataInterface>(
         data: &D,
         block_writer: &mut impl NorFlash,
         config: &config::Config,

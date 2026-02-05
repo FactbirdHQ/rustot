@@ -65,7 +65,9 @@ use crate::attr::{
 };
 
 use super::adjacently_tagged::generate_adjacently_tagged_enum_code;
+#[cfg(feature = "kv_persist")]
 use super::helpers::{build_const_max_expr, build_max_key_len_expr};
+#[cfg(feature = "kv_persist")]
 use super::kv_codegen::{self, VARIANT_KEY_PATH};
 use super::CodegenOutput;
 
@@ -125,18 +127,6 @@ pub(crate) fn generate_simple_enum_code(
     let mut into_partial_reported_arms = Vec::new();
     let mut schema_hash_code = Vec::new();
 
-    // KVPersist-specific codegen (feature-gated)
-    let mut max_value_len_items = Vec::new();
-    let mut load_from_kv_variant_arms = Vec::new();
-    let mut persist_to_kv_variant_arms = Vec::new();
-    let mut persist_delta_arms = Vec::new();
-    let mut collect_valid_keys_arms = Vec::new();
-    let mut collect_valid_prefixes_arms = Vec::new();
-    let mut max_key_len_items = Vec::new();
-    let mut variant_name_arms = Vec::new();
-
-    let variant_key_len = VARIANT_KEY_PATH.len();
-
     for variant in variants {
         let variant_ident = &variant.ident;
 
@@ -173,38 +163,6 @@ pub(crate) fn generate_simple_enum_code(
                 let variant_bytes = serde_name.as_bytes();
                 schema_hash_code.push(quote! {
                     h = #krate::shadows::fnv1a_bytes(h, &[#(#variant_bytes),*]);
-                });
-
-                // =====================================================================
-                // KVPersist codegen for unit variant
-                // =====================================================================
-
-                variant_name_arms.push(quote! {
-                    Self::#variant_ident => #serde_name,
-                });
-
-                // load_from_kv arm: just set the variant
-                load_from_kv_variant_arms.push(quote! {
-                    #serde_name => {
-                        *self = Self::#variant_ident;
-                    }
-                });
-
-                // persist_to_kv arm: unit variants have no inner fields to persist
-                persist_to_kv_variant_arms.push(quote! {
-                    Self::#variant_ident => {
-                        // No inner fields to persist
-                    }
-                });
-
-                // persist_delta: write _variant key
-                persist_delta_arms.push(quote! {
-                    Self::Delta::#variant_ident => {
-                        let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
-                        let _ = variant_key.push_str(prefix);
-                        let _ = variant_key.push_str(#VARIANT_KEY_PATH);
-                        kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
-                    }
                 });
 
                 // parse_delta arm for unit variant
@@ -269,72 +227,6 @@ pub(crate) fn generate_simple_enum_code(
                     h = #krate::shadows::fnv1a_u64(h, <#inner_ty as #krate::shadows::ShadowNode>::SCHEMA_HASH);
                 });
 
-                // =====================================================================
-                // KVPersist codegen for newtype variant
-                // =====================================================================
-                let variant_path = format!("/{}", serde_name);
-                let variant_path_len = variant_path.len();
-
-                // MAX_KEY_LEN: "/VariantName" + nested MAX_KEY_LEN
-                max_key_len_items.push(quote! { #variant_path_len + <#inner_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN });
-
-                // MAX_VALUE_LEN
-                max_value_len_items.push(quote! {
-                    <#inner_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
-                });
-
-                variant_name_arms.push(quote! {
-                    Self::#variant_ident(_) => #serde_name,
-                });
-
-                // load_from_kv arm: construct variant, delegate to inner
-                load_from_kv_variant_arms.push(kv_codegen::enum_variant_load_arm(
-                    krate,
-                    &variant_path,
-                    &serde_name,
-                    variant_ident,
-                    inner_ty,
-                ));
-
-                // persist_to_kv arm: delegate to inner
-                persist_to_kv_variant_arms.push(kv_codegen::enum_variant_persist_arm(
-                    krate,
-                    &variant_path,
-                    variant_ident,
-                    inner_ty,
-                ));
-
-                // persist_delta: write _variant key and delegate to inner
-                let variant_key_ident =
-                    syn::Ident::new("variant_key", proc_macro2::Span::call_site());
-                let variant_key_code = kv_codegen::build_key(&variant_key_ident, VARIANT_KEY_PATH);
-                let inner_prefix_ident =
-                    syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
-                let inner_prefix_code = kv_codegen::build_key(&inner_prefix_ident, &variant_path);
-                persist_delta_arms.push(quote! {
-                    Self::Delta::#variant_ident(ref inner_delta) => {
-                        #variant_key_code
-                        kv.store(&#variant_key_ident, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
-
-                        #inner_prefix_code
-                        <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &#inner_prefix_ident).await?;
-                    }
-                });
-
-                // collect_valid_keys: delegate to inner (all variants, not just active)
-                collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
-                    krate,
-                    &variant_path,
-                    inner_ty,
-                ));
-
-                // collect_valid_prefixes: delegate to inner
-                collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(
-                    krate,
-                    &variant_path,
-                    inner_ty,
-                ));
-
                 // Mark that we have newtype variants
                 has_newtype_variants = true;
 
@@ -390,19 +282,6 @@ pub(crate) fn generate_simple_enum_code(
             }
         }
     }
-
-    // Build max_value_len const expression
-    let max_value_len_expr = build_const_max_expr(max_value_len_items, quote! { 0 });
-
-    // Build MAX_KEY_LEN const expression (max of _variant key and variant paths)
-    let max_key_len_expr = build_max_key_len_expr(max_key_len_items, quote! { #variant_key_len });
-
-    // Generate enum KVPersist method bodies using shared helpers
-    let load_from_kv_body = kv_codegen::enum_load_from_kv_body(krate, &load_from_kv_variant_arms);
-    let persist_to_kv_body =
-        kv_codegen::enum_persist_to_kv_body(krate, &variant_name_arms, &persist_to_kv_variant_arms);
-    let collect_valid_keys_body =
-        kv_codegen::enum_collect_valid_keys_body(&collect_valid_keys_arms);
 
     // Build SCHEMA_HASH const
     let schema_hash_const = quote! {
@@ -583,7 +462,7 @@ pub(crate) fn generate_simple_enum_code(
         }
     };
 
-    // Generate ShadowNode impl (always available)
+    // Generate ShadowNode impl (always generated)
     let shadow_node_impl = quote! {
         impl #krate::shadows::ShadowNode for #name {
             type Delta = #delta_name;
@@ -623,71 +502,205 @@ pub(crate) fn generate_simple_enum_code(
                 }
             }
         }
+    };
 
-        // KVPersist impl (feature-gated)
-        #[cfg(feature = "shadows_kv_persist")]
-        impl #krate::shadows::KVPersist for #name {
-            const MAX_KEY_LEN: usize = #max_key_len_expr;
-            const MAX_VALUE_LEN: usize = #max_value_len_expr;
+    // KVPersist impl (only generated when kv_persist feature is enabled)
+    #[cfg(feature = "kv_persist")]
+    let kv_persist_impl = {
+        // Collect KV-specific codegen by iterating over variants again
+        let mut max_value_len_items = Vec::new();
+        let mut load_from_kv_variant_arms = Vec::new();
+        let mut persist_to_kv_variant_arms = Vec::new();
+        let mut persist_delta_arms = Vec::new();
+        let mut collect_valid_keys_arms = Vec::new();
+        let mut collect_valid_prefixes_arms = Vec::new();
+        let mut max_key_len_items = Vec::new();
+        let mut variant_name_arms = Vec::new();
 
-            fn migration_sources(_field_path: &str) -> &'static [#krate::shadows::MigrationSource] {
-                &[]
-            }
+        let variant_key_len = VARIANT_KEY_PATH.len();
 
-            fn all_migration_keys() -> impl Iterator<Item = &'static str> {
-                core::iter::empty()
-            }
+        for (variant, serde_name) in variants.iter().zip(variant_names.iter()) {
+            let variant_ident = &variant.ident;
 
-            fn apply_field_default(&mut self, _field_path: &str) -> bool {
-                false
-            }
+            match &variant.fields {
+                Fields::Unit => {
+                    variant_name_arms.push(quote! {
+                        Self::#variant_ident => #serde_name,
+                    });
 
-            fn load_from_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
-                &mut self,
-                prefix: &str,
-                kv: &K,
-            ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
-                #load_from_kv_body
-            }
+                    load_from_kv_variant_arms.push(quote! {
+                        #serde_name => {
+                            *self = Self::#variant_ident;
+                        }
+                    });
 
-            fn load_from_kv_with_migration<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
-                &mut self,
-                prefix: &str,
-                kv: &K,
-            ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
-                // Enums don't have migration support at this level
-                self.load_from_kv::<K, KEY_LEN>(prefix, kv)
-            }
+                    persist_to_kv_variant_arms.push(quote! {
+                        Self::#variant_ident => {
+                            // No inner fields to persist
+                        }
+                    });
 
-            fn persist_to_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
-                &self,
-                prefix: &str,
-                kv: &K,
-            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
-                #persist_to_kv_body
-            }
-
-            fn persist_delta<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
-                delta: &Self::Delta,
-                kv: &K,
-                prefix: &str,
-            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
-                async move {
-                    match delta {
-                        #(#persist_delta_arms)*
-                    }
-                    Ok(())
+                    persist_delta_arms.push(quote! {
+                        Self::Delta::#variant_ident => {
+                            let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                            let _ = variant_key.push_str(prefix);
+                            let _ = variant_key.push_str(#VARIANT_KEY_PATH);
+                            kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
+                        }
+                    });
                 }
-            }
+                Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                    let inner_ty = &fields.unnamed[0].ty;
+                    let variant_path = format!("/{}", serde_name);
+                    let variant_path_len = variant_path.len();
 
-            fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-                #collect_valid_keys_body
-            }
+                    max_key_len_items.push(quote! { #variant_path_len + <#inner_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN });
+                    max_value_len_items.push(quote! {
+                        <#inner_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
+                    });
 
-            fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
-                #(#collect_valid_prefixes_arms)*
+                    variant_name_arms.push(quote! {
+                        Self::#variant_ident(_) => #serde_name,
+                    });
+
+                    load_from_kv_variant_arms.push(kv_codegen::enum_variant_load_arm(
+                        krate,
+                        &variant_path,
+                        serde_name,
+                        variant_ident,
+                        inner_ty,
+                    ));
+
+                    persist_to_kv_variant_arms.push(kv_codegen::enum_variant_persist_arm(
+                        krate,
+                        &variant_path,
+                        variant_ident,
+                        inner_ty,
+                    ));
+
+                    let variant_key_ident =
+                        syn::Ident::new("variant_key", proc_macro2::Span::call_site());
+                    let variant_key_code =
+                        kv_codegen::build_key(&variant_key_ident, VARIANT_KEY_PATH);
+                    let inner_prefix_ident =
+                        syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
+                    let inner_prefix_code =
+                        kv_codegen::build_key(&inner_prefix_ident, &variant_path);
+                    persist_delta_arms.push(quote! {
+                        Self::Delta::#variant_ident(ref inner_delta) => {
+                            #variant_key_code
+                            kv.store(&#variant_key_ident, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
+
+                            #inner_prefix_code
+                            <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &#inner_prefix_ident).await?;
+                        }
+                    });
+
+                    collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
+                        krate,
+                        &variant_path,
+                        inner_ty,
+                    ));
+
+                    collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(
+                        krate,
+                        &variant_path,
+                        inner_ty,
+                    ));
+                }
+                _ => {}
             }
         }
+
+        // Build const expressions
+        let max_value_len_expr = build_const_max_expr(max_value_len_items, quote! { 0 });
+        let max_key_len_expr =
+            build_max_key_len_expr(max_key_len_items, quote! { #variant_key_len });
+
+        // Generate method bodies using shared helpers
+        let load_from_kv_body =
+            kv_codegen::enum_load_from_kv_body(krate, &load_from_kv_variant_arms);
+        let persist_to_kv_body = kv_codegen::enum_persist_to_kv_body(
+            krate,
+            &variant_name_arms,
+            &persist_to_kv_variant_arms,
+        );
+        let collect_valid_keys_body =
+            kv_codegen::enum_collect_valid_keys_body(&collect_valid_keys_arms);
+
+        quote! {
+            impl #krate::shadows::KVPersist for #name {
+                const MAX_KEY_LEN: usize = #max_key_len_expr;
+                const MAX_VALUE_LEN: usize = #max_value_len_expr;
+
+                fn migration_sources(_field_path: &str) -> &'static [#krate::shadows::MigrationSource] {
+                    &[]
+                }
+
+                fn all_migration_keys() -> impl Iterator<Item = &'static str> {
+                    core::iter::empty()
+                }
+
+                fn apply_field_default(&mut self, _field_path: &str) -> bool {
+                    false
+                }
+
+                fn load_from_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                    &mut self,
+                    prefix: &str,
+                    kv: &K,
+                ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
+                    #load_from_kv_body
+                }
+
+                fn load_from_kv_with_migration<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                    &mut self,
+                    prefix: &str,
+                    kv: &K,
+                ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
+                    // Enums don't have migration support at this level
+                    self.load_from_kv::<K, KEY_LEN>(prefix, kv)
+                }
+
+                fn persist_to_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                    &self,
+                    prefix: &str,
+                    kv: &K,
+                ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
+                    #persist_to_kv_body
+                }
+
+                fn persist_delta<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                    delta: &Self::Delta,
+                    kv: &K,
+                    prefix: &str,
+                ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
+                    async move {
+                        match delta {
+                            #(#persist_delta_arms)*
+                        }
+                        Ok(())
+                    }
+                }
+
+                fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
+                    #collect_valid_keys_body
+                }
+
+                fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
+                    #(#collect_valid_prefixes_arms)*
+                }
+            }
+        }
+    };
+
+    #[cfg(not(feature = "kv_persist"))]
+    let kv_persist_impl = quote! {};
+
+    // Combine ShadowNode and KVPersist impls
+    let shadow_node_impl = quote! {
+        #shadow_node_impl
+        #kv_persist_impl
     };
 
     // Generate ReportedUnionFields impl for enum

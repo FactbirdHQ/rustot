@@ -94,6 +94,7 @@ impl<'a> Topic<'a> {
         s.starts_with(Self::CERT_PREFIX) || s.starts_with(Self::PROVISIONING_PREFIX)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &'a str) -> Option<Self> {
         let tt = s.splitn(6, '/').collect::<heapless::Vec<&str, 6>>();
         match (tt.first(), tt.get(1)) {

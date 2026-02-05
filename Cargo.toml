@@ -100,7 +100,7 @@ std = ["serde/std", "minicbor-serde?/std", "dep:tokio", "dep:serde_json", "dep:b
 
 # Field-level KV shadow persistence (SequentialKVStore, FileKVStore)
 # Enables KVStore trait, KVPersist trait, and KV-based StateStore implementations
-shadows_kv_persist = ["dep:sequential-storage", "postcard/heapless"]
+shadows_kv_persist = ["dep:sequential-storage", "rustot-derive/kv_persist", "postcard/heapless"]
 
 defmt = [
     "dep:defmt",
