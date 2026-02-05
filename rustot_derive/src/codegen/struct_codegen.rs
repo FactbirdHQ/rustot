@@ -105,7 +105,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     // Fields with migrations must be leaves because migration logic operates on
     // the serialized value directly.
     let has_migration = !attrs.migrate_from().is_empty();
-    let is_leaf = attrs.opaque || has_migration;
+    let is_leaf = attrs.is_opaque() || has_migration;
 
     // Filter out shadow_attr from forwarded attributes
     let filtered_attrs: Vec<_> = field
@@ -457,12 +457,24 @@ pub(crate) fn generate_struct_code(
             let field_path_len = field_path.len();
 
             let has_migration = !attrs.migrate_from().is_empty();
-            let is_leaf = attrs.opaque || has_migration;
+            let is_leaf = attrs.is_opaque() || has_migration;
 
-            // MAX_VALUE_LEN
-            max_value_len_items.push(quote! {
-                <#field_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
-            });
+            // MAX_VALUE_LEN - opaque fields use MaxSize (or explicit), nested fields use KVPersist
+            if is_leaf {
+                if let Some(explicit_size) = attrs.opaque_max_size() {
+                    // Explicit max_size provided - use it directly
+                    max_value_len_items.push(quote! { #explicit_size });
+                } else {
+                    // No explicit size - require MaxSize trait
+                    max_value_len_items.push(quote! {
+                        <#field_ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
+                    });
+                }
+            } else {
+                max_value_len_items.push(quote! {
+                    <#field_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
+                });
+            }
 
             // Migration arm
             let migrate_from = attrs.migrate_from();
@@ -501,8 +513,8 @@ pub(crate) fn generate_struct_code(
                 });
             }
 
-            // Opaque field type
-            if attrs.opaque {
+            // Opaque field types that need MaxSize bound (no explicit max_size)
+            if attrs.is_opaque() && attrs.opaque_max_size().is_none() {
                 opaque_field_types.push(field_ty.clone());
             }
 
@@ -608,11 +620,12 @@ pub(crate) fn generate_struct_code(
         let migration_default = quote! { _ => &[] };
         let default_default = quote! { _ => false };
 
+        // Opaque fields only need MaxSize (for buffer sizing), not full KVPersist
         let kv_where_clause = if opaque_field_types.is_empty() {
             quote! {}
         } else {
             let bounds = opaque_field_types.iter().map(|ty| {
-                quote! { #ty: #krate::shadows::KVPersist }
+                quote! { #ty: ::postcard::experimental::max_size::MaxSize }
             });
             quote! { where #(#bounds),* }
         };

@@ -665,6 +665,16 @@ struct StaticIpCfg {
     gateway: heapless::Vec<u8, 4>,
 }
 
+// Test struct using explicit max_size (doesn't require MaxSize trait on field type)
+#[shadow_node]
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct ExplicitSizeCfg {
+    // Using opaque with explicit max_size - heapless::Vec still implements MaxSize,
+    // but the explicit size takes precedence and no MaxSize bound is required
+    #[shadow_attr(opaque(max_size = 32))]
+    data: heapless::Vec<u8, 8>,
+}
+
 #[shadow_node]
 #[derive(Clone, Default, Serialize, Deserialize)]
 enum IpSettingsCfg {

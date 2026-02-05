@@ -20,8 +20,9 @@ pub struct FieldAttrs {
     #[darling(default)]
     pub report_only: bool,
     /// Field is opaque - treated as leaf (primitive-like, no recursive patching)
+    /// Can be just `opaque` (requires MaxSize) or `opaque(max_size = N)` (explicit size)
     #[darling(default)]
-    pub opaque: bool,
+    pub opaque: Option<OpaqueSpec>,
     /// Migration specifications for this field
     #[cfg(feature = "kv_persist")]
     #[darling(default, multiple)]
@@ -30,6 +31,43 @@ pub struct FieldAttrs {
     #[cfg(feature = "kv_persist")]
     #[darling(default, rename = "default")]
     pub default_value: Option<DefaultValue>,
+}
+
+/// Opaque field specification
+///
+/// Supports two forms:
+/// - `#[shadow_attr(opaque)]` - field type must implement `MaxSize`
+/// - `#[shadow_attr(opaque(max_size = 64))]` - explicit max serialized size
+#[derive(Clone, Default)]
+pub struct OpaqueSpec {
+    /// Explicit maximum serialized size in bytes (optional)
+    pub max_size: Option<usize>,
+}
+
+impl FromMeta for OpaqueSpec {
+    fn from_word() -> darling::Result<Self> {
+        // `#[shadow_attr(opaque)]` - no max_size specified
+        Ok(OpaqueSpec { max_size: None })
+    }
+
+    fn from_list(items: &[darling::ast::NestedMeta]) -> darling::Result<Self> {
+        // `#[shadow_attr(opaque(max_size = N))]`
+        let mut max_size = None;
+        for item in items {
+            if let darling::ast::NestedMeta::Meta(Meta::NameValue(nv)) = item {
+                if nv.path.is_ident("max_size") {
+                    if let syn::Expr::Lit(syn::ExprLit {
+                        lit: Lit::Int(lit_int),
+                        ..
+                    }) = &nv.value
+                    {
+                        max_size = Some(lit_int.base10_parse()?);
+                    }
+                }
+            }
+        }
+        Ok(OpaqueSpec { max_size })
+    }
 }
 
 impl FieldAttrs {
@@ -48,6 +86,16 @@ impl FieldAttrs {
             }
         }
         Self::default()
+    }
+
+    /// Check if this field is marked as opaque
+    pub fn is_opaque(&self) -> bool {
+        self.opaque.is_some()
+    }
+
+    /// Get the explicit max_size if specified, None if opaque without max_size or not opaque
+    pub fn opaque_max_size(&self) -> Option<usize> {
+        self.opaque.as_ref().and_then(|o| o.max_size)
     }
 
     /// Get all migration source keys
@@ -235,6 +283,31 @@ mod tests {
             vec![parse_quote!(#[shadow_attr(migrate(from = "/old", convert = my_convert))])];
         let field_attrs = FieldAttrs::from_attrs(&attrs);
         assert!(field_attrs.migrate_convert().is_some());
+    }
+
+    // Test opaque attribute parsing
+    #[test]
+    fn test_opaque_simple() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque)])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert!(field_attrs.is_opaque());
+        assert_eq!(field_attrs.opaque_max_size(), None);
+    }
+
+    #[test]
+    fn test_opaque_with_max_size() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque(max_size = 64))])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert!(field_attrs.is_opaque());
+        assert_eq!(field_attrs.opaque_max_size(), Some(64));
+    }
+
+    #[test]
+    fn test_not_opaque() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(report_only)])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert!(!field_attrs.is_opaque());
+        assert_eq!(field_attrs.opaque_max_size(), None);
     }
 
     // Test heck integration for rename_all

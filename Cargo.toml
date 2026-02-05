@@ -30,7 +30,7 @@ minicbor = { version = "0.25", optional = true }
 minicbor-serde = { version = "0.3.2", optional = true }
 
 # Shadow storage dependencies
-postcard = { version = "1.1", default-features = false, features = ["experimental-derive"] }
+postcard = { git = "https://github.com/jamesmunns/postcard", rev = "f8a4064", default-features = false, features = ["experimental-derive", "heapless-v0_9"] }
 
 # KV-based shadow storage (optional, enabled by shadows_kv_persist feature)
 sequential-storage = { version = "7.0", features = ["heapless-09"], optional = true }
