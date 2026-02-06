@@ -1,4 +1,5 @@
 use crate::ota::data_interface::Protocol;
+use crate::ota::pal::ImageStateReason;
 use core::str::FromStr;
 use serde::Deserialize;
 
@@ -85,25 +86,32 @@ impl FileDescription<'_> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum JobStatusReason {
-    Receiving,      /* Update progress status. */
-    SigCheckPassed, /* Set status details to Self Test Ready. */
-    SelfTestActive, /* Set status details to Self Test Active. */
-    Accepted,       /* Set job state to Succeeded. */
-    Rejected,       /* Set job state to Failed. */
-    Aborted,        /* Set job state to Failed. */
-    Pal(u32),
+    Receiving,                          /* Update progress status. */
+    SigCheckPassed,                     /* Set status details to Self Test Ready. */
+    SelfTestActive,                     /* Set status details to Self Test Active. */
+    Accepted,                           /* Set job state to Succeeded. */
+    Rejected(Option<ImageStateReason>), /* Set job state to Failed with optional reason. */
+    Aborted(Option<ImageStateReason>),  /* Set job state to Failed with optional reason. */
 }
 
 impl JobStatusReason {
-    pub fn as_str(&self) -> &str {
+    /// Returns the self_test status string for this reason.
+    pub fn as_str(&self) -> &'static str {
         match self {
             JobStatusReason::Receiving => "receiving",
             JobStatusReason::SigCheckPassed => "ready",
             JobStatusReason::SelfTestActive => "active",
             JobStatusReason::Accepted => "accepted",
-            JobStatusReason::Rejected => "rejected",
-            JobStatusReason::Aborted => "aborted",
-            JobStatusReason::Pal(_) => "pal err",
+            JobStatusReason::Rejected(_) => "rejected",
+            JobStatusReason::Aborted(_) => "aborted",
+        }
+    }
+
+    /// Returns the detailed ImageStateReason if this is a failure reason.
+    pub fn detail(&self) -> Option<ImageStateReason> {
+        match self {
+            JobStatusReason::Rejected(r) | JobStatusReason::Aborted(r) => *r,
+            _ => None,
         }
     }
 }
@@ -117,8 +125,8 @@ impl FromStr for JobStatusReason {
             "ready" => JobStatusReason::SigCheckPassed,
             "active" => JobStatusReason::SelfTestActive,
             "accepted" => JobStatusReason::Accepted,
-            "rejected" => JobStatusReason::Rejected,
-            "aborted" => JobStatusReason::Aborted,
+            "rejected" => JobStatusReason::Rejected(None),
+            "aborted" => JobStatusReason::Aborted(None),
             _ => return Err(()),
         })
     }
@@ -131,15 +139,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn job_status_reason_serialize() {
+    fn job_status_reason_as_str() {
         let reasons = &[
             (JobStatusReason::Receiving, "receiving"),
             (JobStatusReason::SigCheckPassed, "ready"),
             (JobStatusReason::SelfTestActive, "active"),
             (JobStatusReason::Accepted, "accepted"),
-            (JobStatusReason::Rejected, "rejected"),
-            (JobStatusReason::Aborted, "aborted"),
-            (JobStatusReason::Pal(123), "pal err"),
+            (JobStatusReason::Rejected(None), "rejected"),
+            (JobStatusReason::Aborted(None), "aborted"),
         ];
 
         for (reason, exp) in reasons {
@@ -154,6 +161,31 @@ mod tests {
                 format!("{{\"self_test\":\"{}\"}}", exp).as_str()
             );
         }
+    }
+
+    #[test]
+    fn job_status_reason_detail() {
+        use crate::ota::pal::OtaPalError;
+
+        // Reasons without detail
+        assert!(JobStatusReason::Receiving.detail().is_none());
+        assert!(JobStatusReason::SigCheckPassed.detail().is_none());
+        assert!(JobStatusReason::Accepted.detail().is_none());
+
+        // Rejected/Aborted without detail
+        assert!(JobStatusReason::Rejected(None).detail().is_none());
+        assert!(JobStatusReason::Aborted(None).detail().is_none());
+
+        // Rejected/Aborted with detail
+        let reason = ImageStateReason::Pal(OtaPalError::SignatureCheckFailed);
+        assert_eq!(
+            JobStatusReason::Rejected(Some(reason)).detail(),
+            Some(reason)
+        );
+        assert_eq!(
+            JobStatusReason::Aborted(Some(ImageStateReason::MomentumAbort)).detail(),
+            Some(ImageStateReason::MomentumAbort)
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ use embedded_storage_async::nor_flash::NorFlash;
 
 use super::encoding::FileContext;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ImageStateReason {
     NewerJob,
@@ -17,6 +17,41 @@ pub enum ImageStateReason {
     Pal(OtaPalError),
 }
 
+impl ImageStateReason {
+    /// Returns a numeric error code for this reason.
+    ///
+    /// Error codes in the 2xxx range are image state reasons.
+    /// Pal errors delegate to the inner OtaPalError (1xxx range).
+    pub fn error_code(&self) -> u16 {
+        match self {
+            ImageStateReason::NewerJob => 2001,
+            ImageStateReason::FailedIngest => 2002,
+            ImageStateReason::MomentumAbort => 2003,
+            ImageStateReason::ImageStateMismatch => 2004,
+            ImageStateReason::InvalidDataProtocol => 2005,
+            ImageStateReason::UserAbort => 2006,
+            ImageStateReason::VersionCheck => 2007,
+            ImageStateReason::SignatureCheckPassed => 0, // Not an error
+            ImageStateReason::Pal(e) => e.error_code(),
+        }
+    }
+
+    /// Returns a short string identifier for this reason suitable for status reporting.
+    pub fn as_reason_str(&self) -> &'static str {
+        match self {
+            ImageStateReason::NewerJob => "newer_job",
+            ImageStateReason::FailedIngest => "failed_ingest",
+            ImageStateReason::MomentumAbort => "momentum_abort",
+            ImageStateReason::ImageStateMismatch => "state_mismatch",
+            ImageStateReason::InvalidDataProtocol => "invalid_protocol",
+            ImageStateReason::UserAbort => "user_abort",
+            ImageStateReason::VersionCheck => "version_check",
+            ImageStateReason::SignatureCheckPassed => "sig_check_passed",
+            ImageStateReason::Pal(e) => e.as_reason_str(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ImageState {
@@ -27,7 +62,7 @@ pub enum ImageState {
     Testing(ImageStateReason),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OtaPalError {
     SignatureCheckFailed,
@@ -40,6 +75,42 @@ pub enum OtaPalError {
     CommitFailed,
     VersionCheck,
     Other,
+}
+
+impl OtaPalError {
+    /// Returns a numeric error code for this error.
+    ///
+    /// Error codes in the 1xxx range are PAL-level errors.
+    pub fn error_code(&self) -> u16 {
+        match self {
+            OtaPalError::SignatureCheckFailed => 1001,
+            OtaPalError::FileWriteFailed => 1002,
+            OtaPalError::FileTooLarge => 1003,
+            OtaPalError::FileCloseFailed => 1004,
+            OtaPalError::BadFileHandle => 1005,
+            OtaPalError::Unsupported => 1006,
+            OtaPalError::BadImageState => 1007,
+            OtaPalError::CommitFailed => 1008,
+            OtaPalError::VersionCheck => 1009,
+            OtaPalError::Other => 1099,
+        }
+    }
+
+    /// Returns a short string identifier for this error suitable for status reporting.
+    pub fn as_reason_str(&self) -> &'static str {
+        match self {
+            OtaPalError::SignatureCheckFailed => "sig_check_failed",
+            OtaPalError::FileWriteFailed => "file_write_failed",
+            OtaPalError::FileTooLarge => "file_too_large",
+            OtaPalError::FileCloseFailed => "file_close_failed",
+            OtaPalError::BadFileHandle => "bad_file_handle",
+            OtaPalError::Unsupported => "unsupported",
+            OtaPalError::BadImageState => "bad_image_state",
+            OtaPalError::CommitFailed => "commit_failed",
+            OtaPalError::VersionCheck => "version_check",
+            OtaPalError::Other => "other",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

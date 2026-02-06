@@ -56,6 +56,8 @@ pub struct FileHandler {
     filebuf: Option<BlockFile>,
     compare_file_path: String,
     pub plateform_state: State,
+    /// If set, `close_file` will return this error instead of succeeding
+    pub fail_close_with: Option<OtaPalError>,
 }
 
 impl FileHandler {
@@ -65,7 +67,15 @@ impl FileHandler {
             filebuf: None,
             compare_file_path,
             plateform_state: State::Boot,
+            fail_close_with: None,
         }
+    }
+
+    /// Configure the handler to fail on close_file with the given error
+    #[allow(dead_code)]
+    pub fn with_close_failure(mut self, error: OtaPalError) -> Self {
+        self.fail_close_with = Some(error);
+        self
     }
 }
 
@@ -114,6 +124,12 @@ impl OtaPal for FileHandler {
         &mut self,
         file: &rustot::ota::encoding::FileContext,
     ) -> Result<(), OtaPalError> {
+        // Check for configured failure
+        if let Some(error) = self.fail_close_with {
+            log::info!("Simulating close_file failure: {:?}", error);
+            return Err(error);
+        }
+
         if let Some(ref mut buf) = &mut self.filebuf {
             log::debug!(
                 "Closing completed file. Len: {}/{} -> {}",

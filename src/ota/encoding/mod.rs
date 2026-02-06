@@ -138,7 +138,7 @@ impl FileContext {
 
             job_name: heapless::String::try_from(job_data.job_name).unwrap(),
             block_offset,
-            request_block_remaining: bitmap.len() as u32,
+            request_block_remaining: (bitmap.len() as u32).min(config.max_blocks_per_request),
             blocks_remaining: file_desc.filesize.div_ceil(config.block_size),
             stream_name: heapless::String::try_from(job_data.ota_document.streamname).unwrap(),
             bitmap,

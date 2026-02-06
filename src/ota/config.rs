@@ -2,6 +2,7 @@ use embassy_time::Duration;
 
 pub struct Config {
     pub block_size: usize,
+    pub max_blocks_per_request: u32,
     pub max_request_momentum: u8,
     pub request_wait: Duration,
     pub status_update_frequency: u32,
@@ -11,10 +12,11 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            block_size: 256,
+            block_size: 4096,
+            max_blocks_per_request: 16,
             max_request_momentum: 3,
             request_wait: Duration::from_secs(5),
-            status_update_frequency: 96,
+            status_update_frequency: 24,
             self_test_timeout: None,
         }
     }

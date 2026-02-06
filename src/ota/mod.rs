@@ -4,6 +4,7 @@ pub mod data_interface;
 pub mod encoding;
 pub mod error;
 pub mod pal;
+pub mod status_details;
 
 use core::{future::Future, ops::DerefMut as _};
 
@@ -11,9 +12,10 @@ use core::{future::Future, ops::DerefMut as _};
 pub use data_interface::mqtt::{Encoding, Topic};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex, signal::Signal};
 use embedded_storage_async::nor_flash::{NorFlash, NorFlashError as _};
+pub use status_details::{OtaStatusDetails, StatusDetailsExt};
 
 use crate::{
-    jobs::{data_types::JobStatus, StatusDetailsOwned},
+    jobs::data_types::JobStatus,
     ota::{data_interface::BlockTransfer, encoding::json::JobStatusReason},
 };
 
@@ -51,15 +53,25 @@ impl Updater {
             "[OTA] Starting perform_ota for job={} stream={} size={}",
             file_ctx.job_name, file_ctx.stream_name, file_ctx.filesize
         );
+        // Initialize status details, preserving self_test state if present
+        let mut initial_status = OtaStatusDetails::new();
+        if let Some(self_test) = file_ctx
+            .status_details
+            .get(&heapless::String::try_from("self_test").unwrap())
+        {
+            initial_status.set_self_test(self_test.as_str());
+        }
+
         let progress_state = Mutex::new(ProgressState {
             total_blocks: file_ctx.filesize.div_ceil(config.block_size),
             blocks_remaining: file_ctx.filesize.div_ceil(config.block_size),
             block_offset: file_ctx.block_offset,
-            request_block_remaining: file_ctx.bitmap.len() as u32,
+            request_block_remaining: (file_ctx.bitmap.len() as u32)
+                .min(config.max_blocks_per_request),
             bitmap: file_ctx.bitmap.clone(),
             file_size: file_ctx.filesize,
             request_momentum: None,
-            status_details: file_ctx.status_details.clone(),
+            status_details: initial_status,
         });
 
         // Create the JobUpdater
@@ -72,8 +84,13 @@ impl Updater {
 
         info!("Job document was accepted. Attempting to begin the update");
 
+        // Signal used to wake the momentum handler when the download completes,
+        // so it doesn't have to wait for its full sleep timer to expire.
+        let done_signal: Signal<NoopRawMutex, ()> = Signal::new();
+
         // Spawn the request momentum future
-        let momentum_fut = Self::handle_momentum(data, config, &file_ctx, &progress_state);
+        let momentum_fut =
+            Self::handle_momentum(data, config, &file_ctx, &progress_state, &done_signal);
 
         // Spawn the status update future
         let status_update_fut = job_updater.handle_status_updates();
@@ -212,6 +229,12 @@ impl Updater {
             } // End of outer resubscribe loop
         };
 
+        let data_fut = async {
+            let res = data_fut.await;
+            done_signal.signal(());
+            res
+        };
+
         let (data_res, _) = embassy_futures::join::join(
             data_fut,
             embassy_futures::select::select(status_update_fut, momentum_fut),
@@ -250,7 +273,7 @@ impl Updater {
             Err(e) => {
                 // Signal the error status
                 job_updater
-                    .update_job_status(JobStatus::Failed, JobStatusReason::Pal(0))
+                    .update_job_status(JobStatus::Failed, JobStatusReason::Aborted(None))
                     .await?;
 
                 pal.complete_callback(pal::OtaEvent::Fail).await?;
@@ -337,9 +360,20 @@ impl Updater {
         config: &config::Config,
         file_ctx: &FileContext,
         progress_state: &Mutex<NoopRawMutex, ProgressState>,
+        done_signal: &Signal<NoopRawMutex, ()>,
     ) -> Result<(), error::OtaError> {
         loop {
-            embassy_time::Timer::after(config.request_wait).await;
+            match embassy_futures::select::select(
+                embassy_time::Timer::after(config.request_wait),
+                done_signal.wait(),
+            )
+            .await
+            {
+                // Timer expired — check momentum
+                embassy_futures::select::Either::First(()) => {}
+                // Download completed — exit immediately
+                embassy_futures::select::Either::Second(()) => break,
+            }
 
             let mut progress = progress_state.lock().await;
 
@@ -387,7 +421,7 @@ pub struct ProgressState {
     #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
     pub bitmap: Bitmap,
     #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
-    pub status_details: StatusDetailsOwned,
+    pub status_details: OtaStatusDetails,
 }
 
 pub struct JobUpdater<'a, C: ControlInterface> {
@@ -575,7 +609,7 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                     )
                     .await?;
             }
-            ImageState::Rejected(_) => {
+            ImageState::Rejected(reason) => {
                 // The firmware update was rejected, complete the job as
                 // FAILED (Job service will not allow us to set REJECTED
                 // after the job has been started already).
@@ -585,11 +619,11 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                         self.file_ctx,
                         &mut progress,
                         JobStatus::Failed,
-                        JobStatusReason::Rejected,
+                        JobStatusReason::Rejected(Some(reason)),
                     )
                     .await?;
             }
-            _ => {
+            ImageState::Aborted(reason) => {
                 // The firmware update was aborted, complete the job as
                 // FAILED (Job service will not allow us to set REJECTED
                 // after the job has been started already).
@@ -599,7 +633,19 @@ impl<'a, C: ControlInterface> JobUpdater<'a, C> {
                         self.file_ctx,
                         &mut progress,
                         JobStatus::Failed,
-                        JobStatusReason::Aborted,
+                        JobStatusReason::Aborted(Some(reason)),
+                    )
+                    .await?;
+            }
+            ImageState::Unknown => {
+                // Unknown state, abort with no reason
+
+                self.control
+                    .update_job_status(
+                        self.file_ctx,
+                        &mut progress,
+                        JobStatus::Failed,
+                        JobStatusReason::Aborted(None),
                     )
                     .await?;
             }

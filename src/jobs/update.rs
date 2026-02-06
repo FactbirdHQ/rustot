@@ -3,16 +3,17 @@ use serde::Serialize;
 use crate::jobs::{data_types::JobStatus, MAX_CLIENT_TOKEN_LEN};
 use crate::mqtt::{PayloadError, ToPayload};
 
-use super::StatusDetailsOwned;
-
 /// Updates the status of a job execution. You can optionally create a step
 /// timer by setting a value for the stepTimeoutInMinutes property. If you don't
 /// update the value of this property by running UpdateJobExecution again, the
 /// job execution times out when the step timer expires.
 ///
 /// Topic: $aws/things/{thingName}/jobs/{jobId}/update
+///
+/// The type parameter `S` allows any serializable type for status_details,
+/// enabling different consumers to provide different status structures.
 #[derive(Debug, PartialEq, Serialize)]
-pub struct UpdateJobExecutionRequest<'a> {
+pub struct UpdateJobExecutionRequest<'a, S: Serialize = ()> {
     /// Optional. A number that identifies a particular job execution on a
     /// particular device.
     #[serde(rename = "executionNumber")]
@@ -42,21 +43,19 @@ pub struct UpdateJobExecutionRequest<'a> {
     /// REJECTED). This must be specified on every update.
     #[serde(rename = "status")]
     pub status: JobStatus,
-    // /  Optional. A collection of name/value pairs that describe the status of
-    // the job execution. If not specified, the statusDetails are unchanged.
+    /// Optional. A collection of name/value pairs that describe the status of
+    /// the job execution. If not specified, the statusDetails are unchanged.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<&'a StatusDetailsOwned>,
-    // Specifies the amount of time this device has to finish execution of this
-    // job. If the job execution status is not set to a terminal state before
-    // this timer expires, or before the timer is reset (by again calling
-    // <code>UpdateJobExecution</code>, setting the status to
-    // <code>IN_PROGRESS</code> and specifying a new timeout value in this
-    // field) the job execution status will be automatically set to
-    // <code>TIMED_OUT</code>. Note that setting or resetting this timeout has
-    // no effect on that job execution timeout which may have been specified
-    // when the job was created (<code>CreateJob</code> using field
-    // <code>timeoutConfig</code>).
+    pub status_details: Option<&'a S>,
+    /// Specifies the amount of time this device has to finish execution of this
+    /// job. If the job execution status is not set to a terminal state before
+    /// this timer expires, or before the timer is reset (by again calling
+    /// UpdateJobExecution, setting the status to IN_PROGRESS and specifying a
+    /// new timeout value in this field) the job execution status will be
+    /// automatically set to TIMED_OUT. Note that setting or resetting this
+    /// timeout has no effect on that job execution timeout which may have been
+    /// specified when the job was created (CreateJob using field timeoutConfig).
     #[serde(rename = "stepTimeoutInMinutes")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_timeout_in_minutes: Option<i64>,
@@ -67,10 +66,15 @@ pub struct UpdateJobExecutionRequest<'a> {
     pub client_token: Option<&'a str>,
 }
 
-pub struct Update<'a> {
+/// Builder for job execution update requests.
+///
+/// The type parameter `S` represents the status details type. Use
+/// [`status_details`](Self::status_details) to set the status details and
+/// change the type parameter.
+pub struct Update<'a, S: Serialize = ()> {
     status: JobStatus,
     client_token: Option<&'a str>,
-    status_details: Option<&'a StatusDetailsOwned>,
+    status_details: Option<&'a S>,
     include_job_document: bool,
     execution_number: Option<i64>,
     include_job_execution_state: bool,
@@ -78,7 +82,8 @@ pub struct Update<'a> {
     step_timeout_in_minutes: Option<i64>,
 }
 
-impl<'a> Update<'a> {
+impl<'a> Update<'a, ()> {
+    /// Create a new Update builder with the given job status.
     pub fn new(status: JobStatus) -> Self {
         Self {
             status,
@@ -91,7 +96,10 @@ impl<'a> Update<'a> {
             step_timeout_in_minutes: None,
         }
     }
+}
 
+impl<'a, S: Serialize> Update<'a, S> {
+    /// Set the client token for request correlation.
     pub fn client_token(self, client_token: &'a str) -> Self {
         assert!(client_token.len() < MAX_CLIENT_TOKEN_LEN);
 
@@ -101,13 +109,24 @@ impl<'a> Update<'a> {
         }
     }
 
-    pub fn status_details(self, status_details: &'a StatusDetailsOwned) -> Self {
-        Self {
+    /// Set the status details.
+    ///
+    /// This method accepts any type that implements `Serialize`, allowing
+    /// different consumers to provide different status detail structures.
+    pub fn status_details<T: Serialize>(self, status_details: &'a T) -> Update<'a, T> {
+        Update {
+            status: self.status,
+            client_token: self.client_token,
             status_details: Some(status_details),
-            ..self
+            include_job_document: self.include_job_document,
+            execution_number: self.execution_number,
+            include_job_execution_state: self.include_job_execution_state,
+            expected_version: self.expected_version,
+            step_timeout_in_minutes: self.step_timeout_in_minutes,
         }
     }
 
+    /// Include the job document in the response.
     pub fn include_job_document(self) -> Self {
         Self {
             include_job_document: true,
@@ -115,6 +134,7 @@ impl<'a> Update<'a> {
         }
     }
 
+    /// Include the job execution state in the response.
     pub fn include_job_execution_state(self) -> Self {
         Self {
             include_job_execution_state: true,
@@ -122,6 +142,7 @@ impl<'a> Update<'a> {
         }
     }
 
+    /// Set the execution number.
     pub fn execution_number(self, execution_number: i64) -> Self {
         Self {
             execution_number: Some(execution_number),
@@ -129,6 +150,7 @@ impl<'a> Update<'a> {
         }
     }
 
+    /// Set the expected version for optimistic locking.
     pub fn expected_version(self, expected_version: i64) -> Self {
         Self {
             expected_version: Some(expected_version),
@@ -136,6 +158,7 @@ impl<'a> Update<'a> {
         }
     }
 
+    /// Set the step timeout in minutes.
     pub fn step_timeout_in_minutes(self, step_timeout_in_minutes: i64) -> Self {
         Self {
             step_timeout_in_minutes: Some(step_timeout_in_minutes),
@@ -144,7 +167,7 @@ impl<'a> Update<'a> {
     }
 }
 
-impl ToPayload for Update<'_> {
+impl<S: Serialize> ToPayload for Update<'_, S> {
     fn max_size(&self) -> usize {
         512
     }
@@ -176,7 +199,7 @@ mod test {
 
     #[test]
     fn serialize_requests() {
-        let req = UpdateJobExecutionRequest {
+        let req: UpdateJobExecutionRequest<'_, ()> = UpdateJobExecutionRequest {
             client_token: Some("test_client:token_update"),
             step_timeout_in_minutes: Some(50),
             execution_number: Some(5),
@@ -215,5 +238,32 @@ mod test {
             topic.as_str(),
             "$aws/things/test_client/jobs/test_job_id/update"
         );
+    }
+
+    #[test]
+    fn serialize_with_status_details() {
+        // Test with a custom status details struct
+        #[derive(Serialize)]
+        struct TestStatus {
+            self_test: &'static str,
+            progress: &'static str,
+        }
+
+        let status = TestStatus {
+            self_test: "receiving",
+            progress: "10/100",
+        };
+
+        let update = Update::new(JobStatus::InProgress)
+            .client_token("test_client")
+            .status_details(&status);
+
+        let mut buf = [0u8; 512];
+        let len = update.encode(&mut buf).unwrap();
+
+        let json = core::str::from_utf8(&buf[..len]).unwrap();
+        assert!(json.contains(r#""self_test":"receiving""#));
+        assert!(json.contains(r#""progress":"10/100""#));
+        assert!(json.contains(r#""status":"IN_PROGRESS""#));
     }
 }
