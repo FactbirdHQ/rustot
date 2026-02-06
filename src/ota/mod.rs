@@ -220,9 +220,8 @@ impl Updater {
                             break;
                         }
 
-                        // Handle status update future results
                         Err(e) => {
-                            error!("Status update error: {:?}", e);
+                            error!("Block transfer error: {:?}", e);
                             return Err(e);
                         }
                     }
@@ -270,6 +269,17 @@ impl Updater {
                     .await?;
 
                 Err(error::OtaError::MomentumAbort)
+            }
+            Err(error::OtaError::UserAbort) => {
+                warn!("[OTA] Job cancelled (detected via notification)");
+                job_updater
+                    .set_image_state_with_reason(
+                        pal,
+                        ImageState::Aborted(ImageStateReason::UserAbort),
+                    )
+                    .await?;
+
+                Err(error::OtaError::UserAbort)
             }
             Err(e) => {
                 // Signal the error status, preserving the failure reason if available
