@@ -96,7 +96,7 @@ ota_mqtt_data = ["dep:minicbor", "dep:minicbor-serde"]
 
 ota_http_data = []
 
-std = ["serde/std", "minicbor-serde?/std", "dep:tokio", "dep:serde_json", "dep:base64", "postcard/alloc"]
+std = ["serde/std", "minicbor-serde?/std", "dep:tokio", "dep:serde_json", "dep:base64", "postcard/alloc", "rustot-derive/std"]
 
 # Field-level KV shadow persistence (SequentialKVStore, FileKVStore)
 # Enables KVStore trait, KVPersist trait, and KV-based StateStore implementations

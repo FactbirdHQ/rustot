@@ -15,6 +15,8 @@ proc-macro = true
 default = []
 # When enabled, generates KVPersist trait implementations
 kv_persist = []
+# When enabled, generates std-compatible code (uses alloc instead of fixed buffers)
+std = []
 
 [dependencies]
 syn = { version = "2", features = ["extra-traits"] }

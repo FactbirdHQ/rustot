@@ -22,7 +22,7 @@
 ///
 /// With `shadows_kv_persist` feature, also generates KVPersist impl:
 /// - `MAX_KEY_LEN = 0` (no sub-keys)
-/// - `MAX_VALUE_LEN = POSTCARD_MAX_SIZE` (serialized size)
+/// - `ValueBuf = [u8; POSTCARD_MAX_SIZE]` (serialization buffer)
 ///
 /// # Example
 ///
@@ -73,7 +73,8 @@ macro_rules! impl_opaque {
         #[cfg(feature = "shadows_kv_persist")]
         impl $crate::shadows::KVPersist for $ty {
             const MAX_KEY_LEN: usize = 0;
-            const MAX_VALUE_LEN: usize = <$ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE;
+            type ValueBuf = [u8; <$ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE];
+            fn zero_value_buf() -> Self::ValueBuf { [0u8; <$ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE] }
 
             fn migration_sources(_field_path: &str) -> &'static [$crate::shadows::MigrationSource] {
                 &[]
@@ -94,8 +95,8 @@ macro_rules! impl_opaque {
             ) -> impl ::core::future::Future<Output = Result<$crate::shadows::LoadFieldResult, $crate::shadows::KvError<K::Error>>> {
                 async move {
                     let mut result = $crate::shadows::LoadFieldResult::default();
-                    let mut buf = [0u8; Self::MAX_VALUE_LEN];
-                    match kv.fetch(prefix, &mut buf).await.map_err($crate::shadows::KvError::Kv)? {
+                    let mut buf = Self::zero_value_buf();
+                    match kv.fetch(prefix, buf.as_mut()).await.map_err($crate::shadows::KvError::Kv)? {
                         Some(data) => {
                             *self = ::postcard::from_bytes(data)
                                 .map_err(|_| $crate::shadows::KvError::Serialization)?;
@@ -122,8 +123,8 @@ macro_rules! impl_opaque {
                 kv: &K,
             ) -> impl ::core::future::Future<Output = Result<(), $crate::shadows::KvError<K::Error>>> {
                 async move {
-                    let mut buf = [0u8; Self::MAX_VALUE_LEN];
-                    let bytes = ::postcard::to_slice(self, &mut buf)
+                    let mut buf = Self::zero_value_buf();
+                    let bytes = ::postcard::to_slice(self, buf.as_mut())
                         .map_err(|_| $crate::shadows::KvError::Serialization)?;
                     kv.store(prefix, bytes).await.map_err($crate::shadows::KvError::Kv)
                 }
@@ -135,8 +136,8 @@ macro_rules! impl_opaque {
                 prefix: &str,
             ) -> impl ::core::future::Future<Output = Result<(), $crate::shadows::KvError<K::Error>>> {
                 async move {
-                    let mut buf = [0u8; Self::MAX_VALUE_LEN];
-                    let bytes = ::postcard::to_slice(delta, &mut buf)
+                    let mut buf = Self::zero_value_buf();
+                    let bytes = ::postcard::to_slice(delta, buf.as_mut())
                         .map_err(|_| $crate::shadows::KvError::Serialization)?;
                     kv.store(prefix, bytes).await.map_err($crate::shadows::KvError::Kv)
                 }
@@ -200,7 +201,10 @@ impl crate::shadows::ReportedUnionFields for core::time::Duration {
 impl crate::shadows::KVPersist for core::time::Duration {
     const MAX_KEY_LEN: usize = 0;
     // postcard: u64 varint (max 10) + u32 varint (max 5) = 15 bytes
-    const MAX_VALUE_LEN: usize = 15;
+    type ValueBuf = [u8; 15];
+    fn zero_value_buf() -> Self::ValueBuf {
+        [0u8; 15]
+    }
 
     fn migration_sources(_field_path: &str) -> &'static [crate::shadows::MigrationSource] {
         &[]
@@ -220,9 +224,9 @@ impl crate::shadows::KVPersist for core::time::Duration {
         kv: &K,
     ) -> Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>> {
         let mut result = crate::shadows::LoadFieldResult::default();
-        let mut buf = [0u8; 15];
+        let mut buf = Self::zero_value_buf();
         match kv
-            .fetch(prefix, &mut buf)
+            .fetch(prefix, buf.as_mut())
             .await
             .map_err(crate::shadows::KvError::Kv)?
         {
@@ -249,8 +253,8 @@ impl crate::shadows::KVPersist for core::time::Duration {
         prefix: &str,
         kv: &K,
     ) -> Result<(), crate::shadows::KvError<K::Error>> {
-        let mut buf = [0u8; 15];
-        let bytes = ::postcard::to_slice(self, &mut buf)
+        let mut buf = Self::zero_value_buf();
+        let bytes = ::postcard::to_slice(self, buf.as_mut())
             .map_err(|_| crate::shadows::KvError::Serialization)?;
         kv.store(prefix, bytes)
             .await
@@ -262,8 +266,8 @@ impl crate::shadows::KVPersist for core::time::Duration {
         kv: &K,
         prefix: &str,
     ) -> Result<(), crate::shadows::KvError<K::Error>> {
-        let mut buf = [0u8; 15];
-        let bytes = ::postcard::to_slice(delta, &mut buf)
+        let mut buf = Self::zero_value_buf();
+        let bytes = ::postcard::to_slice(delta, buf.as_mut())
             .map_err(|_| crate::shadows::KvError::Serialization)?;
         kv.store(prefix, bytes)
             .await

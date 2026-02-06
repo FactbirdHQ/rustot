@@ -459,8 +459,9 @@ pub(crate) fn generate_struct_code(
             let has_migration = !attrs.migrate_from().is_empty();
             let is_leaf = attrs.is_opaque() || has_migration;
 
-            // MAX_VALUE_LEN - opaque fields use MaxSize (or explicit), nested fields use KVPersist
-            if is_leaf {
+            // ValueBuf sizing — only non-report_only leaf fields contribute.
+            // report_only fields are not persisted to KV, nested fields bring their own ValueBuf.
+            if is_leaf && !attrs.report_only {
                 if let Some(explicit_size) = attrs.opaque_max_size() {
                     // Explicit max_size provided - use it directly
                     max_value_len_items.push(quote! { #explicit_size });
@@ -470,11 +471,8 @@ pub(crate) fn generate_struct_code(
                         <#field_ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
                     });
                 }
-            } else {
-                max_value_len_items.push(quote! {
-                    <#field_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
-                });
             }
+            // Nested fields are NOT included — they handle their own buffers via their own ValueBuf
 
             // Migration arm
             let migrate_from = attrs.migrate_from();
@@ -513,13 +511,16 @@ pub(crate) fn generate_struct_code(
                 });
             }
 
-            // Opaque field types that need MaxSize bound (no explicit max_size)
-            if attrs.is_opaque() && attrs.opaque_max_size().is_none() {
+            // Opaque field types that need MaxSize bound (no explicit max_size, not report_only)
+            if attrs.is_opaque() && attrs.opaque_max_size().is_none() && !attrs.report_only {
                 opaque_field_types.push(field_ty.clone());
             }
 
             // KV operations (leaf vs nested)
-            if is_leaf {
+            // report_only leaf fields are completely skipped — they're not persisted to KV
+            if is_leaf && attrs.report_only {
+                // No KV operations for report_only leaf fields
+            } else if is_leaf {
                 max_key_len_items.push(quote! { #field_path_len });
 
                 let on_missing = quote! {
@@ -556,13 +557,11 @@ pub(crate) fn generate_struct_code(
                     quote! { self.#field_name },
                 ));
 
-                if !attrs.report_only {
-                    persist_delta_arms.push(kv_codegen::leaf_persist_delta(
-                        krate,
-                        &field_path,
-                        field_name,
-                    ));
-                }
+                persist_delta_arms.push(kv_codegen::leaf_persist_delta(
+                    krate,
+                    &field_path,
+                    field_name,
+                ));
 
                 collect_valid_keys_arms.push(kv_codegen::leaf_collect_keys(&field_path));
             } else {
@@ -614,6 +613,7 @@ pub(crate) fn generate_struct_code(
         }
 
         // Build const expressions
+        // ValueBuf only covers directly-held leaf fields. Nested fields bring their own ValueBuf.
         let max_value_len_expr = build_const_max_expr(max_value_len_items, quote! { 0 });
         let max_key_len_expr = build_const_max_expr(max_key_len_items, quote! { 0 });
 
@@ -633,7 +633,8 @@ pub(crate) fn generate_struct_code(
         quote! {
             impl #krate::shadows::KVPersist for #name #kv_where_clause {
                 const MAX_KEY_LEN: usize = #max_key_len_expr;
-                const MAX_VALUE_LEN: usize = #max_value_len_expr;
+                type ValueBuf = [u8; #max_value_len_expr];
+                fn zero_value_buf() -> Self::ValueBuf { [0u8; #max_value_len_expr] }
 
                 fn migration_sources(field_path: &str) -> &'static [#krate::shadows::MigrationSource] {
                     match field_path {

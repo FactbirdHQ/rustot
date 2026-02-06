@@ -666,6 +666,7 @@ struct StaticIpCfg {
 }
 
 // Test struct using explicit max_size (doesn't require MaxSize trait on field type)
+#[allow(dead_code)]
 #[shadow_node]
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct ExplicitSizeCfg {
@@ -681,6 +682,17 @@ enum IpSettingsCfg {
     #[default]
     Dhcp,
     Static(StaticIpCfg),
+}
+
+// Test: report_only fields with borrowed types work because they're not persisted to KV.
+// &'static str doesn't implement MaxSize, but report_only fields skip KV codegen entirely.
+#[allow(dead_code)]
+#[shadow_node]
+#[derive(Clone, Default, Serialize)]
+struct ReportOnlyStaticTest {
+    normal_field: u32,
+    #[shadow_attr(report_only, opaque)]
+    status: &'static str,
 }
 
 #[shadow_root(name = "wifi")]
