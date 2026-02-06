@@ -31,8 +31,8 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
         // Set the self_test status field
         progress_state.status_details.set_self_test(reason.as_str());
 
-        // Add progress tracking for in-progress updates
-        if let JobStatus::InProgress | JobStatus::Succeeded = status {
+        // Add progress tracking for in-progress and failed updates
+        if let JobStatus::InProgress | JobStatus::Succeeded | JobStatus::Failed = status {
             // Don't override the progress on succeeded, nor on self-test
             // active. (Cases where progress counter is lost due to device
             // restarts)
