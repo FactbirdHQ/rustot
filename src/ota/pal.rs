@@ -62,7 +62,7 @@ pub enum ImageState {
     Testing(ImageStateReason),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OtaPalError {
     SignatureCheckFailed,

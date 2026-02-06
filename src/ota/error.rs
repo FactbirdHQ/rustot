@@ -23,7 +23,7 @@ pub enum OtaError {
     ),
     Mqtt,
     Encoding,
-    Pal,
+    Pal(OtaPalError),
     Timeout,
 }
 
@@ -34,8 +34,8 @@ impl OtaError {
 }
 
 impl From<OtaPalError> for OtaError {
-    fn from(_e: OtaPalError) -> Self {
-        Self::Pal
+    fn from(e: OtaPalError) -> Self {
+        Self::Pal(e)
     }
 }
 

@@ -271,9 +271,15 @@ impl Updater {
                 Err(error::OtaError::MomentumAbort)
             }
             Err(e) => {
-                // Signal the error status
+                // Signal the error status, preserving the failure reason if available
+                let reason = match &e {
+                    error::OtaError::Pal(pal_err) => {
+                        JobStatusReason::Aborted(Some(ImageStateReason::Pal(*pal_err)))
+                    }
+                    _ => JobStatusReason::Aborted(None),
+                };
                 job_updater
-                    .update_job_status(JobStatus::Failed, JobStatusReason::Aborted(None))
+                    .update_job_status(JobStatus::Failed, reason)
                     .await?;
 
                 pal.complete_callback(pal::OtaEvent::Fail).await?;
