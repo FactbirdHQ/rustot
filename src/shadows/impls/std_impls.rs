@@ -56,8 +56,11 @@ impl ReportedUnionFields for String {
 #[cfg(feature = "shadows_kv_persist")]
 impl KVPersist for String {
     const MAX_KEY_LEN: usize = 0;
-    // std::String has unbounded size; unused on std path (to_allocvec/fetch_to_vec)
-    const MAX_VALUE_LEN: usize = 1024;
+    // std uses allocating path (to_allocvec/fetch_to_vec), buffer unused
+    type ValueBuf = [u8; 0];
+    fn zero_value_buf() -> Self::ValueBuf {
+        []
+    }
 
     fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
         &[]
@@ -159,14 +162,21 @@ where
     }
 }
 
+/// `std::Vec<T>` is stored as an atomic blob value because AWS IoT Shadows
+/// treat arrays as normal values — an update to an array replaces the whole array,
+/// and it is not possible to update part of an array. This is why `Delta = Self`
+/// (full replacement) rather than per-element deltas.
 #[cfg(feature = "shadows_kv_persist")]
 impl<T> KVPersist for Vec<T>
 where
     T: Clone + Default + Serialize + DeserializeOwned,
 {
     const MAX_KEY_LEN: usize = 0;
-    // std::Vec has unbounded size; unused on std path (to_allocvec/fetch_to_vec)
-    const MAX_VALUE_LEN: usize = 4096;
+    // std uses allocating path (to_allocvec/fetch_to_vec), buffer unused
+    type ValueBuf = [u8; 0];
+    fn zero_value_buf() -> Self::ValueBuf {
+        []
+    }
 
     fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
         &[]
@@ -367,17 +377,11 @@ where
     // "/{key}" + sub-key length
     const MAX_KEY_LEN: usize = 1 + K::MAX_KEY_DISPLAY_LEN + V::MAX_KEY_LEN;
 
-    // std HashMap uses dynamic allocation; this is a reasonable upper bound
-    const MAX_VALUE_LEN: usize = {
-        const fn const_max(a: usize, b: usize) -> usize {
-            if a > b {
-                a
-            } else {
-                b
-            }
-        }
-        const_max(4096, V::MAX_VALUE_LEN)
-    };
+    // std uses allocating path (to_allocvec/fetch_to_vec), buffer unused
+    type ValueBuf = [u8; 0];
+    fn zero_value_buf() -> Self::ValueBuf {
+        []
+    }
 
     fn migration_sources(_field_path: &str) -> &'static [MigrationSource] {
         &[]

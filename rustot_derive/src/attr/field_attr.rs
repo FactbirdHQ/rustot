@@ -40,7 +40,8 @@ pub struct FieldAttrs {
 /// - `#[shadow_attr(opaque(max_size = 64))]` - explicit max serialized size
 #[derive(Clone, Default)]
 pub struct OpaqueSpec {
-    /// Explicit maximum serialized size in bytes (optional)
+    /// Explicit maximum serialized size in bytes (only used with kv_persist)
+    #[cfg_attr(not(feature = "kv_persist"), allow(dead_code))]
     pub max_size: Option<usize>,
 }
 
@@ -94,6 +95,7 @@ impl FieldAttrs {
     }
 
     /// Get the explicit max_size if specified, None if opaque without max_size or not opaque
+    #[cfg_attr(not(feature = "kv_persist"), allow(dead_code))]
     pub fn opaque_max_size(&self) -> Option<usize> {
         self.opaque.as_ref().and_then(|o| o.max_size)
     }

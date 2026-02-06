@@ -60,7 +60,7 @@ use crate::attr::{
 };
 
 #[cfg(feature = "kv_persist")]
-use super::helpers::{build_const_max_expr, build_max_key_len_expr};
+use super::helpers::build_max_key_len_expr;
 #[cfg(feature = "kv_persist")]
 use super::kv_codegen::{self, VARIANT_KEY_PATH};
 use super::CodegenOutput;
@@ -619,7 +619,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     #[cfg(feature = "kv_persist")]
     let kv_persist_impl = {
         // Collect KV-specific codegen by iterating over variants again
-        let mut max_value_len_items = Vec::new();
         let mut load_from_kv_variant_arms = Vec::new();
         let mut persist_to_kv_variant_arms = Vec::new();
         let mut persist_delta_mode_arms = Vec::new();
@@ -662,10 +661,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     let inner_ty = &fields.unnamed[0].ty;
                     let variant_path = format!("/{}", serde_name);
                     let variant_path_len = variant_path.len();
-
-                    max_value_len_items.push(quote! {
-                        <#inner_ty as #krate::shadows::KVPersist>::MAX_VALUE_LEN
-                    });
 
                     max_key_len_items.push(quote! { #variant_path_len + <#inner_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN });
 
@@ -721,7 +716,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         }
 
         // Build const expressions
-        let max_value_len_expr = build_const_max_expr(max_value_len_items, quote! { 0 });
+        // Adjacently-tagged enums use a fixed 128-byte buffer for _variant names, not ValueBuf.
+        // Inner variant types bring their own ValueBuf.
         let max_key_len_expr =
             build_max_key_len_expr(max_key_len_items, quote! { #variant_key_len });
 
@@ -739,7 +735,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         quote! {
             impl #krate::shadows::KVPersist for #name {
                 const MAX_KEY_LEN: usize = #max_key_len_expr;
-                const MAX_VALUE_LEN: usize = #max_value_len_expr;
+                // Adjacently-tagged enums don't directly serialize values — variant name uses
+                // fixed 128-byte buffer, inner types bring their own ValueBuf
+                type ValueBuf = [u8; 0];
+                fn zero_value_buf() -> Self::ValueBuf { [] }
 
                 fn migration_sources(_field_path: &str) -> &'static [#krate::shadows::MigrationSource] {
                     &[]

@@ -3,13 +3,10 @@
 //! This module provides reusable code generation patterns for KVPersist trait implementations.
 //! These helpers eliminate duplication between struct, enum, and adjacently-tagged enum codegen.
 //!
-//! # std vs no_std
-//!
-//! The generated code uses `#[cfg(feature = "std")]` to switch between:
-//! - **std**: Uses allocating functions (`fetch_to_vec`, `to_allocvec`)
-//! - **no_std**: Uses fixed-size buffers based on `MAX_VALUE_LEN`
-//!
-//! This module provides internal helpers to generate these conditional blocks consistently.
+//! The generated code always uses fixed-size buffers (`zero_value_buf()` + `kv.fetch()` +
+//! `postcard::to_slice()`). Types that need allocating paths (std String, Vec, HashMap) handle
+//! that internally in their own KVPersist impls — the codegen never emits `#[cfg(feature)]`
+//! blocks, which would be evaluated in the user's crate instead of rustot.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -37,37 +34,25 @@ pub fn build_key(var_name: &syn::Ident, path: &str) -> TokenStream {
 }
 
 // =============================================================================
-// Internal helpers for std/no_std conditional code generation
+// Internal helpers for KV fetch/store code generation
 // =============================================================================
 
-/// Generates cfg-conditional code for fetching from KV and deserializing with postcard.
+/// Generates code for fetching from KV and handling the result.
 ///
-/// Returns (data_binding, fetch_code) where:
-/// - `data_binding` is the name to use for the deserialized data in the on_some block
-/// - `fetch_code` wraps on_some/on_none in cfg-conditional fetch logic
+/// Uses fixed-size `ValueBuf` from the type's `zero_value_buf()` method.
 fn kv_fetch_and_handle(
     krate: &TokenStream,
     key_expr: &TokenStream,
     on_some: impl Fn(TokenStream) -> TokenStream,
     on_none: TokenStream,
 ) -> TokenStream {
-    let on_some_nostd = on_some(quote! { data });
-    let on_some_std = on_some(quote! { &data });
+    let on_some_body = on_some(quote! { data });
 
     quote! {
-        #[cfg(not(feature = "std"))]
         {
-            let mut __fetch_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-            if let Some(data) = kv.fetch(#key_expr, &mut __fetch_buf).await.map_err(#krate::shadows::KvError::Kv)? {
-                #on_some_nostd
-            } else {
-                #on_none
-            }
-        }
-        #[cfg(feature = "std")]
-        {
-            if let Some(data) = kv.fetch_to_vec(#key_expr).await.map_err(#krate::shadows::KvError::Kv)? {
-                #on_some_std
+            let mut __fetch_buf = <Self as #krate::shadows::KVPersist>::zero_value_buf();
+            if let Some(data) = kv.fetch(#key_expr, __fetch_buf.as_mut()).await.map_err(#krate::shadows::KvError::Kv)? {
+                #on_some_body
             } else {
                 #on_none
             }
@@ -75,32 +60,23 @@ fn kv_fetch_and_handle(
     }
 }
 
-/// Generates cfg-conditional code for serializing with postcard and storing to KV.
+/// Generates code for serializing with postcard and storing to KV.
 fn kv_serialize_and_store(
     krate: &TokenStream,
     key_expr: &TokenStream,
     value_expr: &TokenStream,
 ) -> TokenStream {
     quote! {
-        #[cfg(not(feature = "std"))]
         {
-            let mut __ser_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-            let bytes = ::postcard::to_slice(#value_expr, &mut __ser_buf)
+            let mut __ser_buf = <Self as #krate::shadows::KVPersist>::zero_value_buf();
+            let bytes = ::postcard::to_slice(#value_expr, __ser_buf.as_mut())
                 .map_err(|_| #krate::shadows::KvError::Serialization)?;
             kv.store(#key_expr, bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-        }
-        #[cfg(feature = "std")]
-        {
-            let bytes = ::postcard::to_allocvec(#value_expr)
-                .map_err(|_| #krate::shadows::KvError::Serialization)?;
-            kv.store(#key_expr, &bytes).await.map_err(#krate::shadows::KvError::Kv)?;
         }
     }
 }
 
 /// Generates code for loading a leaf field from KV storage.
-///
-/// Handles both std and no_std environments with appropriate buffer management.
 pub fn leaf_load(
     krate: &TokenStream,
     field_path: &str,
@@ -209,41 +185,22 @@ pub fn migration_fallback(
             let mut old_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
             let _ = old_key.push_str(prefix);
             let _ = old_key.push_str(source.key);
-            #[cfg(not(feature = "std"))]
-            {
-                let mut fetch_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                if let Some(old_data) = kv.fetch(&old_key, &mut fetch_buf).await.map_err(#krate::shadows::KvError::Kv)? {
-                    let value_bytes = if let Some(convert_fn) = source.convert {
-                        let mut convert_buf = [0u8; <Self as #krate::shadows::KVPersist>::MAX_VALUE_LEN];
-                        let new_len = convert_fn(old_data, &mut convert_buf).map_err(#krate::shadows::KvError::Migration)?;
-                        fetch_buf[..new_len].copy_from_slice(&convert_buf[..new_len]);
-                        &fetch_buf[..new_len]
-                    } else {
-                        old_data
-                    };
-                    #field_access = ::postcard::from_bytes(value_bytes).map_err(|_| #krate::shadows::KvError::Serialization)?;
-                    kv.store(&full_key, value_bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                    result.migrated += 1;
-                    migrated = true;
-                    break;
-                }
-            }
-            #[cfg(feature = "std")]
-            {
-                if let Some(old_data) = kv.fetch_to_vec(&old_key).await.map_err(#krate::shadows::KvError::Kv)? {
-                    let value_bytes: ::std::vec::Vec<u8> = if let Some(convert_fn) = source.convert {
-                        let mut convert_buf = vec![0u8; old_data.len() * 2 + 64];
-                        let new_len = convert_fn(&old_data, &mut convert_buf).map_err(#krate::shadows::KvError::Migration)?;
-                        convert_buf[..new_len].to_vec()
-                    } else {
-                        old_data
-                    };
-                    #field_access = ::postcard::from_bytes(&value_bytes).map_err(|_| #krate::shadows::KvError::Serialization)?;
-                    kv.store(&full_key, &value_bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                    result.migrated += 1;
-                    migrated = true;
-                    break;
-                }
+
+            let mut fetch_buf = <Self as #krate::shadows::KVPersist>::zero_value_buf();
+            if let Some(old_data) = kv.fetch(&old_key, fetch_buf.as_mut()).await.map_err(#krate::shadows::KvError::Kv)? {
+                let value_bytes = if let Some(convert_fn) = source.convert {
+                    let mut convert_buf = <Self as #krate::shadows::KVPersist>::zero_value_buf();
+                    let new_len = convert_fn(old_data, convert_buf.as_mut()).map_err(#krate::shadows::KvError::Migration)?;
+                    fetch_buf.as_mut()[..new_len].copy_from_slice(&convert_buf.as_mut()[..new_len]);
+                    &fetch_buf.as_mut()[..new_len]
+                } else {
+                    old_data
+                };
+                #field_access = ::postcard::from_bytes(value_bytes).map_err(|_| #krate::shadows::KvError::Serialization)?;
+                kv.store(&full_key, value_bytes).await.map_err(#krate::shadows::KvError::Kv)?;
+                result.migrated += 1;
+                migrated = true;
+                break;
             }
         }
         if !migrated {

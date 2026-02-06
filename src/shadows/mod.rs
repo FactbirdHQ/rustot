@@ -328,12 +328,19 @@ pub trait KVPersist: ShadowNode {
     /// Includes the longest field path including nested types.
     const MAX_KEY_LEN: usize;
 
-    /// Maximum serialized value size for any field.
+    /// Buffer type for serializing/deserializing values.
     ///
-    /// Used by no-std impls to allocate stack buffers for serialization.
-    /// Under std, this constant may be unused since `to_allocvec` / `fetch_to_vec`
-    /// handle allocation dynamically.
-    const MAX_VALUE_LEN: usize;
+    /// Each type provides its own buffer sized for its worst-case serialized value.
+    /// This seals `[(); EXPR]:` bounds inside the library — user crates only see
+    /// the associated type, never the const expression.
+    ///
+    /// - no-std leaf types: `[u8; POSTCARD_MAX_SIZE]`
+    /// - std types: `[u8; 0]` (unused — std uses `to_allocvec`/`fetch_to_vec`)
+    /// - structs: `[u8; max(leaf_field_sizes)]` (nested fields bring their own)
+    type ValueBuf: AsMut<[u8]>;
+
+    /// Create a zeroed value buffer for serialization/deserialization.
+    fn zero_value_buf() -> Self::ValueBuf;
 
     // =========================================================================
     // Migration Support
@@ -374,7 +381,7 @@ pub trait KVPersist: ShadowNode {
     /// Load this type's state from KV storage.
     ///
     /// Each impl allocates its own buffer internally:
-    /// - no-std: stack buffer of `MAX_VALUE_LEN` bytes
+    /// - no-std: stack buffer from `ValueBuf::default()`
     /// - std: uses `kv.fetch_to_vec()` for dynamic allocation
     ///
     /// KEY_LEN is propagated from root to ensure buffer size matches full key paths.
@@ -396,7 +403,7 @@ pub trait KVPersist: ShadowNode {
     /// Persist this type's entire state to KV storage (all fields).
     ///
     /// Each impl allocates its own buffer internally:
-    /// - no-std: stack buffer of `MAX_VALUE_LEN` bytes + `postcard::to_slice`
+    /// - no-std: stack buffer from `ValueBuf::default()` + `postcard::to_slice`
     /// - std: uses `postcard::to_allocvec()` for dynamic allocation
     fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
@@ -445,27 +452,65 @@ pub trait MapKey:
     ///
     /// Used to compute `MAX_KEY_LEN` for map-based `KVPersist` implementations.
     const MAX_KEY_DISPLAY_LEN: usize;
+
+    /// Buffer type for serializing a single key via postcard.
+    ///
+    /// Seals `[(); EXPR]:` bounds inside the library — user crates only see
+    /// the associated type. Sized for worst-case postcard serialization:
+    /// - `u8` → `[u8; 2]` (varint)
+    /// - `u16` → `[u8; 3]`
+    /// - `u32` → `[u8; 5]`
+    /// - `heapless::String<N>` → `[u8; N + 5]`
+    /// - `std::String` → `[u8; 0]` (std uses allocating path)
+    type KeyBuf: AsMut<[u8]> + AsRef<[u8]>;
+
+    /// Create a zeroed key buffer for serialization.
+    fn zero_key_buf() -> Self::KeyBuf;
 }
 
 impl MapKey for u8 {
     const MAX_KEY_DISPLAY_LEN: usize = 3; // "255"
+    type KeyBuf = [u8; 2]; // postcard varint max
+    fn zero_key_buf() -> Self::KeyBuf {
+        [0u8; 2]
+    }
 }
 
 impl MapKey for u16 {
     const MAX_KEY_DISPLAY_LEN: usize = 5; // "65535"
+    type KeyBuf = [u8; 3]; // postcard varint max
+    fn zero_key_buf() -> Self::KeyBuf {
+        [0u8; 3]
+    }
 }
 
 impl MapKey for u32 {
     const MAX_KEY_DISPLAY_LEN: usize = 10; // "4294967295"
+    type KeyBuf = [u8; 5]; // postcard varint max
+    fn zero_key_buf() -> Self::KeyBuf {
+        [0u8; 5]
+    }
 }
 
-impl<const N: usize> MapKey for heapless::String<N> {
+#[allow(incomplete_features)]
+impl<const N: usize> MapKey for heapless::String<N>
+where
+    [(); N + 5]:,
+{
     const MAX_KEY_DISPLAY_LEN: usize = N;
+    type KeyBuf = [u8; N + 5]; // postcard string: varint len + bytes
+    fn zero_key_buf() -> Self::KeyBuf {
+        [0u8; N + 5]
+    }
 }
 
 #[cfg(feature = "std")]
 impl MapKey for std::string::String {
     const MAX_KEY_DISPLAY_LEN: usize = 64;
+    type KeyBuf = [u8; 0]; // std uses allocating path
+    fn zero_key_buf() -> Self::KeyBuf {
+        []
+    }
 }
 
 /// Trait for top-level shadow state types.
