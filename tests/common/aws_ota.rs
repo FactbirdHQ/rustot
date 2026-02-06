@@ -35,6 +35,18 @@ pub struct OtaTestContext {
 }
 
 impl OtaTestContext {
+    pub fn job_id(&self) -> &str {
+        &self.job_id
+    }
+
+    pub fn iot_creds(&self) -> SharedCredentialsProvider {
+        self.iot_creds.clone()
+    }
+
+    pub fn region(&self) -> &aws_config::Region {
+        &self.region
+    }
+
     /// Describe the job execution for the OTA update on our thing.
     ///
     /// Returns `(JobExecutionStatus, HashMap<String, String>)` with the status
@@ -467,6 +479,35 @@ async fn cancel_stale_jobs(
             );
         }
     }
+
+    Ok(())
+}
+
+/// Force-cancel an AWS IoT OTA job.
+///
+/// A force-cancel immediately transitions IN_PROGRESS executions to `CANCELED`
+/// and triggers a `notify-next` notification to the device. The device detects
+/// this via its subscription to the notify-next topic and aborts the download.
+pub async fn force_cancel_job(
+    job_id: &str,
+    iot_creds: &SharedCredentialsProvider,
+    region: &aws_config::Region,
+) -> Result<(), String> {
+    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(region.clone())
+        .credentials_provider(iot_creds.clone())
+        .load()
+        .await;
+    let client = aws_sdk_iot::Client::new(&config);
+
+    client
+        .cancel_job()
+        .job_id(job_id)
+        .force(true)
+        .send()
+        .await
+        .map_err(|e| format!("Force-cancel job {} failed: {}", job_id, e))?;
+    log::info!("Force-cancelled job: {}", job_id);
 
     Ok(())
 }

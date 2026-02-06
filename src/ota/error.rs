@@ -25,6 +25,7 @@ pub enum OtaError {
     Encoding,
     Pal(OtaPalError),
     Timeout,
+    UserAbort,
 }
 
 impl OtaError {
