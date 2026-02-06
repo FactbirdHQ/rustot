@@ -8,6 +8,7 @@ use core::ops::DerefMut;
 use serde::Deserialize;
 
 use crate::ota::config::Config;
+use crate::ota::status_details::StatusDetailsExt;
 
 use super::{encoding::FileContext, error::OtaError, ProgressState};
 
@@ -60,10 +61,10 @@ pub trait DataInterface {
         file_ctx: &FileContext,
     ) -> Result<Self::ActiveTransfer<'_>, OtaError>;
 
-    async fn request_file_blocks(
+    async fn request_file_blocks<E: StatusDetailsExt>(
         &self,
         file_ctx: &FileContext,
-        progress_state: &mut ProgressState,
+        progress_state: &mut ProgressState<E>,
         config: &Config,
     ) -> Result<(), OtaError>;
 

@@ -5,6 +5,7 @@ use core::str::FromStr;
 use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, QoS};
 
 use crate::ota::error::OtaError;
+use crate::ota::status_details::StatusDetailsExt;
 use crate::ota::ProgressState;
 use crate::{
     jobs::{MAX_STREAM_ID_LEN, MAX_THING_NAME_LEN},
@@ -172,10 +173,10 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
     }
 
     /// Request file block by publishing to the get stream topic
-    async fn request_file_blocks(
+    async fn request_file_blocks<E: StatusDetailsExt>(
         &self,
         file_ctx: &FileContext,
-        progress_state: &mut ProgressState,
+        progress_state: &mut ProgressState<E>,
         config: &Config,
     ) -> Result<(), OtaError> {
         let blocks_available = progress_state.bitmap.len() as u32;

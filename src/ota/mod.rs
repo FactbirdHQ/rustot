@@ -42,11 +42,11 @@ impl Updater {
         control.request_job()
     }
 
-    pub async fn perform_ota<'a, 'b, C: ControlInterface, D: DataInterface>(
+    pub async fn perform_ota<'a, 'b, C: ControlInterface, D: DataInterface, P: pal::OtaPal>(
         control: &C,
         data: &D,
         file_ctx: FileContext,
-        pal: &mut impl pal::OtaPal,
+        pal: &mut P,
         config: &config::Config,
     ) -> Result<(), error::OtaError> {
         info!(
@@ -72,6 +72,7 @@ impl Updater {
             file_size: file_ctx.filesize,
             request_momentum: None,
             status_details: initial_status,
+            extra_status: pal.status_details().clone(),
         });
 
         // Create the JobUpdater
@@ -290,11 +291,11 @@ impl Updater {
         }
     }
 
-    async fn ingest_data_block<'a, D: DataInterface>(
+    async fn ingest_data_block<'a, D: DataInterface, E: StatusDetailsExt>(
         data: &D,
         block_writer: &mut impl NorFlash,
         config: &config::Config,
-        progress: &mut ProgressState,
+        progress: &mut ProgressState<E>,
         payload: &mut [u8],
     ) -> Result<bool, error::OtaError> {
         let block = data.decode_file_block(payload)?;
@@ -361,11 +362,11 @@ impl Updater {
         }
     }
 
-    async fn handle_momentum<D: DataInterface>(
+    async fn handle_momentum<D: DataInterface, E: StatusDetailsExt>(
         data: &D,
         config: &config::Config,
         file_ctx: &FileContext,
-        progress_state: &Mutex<NoopRawMutex, ProgressState>,
+        progress_state: &Mutex<NoopRawMutex, ProgressState<E>>,
         done_signal: &Signal<NoopRawMutex, ()>,
     ) -> Result<(), error::OtaError> {
         loop {
@@ -415,9 +416,9 @@ impl Updater {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct ProgressState {
+pub struct ProgressState<E: StatusDetailsExt = ()> {
     pub total_blocks: usize,
     pub blocks_remaining: usize,
     pub file_size: usize,
@@ -428,20 +429,21 @@ pub struct ProgressState {
     pub bitmap: Bitmap,
     #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
     pub status_details: OtaStatusDetails,
+    pub extra_status: E,
 }
 
-pub struct JobUpdater<'a, C: ControlInterface> {
+pub struct JobUpdater<'a, C: ControlInterface, E: StatusDetailsExt = ()> {
     pub file_ctx: &'a FileContext,
-    pub progress_state: &'a Mutex<NoopRawMutex, ProgressState>,
+    pub progress_state: &'a Mutex<NoopRawMutex, ProgressState<E>>,
     pub config: &'a config::Config,
     pub control: &'a C,
     pub status_update_signal: Signal<NoopRawMutex, (JobStatus, JobStatusReason)>,
 }
 
-impl<'a, C: ControlInterface> JobUpdater<'a, C> {
+impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
     pub fn new(
         file_ctx: &'a FileContext,
-        progress_state: &'a Mutex<NoopRawMutex, ProgressState>,
+        progress_state: &'a Mutex<NoopRawMutex, ProgressState<E>>,
         config: &'a config::Config,
         control: &'a C,
     ) -> Self {

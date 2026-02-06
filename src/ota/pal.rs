@@ -143,6 +143,18 @@ pub enum OtaEvent {
 pub trait OtaPal {
     type BlockWriter: NorFlash;
 
+    /// Extra status details to include in job status updates.
+    ///
+    /// Implement [`StatusDetailsExt`] on a custom struct to add
+    /// platform-specific fields (e.g. device temperature, battery level)
+    /// to every job status update sent to AWS IoT.
+    ///
+    /// Use `()` if no extra fields are needed.
+    type StatusDetails: super::StatusDetailsExt + Clone;
+
+    /// Returns a reference to the extra status details.
+    fn status_details(&self) -> &Self::StatusDetails;
+
     /// OTA abort.
     ///
     /// The user may register a callback function when initializing the OTA

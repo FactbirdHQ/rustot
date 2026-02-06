@@ -3,12 +3,27 @@ use embedded_storage_async::nor_flash::{ErrorType, NorFlash, ReadNorFlash};
 use rustot::ota::{
     encoding::json,
     pal::{OtaPal, OtaPalError, PalImageState},
+    StatusDetailsExt,
 };
+use serde::ser::SerializeMap;
 use sha2::{Digest, Sha256};
 use std::{
     convert::Infallible,
     io::{Cursor, Write},
 };
+
+/// Custom status details to test StatusDetailsExt integration.
+#[derive(Debug, Clone)]
+pub struct TestStatusDetails {
+    pub firmware_version: &'static str,
+}
+
+impl StatusDetailsExt for TestStatusDetails {
+    fn serialize_into_map<S: SerializeMap>(&self, map: &mut S) -> Result<(), S::Error> {
+        map.serialize_entry("firmware_version", self.firmware_version)?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum State {
@@ -58,6 +73,7 @@ pub struct FileHandler {
     pub plateform_state: State,
     /// If set, `close_file` will return this error instead of succeeding
     pub fail_close_with: Option<OtaPalError>,
+    pub extra_status: TestStatusDetails,
 }
 
 impl FileHandler {
@@ -68,6 +84,9 @@ impl FileHandler {
             compare_file_path,
             plateform_state: State::Boot,
             fail_close_with: None,
+            extra_status: TestStatusDetails {
+                firmware_version: "0.1.0-test",
+            },
         }
     }
 
@@ -81,6 +100,11 @@ impl FileHandler {
 
 impl OtaPal for FileHandler {
     type BlockWriter = BlockFile;
+    type StatusDetails = TestStatusDetails;
+
+    fn status_details(&self) -> &Self::StatusDetails {
+        &self.extra_status
+    }
 
     async fn abort(
         &mut self,

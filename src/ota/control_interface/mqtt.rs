@@ -5,6 +5,7 @@ use crate::mqtt::{Mqtt, MqttClient, PublishOptions, QoS};
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
+use crate::ota::status_details::StatusDetailsExt;
 use crate::ota::ProgressState;
 
 impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
@@ -21,10 +22,10 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
     }
 
     /// Update the job status on the service side.
-    async fn update_job_status(
+    async fn update_job_status<E: StatusDetailsExt>(
         &self,
         file_ctx: &FileContext,
-        progress_state: &mut ProgressState,
+        progress_state: &mut ProgressState<E>,
         status: JobStatus,
         reason: JobStatusReason,
     ) -> Result<(), OtaError> {
@@ -66,9 +67,12 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
         let topic = JobTopic::Update(file_ctx.job_name.as_str())
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
 
+        let combined = progress_state
+            .status_details
+            .with_extra(&progress_state.extra_status);
         let payload = Jobs::update(status)
             .client_token(self.0.client_id())
-            .status_details(&progress_state.status_details);
+            .status_details(&combined);
 
         debug!("Updating job status! {:?}", status);
 
