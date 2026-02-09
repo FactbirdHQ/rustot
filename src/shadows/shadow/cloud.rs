@@ -14,14 +14,11 @@ use crate::shadows::{
     },
     error::{Error, ShadowError},
     store::StateStore,
-    topics::Topic,
+    topics::{max_topic_len, Topic},
     ShadowRoot,
 };
 
 use super::Shadow;
-
-/// Maximum topic length for MQTT operations.
-const MAX_TOPIC_LEN: usize = 128;
 
 /// Overhead for partial request JSON formatting.
 const PARTIAL_REQUEST_OVERHEAD: usize = 64;
@@ -40,6 +37,7 @@ where
     S::Reported: Serialize + Default,
     C: MqttClient,
     K: StateStore<S>,
+    [(); max_topic_len(S::PREFIX, S::NAME)]:,
 {
     // =========================================================================
     // Private MQTT Helper Methods (ported from ShadowHandler)
@@ -58,8 +56,12 @@ where
                 debug!("Subscribing to delta topic");
                 self.mqtt.wait_connected().await;
 
-                let topic =
-                    Topic::UpdateDelta.format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+                let topic = Topic::UpdateDelta
+                    .format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+                        S::PREFIX,
+                        self.mqtt.client_id(),
+                        S::NAME,
+                    )?;
 
                 let sub = self
                     .mqtt
@@ -109,8 +111,9 @@ where
                         S::NAME.unwrap_or(CLASSIC_SHADOW)
                     );
                     sub_ref.take();
-                    // Drop the lock and continue the loop to retry
+                    // Drop the lock and wait before retrying to avoid tight loop
                     drop(sub_ref);
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
                     continue;
                 }
             }
@@ -304,8 +307,18 @@ where
         };
 
         //*** SUBSCRIBE ***/
-        let accepted_topic = accepted.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
-        let rejected_topic = rejected.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+        let accepted_topic = accepted
+            .format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+                S::PREFIX,
+                self.mqtt.client_id(),
+                S::NAME,
+            )?;
+        let rejected_topic = rejected
+            .format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+                S::PREFIX,
+                self.mqtt.client_id(),
+                S::NAME,
+            )?;
 
         let sub = self
             .mqtt
@@ -317,8 +330,12 @@ where
             .map_err(|_| Error::Mqtt)?;
 
         //*** PUBLISH REQUEST ***/
-        let topic_name =
-            topic.format::<MAX_TOPIC_LEN>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+        let topic_name = topic
+            .format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+                S::PREFIX,
+                self.mqtt.client_id(),
+                S::NAME,
+            )?;
         self.mqtt
             .publish(topic_name.as_str(), payload)
             .await

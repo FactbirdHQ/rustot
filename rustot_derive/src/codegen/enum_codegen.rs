@@ -250,7 +250,7 @@ pub(crate) fn generate_simple_enum_code(
                     parse_delta_arms.push(quote! {
                         #serde_name => {
                             // Build nested path for the inner type
-                            let mut nested_path: ::heapless::String<128> = ::heapless::String::new();
+                            let mut nested_path: ::heapless::String<64> = ::heapless::String::new();
                             let _ = nested_path.push_str(path);
                             if !path.is_empty() {
                                 let _ = nested_path.push('/');
@@ -271,7 +271,7 @@ pub(crate) fn generate_simple_enum_code(
                     parse_delta_arms.push(quote! {
                         if let Some(content_bytes) = scanner.field_bytes(#serde_name) {
                             // Build nested path for the inner type
-                            let mut nested_path: ::heapless::String<128> = ::heapless::String::new();
+                            let mut nested_path: ::heapless::String<64> = ::heapless::String::new();
                             let _ = nested_path.push_str(path);
                             if !path.is_empty() {
                                 let _ = nested_path.push('/');

@@ -235,7 +235,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 parse_delta_config_arms.push(quote! {
                     (Some(#variant_enum_name::#variant_ident), Some(config_bytes)) => {
                         // Build nested path for the inner type
-                        let mut nested_path: ::heapless::String<128> = ::heapless::String::new();
+                        let mut nested_path: ::heapless::String<64> = ::heapless::String::new();
                         let _ = nested_path.push_str(path);
                         if !path.is_empty() {
                             let _ = nested_path.push('/');

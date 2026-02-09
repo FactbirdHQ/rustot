@@ -4,6 +4,13 @@ use core::fmt::Write;
 use heapless::String;
 
 use super::errors::MetricError;
+use crate::jobs::MAX_THING_NAME_LEN;
+
+/// Maximum topic length for defender metrics MQTT operations.
+///
+/// Longest topic: `$aws/things/{thing_name}/defender/metrics/json/rejected`
+pub const MAX_DEFENDER_TOPIC_LEN: usize =
+    "$aws/things/".len() + MAX_THING_NAME_LEN + "/defender/metrics/json/rejected".len();
 
 pub enum PayloadFormat {
     #[cfg(feature = "metric_cbor")]

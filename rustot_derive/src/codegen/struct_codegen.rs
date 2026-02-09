@@ -240,7 +240,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
             Some(serde_name.clone()),
             Some(quote! {
                 if let Some(field_bytes) = scanner.field_bytes(#serde_name) {
-                    let mut nested_path: ::heapless::String<128> = ::heapless::String::new();
+                    let mut nested_path: ::heapless::String<64> = ::heapless::String::new();
                     let _ = nested_path.push_str(path);
                     if !path.is_empty() {
                         let _ = nested_path.push('/');
