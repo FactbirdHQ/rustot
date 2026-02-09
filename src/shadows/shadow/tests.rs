@@ -1532,4 +1532,90 @@ mod adjacently_tagged {
             "partial should NOT have gamma"
         );
     }
+
+    // =========================================================================
+    // Commit GC: adjacently-tagged enum variant data preserved
+    // =========================================================================
+
+    #[shadow_root(name = "port")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    pub struct PortShadow {
+        pub mode: PortMode,
+    }
+
+    #[tokio::test]
+    async fn test_commit_preserves_inactive_adjacently_tagged_variant() {
+        // PortMode is Sio but IoLink data exists in KV from a previous variant.
+        // commit() should keep the IoLink data (valid keys) and remove the orphan.
+        let kv = setup_kv(&[
+            (
+                "port/__schema_hash__",
+                &0xDEADBEEFu64.to_le_bytes(), // different hash to allow commit
+            ),
+            ("port/mode/_variant", b"sio"),
+            ("port/mode/sio/polarity", &encode(true)),
+            ("port/mode/iolink/cycle_time", &encode(2000u16)),
+            ("port/stale_field", &encode(99u32)), // orphan
+        ])
+        .await;
+        let mqtt = MockMqttClient::new("test-client");
+
+        let shadow = Shadow::<PortShadow, _, _>::new(&kv, &mqtt);
+        shadow.load().await.unwrap();
+        shadow.commit().await.unwrap();
+
+        // Inactive IoLink variant data preserved
+        assert!(kv_has_key(&kv, "port/mode/iolink/cycle_time").await);
+        // Active Sio variant data preserved
+        assert!(kv_has_key(&kv, "port/mode/sio/polarity").await);
+        assert!(kv_has_key(&kv, "port/mode/_variant").await);
+        // Orphan removed
+        assert!(!kv_has_key(&kv, "port/stale_field").await);
+    }
+}
+
+// =========================================================================
+// Commit GC: map entries preserved, orphaned keys removed
+// =========================================================================
+
+#[shadow_root(name = "dev")]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+struct MapShadow {
+    label: heapless::String<8>,
+    ports: heapless::LinearMap<heapless::String<4>, u32, 4>,
+}
+
+#[tokio::test]
+async fn test_commit_preserves_map_entries_and_removes_orphans() {
+    // Populate a LinearMap with two entries plus an orphaned key from old schema
+    let kv = setup_kv(&[
+        (
+            "dev/__schema_hash__",
+            &0xDEADBEEFu64.to_le_bytes(), // different hash
+        ),
+        ("dev/label", &encode(heapless::String::<8>::try_from("hello").unwrap())),
+        ("dev/ports/__n__", &encode(2u16)),
+        ("dev/ports/__k/0", &encode(heapless::String::<4>::try_from("p1").unwrap())),
+        ("dev/ports/__k/1", &encode(heapless::String::<4>::try_from("p2").unwrap())),
+        ("dev/ports/p1", &encode(100u32)),
+        ("dev/ports/p2", &encode(200u32)),
+        ("dev/old_field", &encode(42u32)), // orphan from previous schema
+    ])
+    .await;
+    let mqtt = MockMqttClient::new("test-client");
+
+    let shadow = Shadow::<MapShadow, _, _>::new(&kv, &mqtt);
+    shadow.load().await.unwrap();
+    shadow.commit().await.unwrap();
+
+    // Map infrastructure preserved
+    assert!(kv_has_key(&kv, "dev/ports/__n__").await);
+    assert!(kv_has_key(&kv, "dev/ports/__k/0").await);
+    assert!(kv_has_key(&kv, "dev/ports/__k/1").await);
+    assert!(kv_has_key(&kv, "dev/ports/p1").await);
+    assert!(kv_has_key(&kv, "dev/ports/p2").await);
+    // Leaf field preserved
+    assert!(kv_has_key(&kv, "dev/label").await);
+    // Orphan removed
+    assert!(!kv_has_key(&kv, "dev/old_field").await);
 }
