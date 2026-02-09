@@ -236,7 +236,8 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// Reported type for serialization to cloud.
     ///
     /// Used for device→cloud acknowledgment after applying deltas.
-    /// Fields marked `report_only` are `None` in the Reported type.
+    /// Fields marked `report_only` are excluded from the state struct and only
+    /// appear in this Reported type. They are `None` in partial reported.
     ///
     /// ## Trait Bound: `ReportedUnionFields`
     ///
@@ -295,6 +296,13 @@ pub trait ShadowNode: Default + Clone + Sized {
     fn variant_at_path(&self, _path: &str) -> Option<heapless::String<32>> {
         None
     }
+
+    /// Convert to full reported representation (all fields set).
+    ///
+    /// This is used by the generated `From<State> for Reported` impl
+    /// to convert the entire state into a reported type.
+    #[allow(clippy::wrong_self_convention)]
+    fn into_reported(&self) -> Self::Reported;
 
     /// Convert to reported representation containing only fields present in delta.
     ///

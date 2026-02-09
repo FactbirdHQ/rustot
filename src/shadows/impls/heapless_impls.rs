@@ -42,6 +42,10 @@ impl<const N: usize> ShadowNode for heapless::String<N> {
         *self = delta.clone();
     }
 
+    fn into_reported(&self) -> Self::Reported {
+        self.clone()
+    }
+
     fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
         self.clone()
     }
@@ -154,6 +158,10 @@ where
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
         *self = delta.clone();
+    }
+
+    fn into_reported(&self) -> Self::Reported {
+        self.clone()
     }
 
     fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
@@ -373,6 +381,14 @@ where
                 }
             }
         }
+    }
+
+    fn into_reported(&self) -> Self::Reported {
+        let mut reported = heapless::LinearMap::new();
+        for (key, value) in self.iter() {
+            let _ = reported.insert(key.clone(), value.into_reported());
+        }
+        LinearMapReported(reported)
     }
 
     fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {
@@ -710,6 +726,10 @@ macro_rules! impl_array_shadow_node {
 
             fn apply_delta(&mut self, delta: &Self::Delta) {
                 *self = delta.clone();
+            }
+
+            fn into_reported(&self) -> Self::Reported {
+                self.clone()
             }
 
             fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {

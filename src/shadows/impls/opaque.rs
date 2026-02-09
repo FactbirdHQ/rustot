@@ -54,6 +54,10 @@ macro_rules! impl_opaque {
                 *self = delta.clone();
             }
 
+            fn into_reported(&self) -> Self::Reported {
+                self.clone()
+            }
+
             fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
                 self.clone()
             }
@@ -179,6 +183,10 @@ impl crate::shadows::ShadowNode for core::time::Duration {
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
         *self = *delta;
+    }
+
+    fn into_reported(&self) -> Self::Reported {
+        *self
     }
 
     fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {

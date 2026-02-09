@@ -116,6 +116,9 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // For apply_delta - config application
     let mut config_apply_arms = Vec::new();
 
+    // For into_reported - full conversion
+    let mut into_reported_arms = Vec::new();
+
     // For into_partial_reported - match on self and construct Reported directly
     let mut into_partial_reported_arms = Vec::new();
 
@@ -155,6 +158,11 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     }
                 });
 
+                // into_reported: unit variant
+                into_reported_arms.push(quote! {
+                    Self::#variant_ident => Self::Reported::#variant_ident,
+                });
+
                 // into_partial_reported: unit variant has no inner state
                 into_partial_reported_arms.push(quote! {
                     Self::#variant_ident => Self::Reported::#variant_ident,
@@ -192,6 +200,13 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 config_apply_arms.push(quote! {
                     (Self::#variant_ident(ref mut inner), #delta_config_name::#variant_ident(ref delta_inner)) => {
                         inner.apply_delta(delta_inner);
+                    }
+                });
+
+                // into_reported: delegate to inner's into_reported
+                into_reported_arms.push(quote! {
+                    Self::#variant_ident(ref inner) => {
+                        Self::Reported::#variant_ident(#krate::shadows::ShadowNode::into_reported(inner))
                     }
                 });
 
@@ -601,6 +616,12 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     }
                 } else {
                     None
+                }
+            }
+
+            fn into_reported(&self) -> Self::Reported {
+                match self {
+                    #(#into_reported_arms)*
                 }
             }
 

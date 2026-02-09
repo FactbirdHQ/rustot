@@ -33,8 +33,8 @@
 //!
 //! # Other Field Attributes
 //!
-//! - `#[shadow_attr(report_only)]`: Field is excluded from Delta type (not in desired state,
-//!   only reported). It will always be `None` in partial reported.
+//! - `#[shadow_attr(report_only)]`: Field is excluded from the original struct and Delta type.
+//!   It only appears in the Reported type. It will always be `None` in partial reported.
 //! - `#[shadow_attr(default = ...)]`: Custom default value when KV key is missing.
 
 use proc_macro2::TokenStream;
@@ -80,6 +80,9 @@ struct FieldCodegen {
     parse_delta_field_name: Option<String>,
     /// parse_delta() field parsing arm (None if report_only)
     parse_delta_arm: Option<TokenStream>,
+
+    /// into_reported() field assignment (for ShadowNode impl)
+    into_reported_arm: TokenStream,
 }
 
 /// Process a single struct field and generate all code fragments.
@@ -187,18 +190,25 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- Schema hash code ---
-    let field_name_bytes = serde_name.as_bytes();
-    let schema_hash_code = if is_leaf {
-        let ty_name = quote!(#field_ty).to_string();
-        let ty_bytes = ty_name.as_bytes();
-        quote! {
-            h = #krate::shadows::fnv1a_bytes(h, &[#(#field_name_bytes),*]);
-            h = #krate::shadows::fnv1a_bytes(h, &[#(#ty_bytes),*]);
-        }
+    // report_only fields are excluded from the schema hash since they are not
+    // part of the state struct or KV persistence — changing them should not
+    // trigger a schema migration.
+    let schema_hash_code = if attrs.report_only {
+        quote! {}
     } else {
-        quote! {
-            h = #krate::shadows::fnv1a_bytes(h, &[#(#field_name_bytes),*]);
-            h = #krate::shadows::fnv1a_u64(h, <#field_ty as #krate::shadows::ShadowNode>::SCHEMA_HASH);
+        let field_name_bytes = serde_name.as_bytes();
+        if is_leaf {
+            let ty_name = quote!(#field_ty).to_string();
+            let ty_bytes = ty_name.as_bytes();
+            quote! {
+                h = #krate::shadows::fnv1a_bytes(h, &[#(#field_name_bytes),*]);
+                h = #krate::shadows::fnv1a_bytes(h, &[#(#ty_bytes),*]);
+            }
+        } else {
+            quote! {
+                h = #krate::shadows::fnv1a_bytes(h, &[#(#field_name_bytes),*]);
+                h = #krate::shadows::fnv1a_u64(h, <#field_ty as #krate::shadows::ShadowNode>::SCHEMA_HASH);
+            }
         }
     };
 
@@ -248,8 +258,17 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         )
     };
 
-    // --- variant_at_path arm (only for nested fields) ---
-    let variant_at_path_arm = if is_leaf {
+    // --- into_reported arm ---
+    let into_reported_arm = if attrs.report_only {
+        quote! { #field_name: None, }
+    } else if is_leaf {
+        quote! { #field_name: Some(self.#field_name.clone()), }
+    } else {
+        quote! { #field_name: Some(#krate::shadows::ShadowNode::into_reported(&self.#field_name)), }
+    };
+
+    // --- variant_at_path arm (only for non-report_only nested fields) ---
+    let variant_at_path_arm = if attrs.report_only || is_leaf {
         None
     } else {
         let field_prefix = format!("{}/", serde_name);
@@ -278,6 +297,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         variant_at_path_arm,
         parse_delta_field_name,
         parse_delta_arm,
+        into_reported_arm,
     }
 }
 
@@ -353,6 +373,10 @@ pub(crate) fn generate_struct_code(
         .iter()
         .filter_map(|f| f.parse_delta_arm.clone())
         .collect();
+    let into_reported_arms: Vec<_> = field_codegens
+        .iter()
+        .map(|f| f.into_reported_arm.clone())
+        .collect();
 
     // Generate Delta type - always use FieldScanner, no Deserialize needed
     let delta_type = quote! {
@@ -371,6 +395,12 @@ pub(crate) fn generate_struct_code(
         #[derive(::serde::Serialize, Clone, Default)]
         #vis struct #reported_name {
             #(#reported_fields)*
+        }
+
+        impl From<#name> for #reported_name {
+            fn from(value: #name) -> Self {
+                #krate::shadows::ShadowNode::into_reported(&value)
+            }
         }
     };
 
@@ -419,6 +449,12 @@ pub(crate) fn generate_struct_code(
             fn variant_at_path(&self, path: &str) -> Option<::heapless::String<32>> {
                 #(#variant_at_path_arms)*
                 None
+            }
+
+            fn into_reported(&self) -> Self::Reported {
+                #reported_name {
+                    #(#into_reported_arms)*
+                }
             }
 
             fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {
@@ -517,9 +553,10 @@ pub(crate) fn generate_struct_code(
             }
 
             // KV operations (leaf vs nested)
-            // report_only leaf fields are completely skipped — they're not persisted to KV
-            if is_leaf && attrs.report_only {
-                // No KV operations for report_only leaf fields
+            // report_only fields are completely skipped — they're not part of the state
+            // struct and not persisted to KV.
+            if attrs.report_only {
+                // No KV operations for report_only fields (leaf or nested)
             } else if is_leaf {
                 max_key_len_items.push(quote! { #field_path_len });
 
@@ -590,14 +627,12 @@ pub(crate) fn generate_struct_code(
                     quote! { &self.#field_name },
                 ));
 
-                if !attrs.report_only {
-                    persist_delta_arms.push(kv_codegen::nested_persist_delta(
-                        krate,
-                        &field_path,
-                        field_ty,
-                        field_name,
-                    ));
-                }
+                persist_delta_arms.push(kv_codegen::nested_persist_delta(
+                    krate,
+                    &field_path,
+                    field_ty,
+                    field_name,
+                ));
 
                 collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
                     krate,

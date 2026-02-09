@@ -1593,10 +1593,19 @@ async fn test_commit_preserves_map_entries_and_removes_orphans() {
             "dev/__schema_hash__",
             &0xDEADBEEFu64.to_le_bytes(), // different hash
         ),
-        ("dev/label", &encode(heapless::String::<8>::try_from("hello").unwrap())),
+        (
+            "dev/label",
+            &encode(heapless::String::<8>::try_from("hello").unwrap()),
+        ),
         ("dev/ports/__n__", &encode(2u16)),
-        ("dev/ports/__k/0", &encode(heapless::String::<4>::try_from("p1").unwrap())),
-        ("dev/ports/__k/1", &encode(heapless::String::<4>::try_from("p2").unwrap())),
+        (
+            "dev/ports/__k/0",
+            &encode(heapless::String::<4>::try_from("p1").unwrap()),
+        ),
+        (
+            "dev/ports/__k/1",
+            &encode(heapless::String::<4>::try_from("p2").unwrap()),
+        ),
         ("dev/ports/p1", &encode(100u32)),
         ("dev/ports/p2", &encode(200u32)),
         ("dev/old_field", &encode(42u32)), // orphan from previous schema
