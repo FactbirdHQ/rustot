@@ -273,8 +273,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     } else {
         let field_prefix = format!("{}/", serde_name);
         Some(quote! {
-            if path.starts_with(#field_prefix) {
-                let rest = &path[#field_prefix.len()..];
+            if let Some(rest) = path.strip_prefix(#field_prefix) {
                 if let Some(v) = <#field_ty as #krate::shadows::ShadowNode>::variant_at_path(&self.#field_name, rest) {
                     return Some(v);
                 }
