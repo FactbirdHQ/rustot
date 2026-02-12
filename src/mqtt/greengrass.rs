@@ -1,12 +1,13 @@
 //! Implementation of MQTT traits for AWS Greengrass IPC.
 //!
 //! This module provides an std/tokio-based MQTT client using `greengrass-ipc-rust`.
-//! Greengrass IPC has a simpler architecture than direct MQTT - single-topic
-//! subscriptions and automatic message routing through the Greengrass nucleus.
+//! Greengrass IPC natively supports single-topic subscriptions; multi-topic
+//! subscriptions are implemented by merging individual streams via `SelectAll`.
 
 use std::sync::Arc;
 
 use bytes::Bytes;
+use futures::stream::SelectAll;
 use futures::StreamExt;
 
 use crate::mqtt::{MqttMessage, MqttSubscription, PublishOptions, QoS, ToPayload};
@@ -49,7 +50,6 @@ impl GreengrassClient {
 }
 
 impl crate::mqtt::MqttClient for GreengrassClient {
-    // Greengrass only supports single-topic subscriptions, so N is ignored
     type Subscription<'m, const N: usize>
         = GreengrassSubscription
     where
@@ -108,31 +108,25 @@ impl crate::mqtt::MqttClient for GreengrassClient {
         let client = self.client.clone();
         let topics_owned: [(&str, QoS); N] = *topics;
         async move {
-            // Greengrass only supports single-topic subscriptions
-            // For multi-topic, we'd need to create multiple subscriptions
-            // For simplicity, use the first topic
-            if topics_owned.is_empty() {
-                return Err(greengrass_ipc_rust::Error::InvalidInput(
-                    "At least one topic required".to_string(),
-                ));
+            let mut merged = SelectAll::new();
+            for (topic, qos) in &topics_owned {
+                let stream = client
+                    .subscribe_to_iot_core(greengrass_ipc_rust::SubscribeToIoTCoreRequest {
+                        topic_name: topic.to_string(),
+                        qos: to_gg_qos(*qos),
+                    })
+                    .await?;
+                merged.push(stream);
             }
 
-            let (topic, qos) = &topics_owned[0];
-            let stream = client
-                .subscribe_to_iot_core(greengrass_ipc_rust::SubscribeToIoTCoreRequest {
-                    topic_name: topic.to_string(),
-                    qos: to_gg_qos(*qos),
-                })
-                .await?;
-
-            Ok(GreengrassSubscription { stream })
+            Ok(GreengrassSubscription { merged })
         }
     }
 }
 
 /// Subscription wrapper for Greengrass.
 pub struct GreengrassSubscription {
-    stream: greengrass_ipc_rust::StreamOperation<greengrass_ipc_rust::IoTCoreMessage>,
+    merged: SelectAll<greengrass_ipc_rust::StreamOperation<greengrass_ipc_rust::IoTCoreMessage>>,
 }
 
 impl MqttSubscription for GreengrassSubscription {
@@ -144,14 +138,17 @@ impl MqttSubscription for GreengrassSubscription {
 
     fn next_message(&mut self) -> impl core::future::Future<Output = Option<Self::Message<'_>>> {
         async {
-            self.stream.next().await.map(|iot_msg| GreengrassMessage {
+            self.merged.next().await.map(|iot_msg| GreengrassMessage {
                 inner: iot_msg.message,
             })
         }
     }
 
     fn unsubscribe(self) -> impl core::future::Future<Output = Result<(), Self::Error>> {
-        async move { self.stream.close().await }
+        async move {
+            drop(self.merged);
+            Ok(())
+        }
     }
 }
 
