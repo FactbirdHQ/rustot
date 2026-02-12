@@ -228,7 +228,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
             Some(quote! {
                 if let Some(field_bytes) = scanner.field_bytes(#serde_name) {
                     delta.#field_name = Some(
-                        ::serde_json_core::from_slice(field_bytes)
+                        #krate::__macro_support::serde_json_core::from_slice(field_bytes)
                             .map(|(v, _)| v)
                             .map_err(|_| #krate::shadows::ParseError::Deserialize)?
                     );
@@ -240,7 +240,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
             Some(serde_name.clone()),
             Some(quote! {
                 if let Some(field_bytes) = scanner.field_bytes(#serde_name) {
-                    let mut nested_path: ::heapless::String<64> = ::heapless::String::new();
+                    let mut nested_path: #krate::__macro_support::heapless::String<64> = #krate::__macro_support::heapless::String::new();
                     let _ = nested_path.push_str(path);
                     if !path.is_empty() {
                         let _ = nested_path.push('/');
@@ -445,7 +445,7 @@ pub(crate) fn generate_struct_code(
                 #(#apply_delta_arms)*
             }
 
-            fn variant_at_path(&self, path: &str) -> Option<::heapless::String<32>> {
+            fn variant_at_path(&self, path: &str) -> Option<#krate::__macro_support::heapless::String<32>> {
                 #(#variant_at_path_arms)*
                 None
             }
@@ -503,7 +503,7 @@ pub(crate) fn generate_struct_code(
                 } else {
                     // No explicit size - require MaxSize trait
                     max_value_len_items.push(quote! {
-                        <#field_ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
+                        <#field_ty as #krate::__macro_support::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
                     });
                 }
             }
@@ -599,7 +599,7 @@ pub(crate) fn generate_struct_code(
                     field_name,
                 ));
 
-                collect_valid_keys_arms.push(kv_codegen::leaf_collect_keys(&field_path));
+                collect_valid_keys_arms.push(kv_codegen::leaf_collect_keys(krate, &field_path));
             } else {
                 max_key_len_items.push(
                     quote! { #field_path_len + <#field_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN },
@@ -659,7 +659,7 @@ pub(crate) fn generate_struct_code(
             quote! {}
         } else {
             let bounds = opaque_field_types.iter().map(|ty| {
-                quote! { #ty: ::postcard::experimental::max_size::MaxSize }
+                quote! { #ty: #krate::__macro_support::postcard::experimental::max_size::MaxSize }
             });
             quote! { where #(#bounds),* }
         };

@@ -250,7 +250,7 @@ pub(crate) fn generate_simple_enum_code(
                     parse_delta_arms.push(quote! {
                         #serde_name => {
                             // Build nested path for the inner type
-                            let mut nested_path: ::heapless::String<64> = ::heapless::String::new();
+                            let mut nested_path: #krate::__macro_support::heapless::String<64> = #krate::__macro_support::heapless::String::new();
                             let _ = nested_path.push_str(path);
                             if !path.is_empty() {
                                 let _ = nested_path.push('/');
@@ -271,7 +271,7 @@ pub(crate) fn generate_simple_enum_code(
                     parse_delta_arms.push(quote! {
                         if let Some(content_bytes) = scanner.field_bytes(#serde_name) {
                             // Build nested path for the inner type
-                            let mut nested_path: ::heapless::String<64> = ::heapless::String::new();
+                            let mut nested_path: #krate::__macro_support::heapless::String<64> = #krate::__macro_support::heapless::String::new();
                             let _ = nested_path.push_str(path);
                             if !path.is_empty() {
                                 let _ = nested_path.push('/');
@@ -416,7 +416,7 @@ pub(crate) fn generate_simple_enum_code(
             if has_data {
                 quote! {
                     Self::#variant_ident(_) => {
-                        let mut s = ::heapless::String::<32>::new();
+                        let mut s = #krate::__macro_support::heapless::String::<32>::new();
                         let _ = s.push_str(#serde_name);
                         Some(s)
                     }
@@ -424,7 +424,7 @@ pub(crate) fn generate_simple_enum_code(
             } else {
                 quote! {
                     Self::#variant_ident => {
-                        let mut s = ::heapless::String::<32>::new();
+                        let mut s = #krate::__macro_support::heapless::String::<32>::new();
                         let _ = s.push_str(#serde_name);
                         Some(s)
                     }
@@ -469,7 +469,7 @@ pub(crate) fn generate_simple_enum_code(
     } else {
         // Simple enums (unit variants only) use serde directly
         quote! {
-            ::serde_json_core::from_slice(json)
+            #krate::__macro_support::serde_json_core::from_slice(json)
                 .map(|(v, _)| v)
                 .map_err(|_| #krate::shadows::ParseError::Deserialize)
         }
@@ -499,7 +499,7 @@ pub(crate) fn generate_simple_enum_code(
                 }
             }
 
-            fn variant_at_path(&self, path: &str) -> Option<::heapless::String<32>> {
+            fn variant_at_path(&self, path: &str) -> Option<#krate::__macro_support::heapless::String<32>> {
                 if path.is_empty() {
                     match self {
                         #(#variant_at_path_arms)*
@@ -560,7 +560,7 @@ pub(crate) fn generate_simple_enum_code(
 
                     persist_delta_arms.push(quote! {
                         Self::Delta::#variant_ident => {
-                            let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                            let mut variant_key: #krate::__macro_support::heapless::String<KEY_LEN> = #krate::__macro_support::heapless::String::new();
                             let _ = variant_key.push_str(prefix);
                             let _ = variant_key.push_str(#VARIANT_KEY_PATH);
                             kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
@@ -596,11 +596,11 @@ pub(crate) fn generate_simple_enum_code(
                     let variant_key_ident =
                         syn::Ident::new("variant_key", proc_macro2::Span::call_site());
                     let variant_key_code =
-                        kv_codegen::build_key(&variant_key_ident, VARIANT_KEY_PATH);
+                        kv_codegen::build_key(krate, &variant_key_ident, VARIANT_KEY_PATH);
                     let inner_prefix_ident =
                         syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
                     let inner_prefix_code =
-                        kv_codegen::build_key(&inner_prefix_ident, &variant_path);
+                        kv_codegen::build_key(krate, &inner_prefix_ident, &variant_path);
                     persist_delta_arms.push(quote! {
                         Self::Delta::#variant_ident(ref inner_delta) => {
                             #variant_key_code
@@ -642,7 +642,7 @@ pub(crate) fn generate_simple_enum_code(
             &persist_to_kv_variant_arms,
         );
         let collect_valid_keys_body =
-            kv_codegen::enum_collect_valid_keys_body(&collect_valid_keys_arms);
+            kv_codegen::enum_collect_valid_keys_body(krate, &collect_valid_keys_arms);
 
         quote! {
             impl #krate::shadows::KVPersist for #name {

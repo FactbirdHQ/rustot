@@ -56,6 +56,7 @@ base64 = { version = "0.22", optional = true }
 rumqttc = { version = "0.24", optional = true }
 greengrass-ipc-rust = { git = "https://github.com/FactbirdHQ/greengrass-ipc-rust", rev = "0f0469e", optional = true }
 bytes = { version = "1", optional = true }
+futures = { version = "0.3", optional = true }
 
 [dev-dependencies]
 native-tls = { version = "0.2" }
@@ -104,7 +105,7 @@ ota_mqtt_data = ["dep:minicbor", "dep:minicbor-serde"]
 
 ota_http_data = []
 
-std = ["serde/std", "minicbor-serde?/std", "dep:tokio", "dep:serde_json", "dep:base64", "postcard/alloc", "rustot-derive/std"]
+std = ["serde/std", "minicbor-serde?/std", "dep:tokio", "dep:serde_json", "dep:base64", "postcard/alloc", "rustot-derive/std", "embassy-time/std", "embassy-time/generic-queue-8"]
 
 # Field-level KV shadow persistence (SequentialKVStore, FileKVStore)
 # Enables KVStore trait, KVPersist trait, and KV-based StateStore implementations
@@ -115,7 +116,7 @@ log = ["dep:log"]
 
 # MQTT client implementations (std/tokio)
 rumqttc = ["std", "dep:rumqttc", "tokio/time"]
-greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes"]
+greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes", "dep:futures"]
 
 [patch.crates-io]
 serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core", rev = "a435f78" }

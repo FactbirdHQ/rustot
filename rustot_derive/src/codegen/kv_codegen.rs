@@ -21,13 +21,13 @@ pub const VARIANT_KEY_PATH: &str = "/_variant";
 ///
 /// # Generated code pattern
 /// ```ignore
-/// let mut #var_name: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+/// let mut #var_name: #krate::__macro_support::heapless::String<KEY_LEN> = #krate::__macro_support::heapless::String::new();
 /// let _ = #var_name.push_str(prefix);
 /// let _ = #var_name.push_str(#path);
 /// ```
-pub fn build_key(var_name: &syn::Ident, path: &str) -> TokenStream {
+pub fn build_key(krate: &TokenStream, var_name: &syn::Ident, path: &str) -> TokenStream {
     quote! {
-        let mut #var_name: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+        let mut #var_name: #krate::__macro_support::heapless::String<KEY_LEN> = #krate::__macro_support::heapless::String::new();
         let _ = #var_name.push_str(prefix);
         let _ = #var_name.push_str(#path);
     }
@@ -69,7 +69,7 @@ fn kv_serialize_and_store(
     quote! {
         {
             let mut __ser_buf = <Self as #krate::shadows::KVPersist>::zero_value_buf();
-            let bytes = ::postcard::to_slice(#value_expr, __ser_buf.as_mut())
+            let bytes = #krate::__macro_support::postcard::to_slice(#value_expr, __ser_buf.as_mut())
                 .map_err(|_| #krate::shadows::KvError::Serialization)?;
             kv.store(#key_expr, bytes).await.map_err(#krate::shadows::KvError::Kv)?;
         }
@@ -84,7 +84,7 @@ pub fn leaf_load(
     on_missing: TokenStream,
 ) -> TokenStream {
     let key_ident = syn::Ident::new("full_key", proc_macro2::Span::call_site());
-    let key_code = build_key(&key_ident, field_path);
+    let key_code = build_key(krate, &key_ident, field_path);
     let key_expr = quote! { &#key_ident };
 
     let fetch_code = kv_fetch_and_handle(
@@ -92,7 +92,7 @@ pub fn leaf_load(
         &key_expr,
         |data_ref| {
             quote! {
-                #field_access = ::postcard::from_bytes(#data_ref).map_err(|_| #krate::shadows::KvError::Serialization)?;
+                #field_access = #krate::__macro_support::postcard::from_bytes(#data_ref).map_err(|_| #krate::shadows::KvError::Serialization)?;
                 result.loaded += 1;
             }
         },
@@ -119,7 +119,7 @@ pub fn leaf_load_with_migration(
     migration_code: TokenStream,
 ) -> TokenStream {
     let key_ident = syn::Ident::new("full_key", proc_macro2::Span::call_site());
-    let key_code = build_key(&key_ident, field_path);
+    let key_code = build_key(krate, &key_ident, field_path);
     let key_expr = quote! { &#key_ident };
 
     // Clone migration_code since it's used in both branches
@@ -129,7 +129,7 @@ pub fn leaf_load_with_migration(
         &key_expr,
         |data_ref| {
             quote! {
-                match ::postcard::from_bytes(#data_ref) {
+                match #krate::__macro_support::postcard::from_bytes(#data_ref) {
                     Ok(val) => {
                         #field_access = val;
                         result.loaded += 1;
@@ -182,7 +182,7 @@ pub fn migration_fallback(
             }),*
         ];
         for source in sources {
-            let mut old_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+            let mut old_key: #krate::__macro_support::heapless::String<KEY_LEN> = #krate::__macro_support::heapless::String::new();
             let _ = old_key.push_str(prefix);
             let _ = old_key.push_str(source.key);
 
@@ -196,7 +196,7 @@ pub fn migration_fallback(
                 } else {
                     old_data
                 };
-                #field_access = ::postcard::from_bytes(value_bytes).map_err(|_| #krate::shadows::KvError::Serialization)?;
+                #field_access = #krate::__macro_support::postcard::from_bytes(value_bytes).map_err(|_| #krate::shadows::KvError::Serialization)?;
                 kv.store(&full_key, value_bytes).await.map_err(#krate::shadows::KvError::Kv)?;
                 result.migrated += 1;
                 migrated = true;
@@ -213,7 +213,7 @@ pub fn migration_fallback(
 /// Generates code for persisting a leaf field to KV storage.
 pub fn leaf_persist(krate: &TokenStream, field_path: &str, value_expr: TokenStream) -> TokenStream {
     let key_ident = syn::Ident::new("full_key", proc_macro2::Span::call_site());
-    let key_code = build_key(&key_ident, field_path);
+    let key_code = build_key(krate, &key_ident, field_path);
     let key_expr = quote! { &#key_ident };
     let value_ref = quote! { &#value_expr };
     let store_code = kv_serialize_and_store(krate, &key_expr, &value_ref);
@@ -233,7 +233,7 @@ pub fn leaf_persist_delta(
     field_name: &syn::Ident,
 ) -> TokenStream {
     let key_ident = syn::Ident::new("full_key", proc_macro2::Span::call_site());
-    let key_code = build_key(&key_ident, field_path);
+    let key_code = build_key(krate, &key_ident, field_path);
     let key_expr = quote! { &#key_ident };
     let value_ref = quote! { val };
     let store_code = kv_serialize_and_store(krate, &key_expr, &value_ref);
@@ -247,9 +247,9 @@ pub fn leaf_persist_delta(
 }
 
 /// Generates code for collecting a leaf field's key.
-pub fn leaf_collect_keys(field_path: &str) -> TokenStream {
+pub fn leaf_collect_keys(krate: &TokenStream, field_path: &str) -> TokenStream {
     let key_ident = syn::Ident::new("key", proc_macro2::Span::call_site());
-    let key_code = build_key(&key_ident, field_path);
+    let key_code = build_key(krate, &key_ident, field_path);
 
     quote! {
         {
@@ -267,7 +267,7 @@ pub fn nested_load(
     field_access: TokenStream,
 ) -> TokenStream {
     let prefix_ident = syn::Ident::new("nested_prefix", proc_macro2::Span::call_site());
-    let prefix_code = build_key(&prefix_ident, field_path);
+    let prefix_code = build_key(krate, &prefix_ident, field_path);
 
     quote! {
         {
@@ -286,7 +286,7 @@ pub fn nested_load_with_migration(
     field_access: TokenStream,
 ) -> TokenStream {
     let prefix_ident = syn::Ident::new("nested_prefix", proc_macro2::Span::call_site());
-    let prefix_code = build_key(&prefix_ident, field_path);
+    let prefix_code = build_key(krate, &prefix_ident, field_path);
 
     quote! {
         {
@@ -305,7 +305,7 @@ pub fn nested_persist(
     field_access: TokenStream,
 ) -> TokenStream {
     let prefix_ident = syn::Ident::new("nested_prefix", proc_macro2::Span::call_site());
-    let prefix_code = build_key(&prefix_ident, field_path);
+    let prefix_code = build_key(krate, &prefix_ident, field_path);
 
     quote! {
         {
@@ -323,7 +323,7 @@ pub fn nested_persist_delta(
     field_name: &syn::Ident,
 ) -> TokenStream {
     let prefix_ident = syn::Ident::new("nested_prefix", proc_macro2::Span::call_site());
-    let prefix_code = build_key(&prefix_ident, field_path);
+    let prefix_code = build_key(krate, &prefix_ident, field_path);
 
     quote! {
         if let Some(ref inner_delta) = delta.#field_name {
@@ -340,7 +340,7 @@ pub fn nested_collect_keys(
     field_ty: &syn::Type,
 ) -> TokenStream {
     let prefix_ident = syn::Ident::new("nested_prefix", proc_macro2::Span::call_site());
-    let prefix_code = build_key(&prefix_ident, field_path);
+    let prefix_code = build_key(krate, &prefix_ident, field_path);
 
     quote! {
         {
@@ -357,7 +357,7 @@ pub fn nested_collect_prefixes(
     field_ty: &syn::Type,
 ) -> TokenStream {
     let prefix_ident = syn::Ident::new("nested_prefix", proc_macro2::Span::call_site());
-    let prefix_code = build_key(&prefix_ident, field_path);
+    let prefix_code = build_key(krate, &prefix_ident, field_path);
 
     quote! {
         {
@@ -384,7 +384,7 @@ pub fn enum_variant_load_arm(
     inner_ty: &syn::Type,
 ) -> TokenStream {
     let prefix_ident = syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
-    let prefix_code = build_key(&prefix_ident, variant_path);
+    let prefix_code = build_key(krate, &prefix_ident, variant_path);
 
     quote! {
         #serde_name => {
@@ -406,7 +406,7 @@ pub fn enum_variant_persist_arm(
     inner_ty: &syn::Type,
 ) -> TokenStream {
     let prefix_ident = syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
-    let prefix_code = build_key(&prefix_ident, variant_path);
+    let prefix_code = build_key(krate, &prefix_ident, variant_path);
 
     quote! {
         Self::#variant_ident(ref inner) => {
@@ -428,7 +428,7 @@ pub fn enum_load_from_kv_body(
     load_variant_arms: &[TokenStream],
 ) -> TokenStream {
     let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
-    let variant_key_code = build_key(&variant_key_ident, VARIANT_KEY_PATH);
+    let variant_key_code = build_key(krate, &variant_key_ident, VARIANT_KEY_PATH);
 
     quote! {
         async move {
@@ -465,7 +465,7 @@ pub fn enum_persist_to_kv_body(
     persist_variant_arms: &[TokenStream],
 ) -> TokenStream {
     let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
-    let variant_key_code = build_key(&variant_key_ident, VARIANT_KEY_PATH);
+    let variant_key_code = build_key(krate, &variant_key_ident, VARIANT_KEY_PATH);
 
     quote! {
         async move {
@@ -491,9 +491,9 @@ pub fn enum_persist_to_kv_body(
 /// Generates the body of `collect_valid_keys` for enum types.
 ///
 /// This is shared between simple enums and adjacently-tagged enums.
-pub fn enum_collect_valid_keys_body(collect_keys_arms: &[TokenStream]) -> TokenStream {
+pub fn enum_collect_valid_keys_body(krate: &TokenStream, collect_keys_arms: &[TokenStream]) -> TokenStream {
     let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
-    let variant_key_code = build_key(&variant_key_ident, VARIANT_KEY_PATH);
+    let variant_key_code = build_key(krate, &variant_key_ident, VARIANT_KEY_PATH);
 
     quote! {
         // Add _variant key

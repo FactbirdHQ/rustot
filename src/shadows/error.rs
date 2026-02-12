@@ -57,6 +57,24 @@ impl<E: Debug> From<super::migration::MigrationError> for KvError<E> {
     }
 }
 
+impl<E: Debug> core::fmt::Display for KvError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            KvError::Kv(e) => write!(f, "KV store error: {:?}", e),
+            KvError::Serialization => write!(f, "serialization error"),
+            KvError::PathNotFound => write!(f, "path not found"),
+            KvError::KeyTooLong => write!(f, "key too long"),
+            KvError::VariantMismatch => write!(f, "variant mismatch"),
+            KvError::UnknownVariant => write!(f, "unknown variant"),
+            KvError::InvalidVariant => write!(f, "invalid variant"),
+            KvError::Migration(e) => write!(f, "migration error: {:?}", e),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl<E: Debug> std::error::Error for KvError<E> {}
+
 /// Error type for enum field operations.
 ///
 /// Used by `set_enum_variant()` and `get_enum_variant()`.
@@ -121,6 +139,24 @@ impl core::fmt::Display for ParseError {
         }
     }
 }
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Error::Overflow => write!(f, "overflow"),
+            Error::NoPersistence => write!(f, "no persistence"),
+            Error::DaoRead => write!(f, "DAO read error"),
+            Error::DaoWrite => write!(f, "DAO write error"),
+            Error::InvalidPayload => write!(f, "invalid payload"),
+            Error::WrongShadowName => write!(f, "wrong shadow name"),
+            Error::Mqtt => write!(f, "MQTT error"),
+            Error::ShadowError(e) => write!(f, "shadow error: {:?}", e),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for Error {}
 
 impl From<ShadowError> for Error {
     fn from(e: ShadowError) -> Self {

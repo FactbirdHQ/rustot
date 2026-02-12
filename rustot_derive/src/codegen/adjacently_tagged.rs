@@ -235,7 +235,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 parse_delta_config_arms.push(quote! {
                     (Some(#variant_enum_name::#variant_ident), Some(config_bytes)) => {
                         // Build nested path for the inner type
-                        let mut nested_path: ::heapless::String<64> = ::heapless::String::new();
+                        let mut nested_path: #krate::__macro_support::heapless::String<64> = #krate::__macro_support::heapless::String::new();
                         let _ = nested_path.push_str(path);
                         if !path.is_empty() {
                             let _ = nested_path.push('/');
@@ -540,7 +540,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             if has_data {
                 quote! {
                     Self::#ident(_) => {
-                        let mut s = ::heapless::String::<32>::new();
+                        let mut s = #krate::__macro_support::heapless::String::<32>::new();
                         let _ = s.push_str(#serde_name);
                         Some(s)
                     }
@@ -548,7 +548,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             } else {
                 quote! {
                     Self::#ident => {
-                        let mut s = ::heapless::String::<32>::new();
+                        let mut s = #krate::__macro_support::heapless::String::<32>::new();
                         let _ = s.push_str(#serde_name);
                         Some(s)
                     }
@@ -608,7 +608,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 #config_apply_code
             }
 
-            fn variant_at_path(&self, path: &str) -> Option<::heapless::String<32>> {
+            fn variant_at_path(&self, path: &str) -> Option<#krate::__macro_support::heapless::String<32>> {
                 // Only match empty path (this level) or exact field path
                 if path.is_empty() {
                     match self {
@@ -712,7 +712,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
                     let prefix_ident =
                         syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
-                    let prefix_code = kv_codegen::build_key(&prefix_ident, &variant_path);
+                    let prefix_code = kv_codegen::build_key(krate, &prefix_ident, &variant_path);
                     persist_delta_config_arms.push(quote! {
                         #delta_config_name::#variant_ident(ref inner_delta) => {
                             #prefix_code
@@ -751,7 +751,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             &persist_to_kv_variant_arms,
         );
         let collect_valid_keys_body =
-            kv_codegen::enum_collect_valid_keys_body(&collect_valid_keys_arms);
+            kv_codegen::enum_collect_valid_keys_body(krate, &collect_valid_keys_arms);
 
         quote! {
             impl #krate::shadows::KVPersist for #name {
@@ -805,7 +805,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
                     async move {
                         // Build variant key path
-                        let mut variant_key: ::heapless::String<KEY_LEN> = ::heapless::String::new();
+                        let mut variant_key: #krate::__macro_support::heapless::String<KEY_LEN> = #krate::__macro_support::heapless::String::new();
                         let _ = variant_key.push_str(prefix);
                         let _ = variant_key.push_str(#VARIANT_KEY_PATH);
 
