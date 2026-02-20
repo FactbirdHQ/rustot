@@ -5,7 +5,7 @@ pub mod encoding;
 pub mod error;
 pub mod pal;
 
-use core::ops::DerefMut as _;
+use core::{future::Future, ops::DerefMut as _};
 
 #[cfg(feature = "ota_mqtt_data")]
 pub use data_interface::mqtt::{Encoding, Topic};
@@ -34,11 +34,10 @@ pub struct JobEventData<'a> {
 pub struct Updater;
 
 impl Updater {
-    pub async fn check_for_job<'a, C: ControlInterface>(
+    pub fn check_for_job<C: ControlInterface>(
         control: &C,
-    ) -> Result<(), error::OtaError> {
-        control.request_job().await?;
-        Ok(())
+    ) -> impl Future<Output = Result<(), error::OtaError>> + '_ {
+        control.request_job()
     }
 
     pub async fn perform_ota<'a, 'b, C: ControlInterface, D: DataInterface>(

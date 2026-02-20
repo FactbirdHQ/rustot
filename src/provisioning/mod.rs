@@ -36,14 +36,15 @@ pub struct Credentials<'a> {
 pub struct FleetProvisioner;
 
 impl FleetProvisioner {
-    pub async fn provision<'a, C, M: RawMutex>(
-        mqtt: &mqttrust::MqttClient<'a, M>,
-        template_name: &str,
-        parameters: Option<impl Serialize>,
-        credential_handler: &mut impl CredentialHandler,
-    ) -> Result<Option<C>, Error>
+    pub fn provision<'a, 'b, C, M: RawMutex, P: Serialize + 'b, H: CredentialHandler + 'b>(
+        mqtt: &'b mqttrust::MqttClient<'a, M>,
+        template_name: &'b str,
+        parameters: Option<P>,
+        credential_handler: &'b mut H,
+    ) -> impl Future<Output = Result<Option<C>, Error>> + 'b + use<'b, 'a, C, M, P, H>
     where
-        C: DeserializeOwned,
+        C: DeserializeOwned + 'b,
+        'a: 'b,
     {
         Self::provision_inner(
             mqtt,
@@ -53,18 +54,18 @@ impl FleetProvisioner {
             credential_handler,
             PayloadFormat::Json,
         )
-        .await
     }
 
-    pub async fn provision_csr<'a, C, M: RawMutex>(
-        mqtt: &mqttrust::MqttClient<'a, M>,
-        template_name: &str,
-        parameters: Option<impl Serialize>,
-        csr: &str,
-        credential_handler: &mut impl CredentialHandler,
-    ) -> Result<Option<C>, Error>
+    pub fn provision_csr<'a, 'b, C, M: RawMutex, P: Serialize + 'b, H: CredentialHandler + 'b>(
+        mqtt: &'b mqttrust::MqttClient<'a, M>,
+        template_name: &'b str,
+        parameters: Option<P>,
+        csr: &'b str,
+        credential_handler: &'b mut H,
+    ) -> impl Future<Output = Result<Option<C>, Error>> + 'b + use<'b, 'a, C, M, P, H>
     where
-        C: DeserializeOwned,
+        C: DeserializeOwned + 'b,
+        'a: 'b,
     {
         Self::provision_inner(
             mqtt,
@@ -74,18 +75,18 @@ impl FleetProvisioner {
             credential_handler,
             PayloadFormat::Json,
         )
-        .await
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub async fn provision_cbor<'a, C, M: RawMutex>(
-        mqtt: &mqttrust::MqttClient<'a, M>,
-        template_name: &str,
-        parameters: Option<impl Serialize>,
-        credential_handler: &mut impl CredentialHandler,
-    ) -> Result<Option<C>, Error>
+    pub fn provision_cbor<'a, 'b, C, M: RawMutex, P: Serialize + 'b, H: CredentialHandler + 'b>(
+        mqtt: &'b mqttrust::MqttClient<'a, M>,
+        template_name: &'b str,
+        parameters: Option<P>,
+        credential_handler: &'b mut H,
+    ) -> impl Future<Output = Result<Option<C>, Error>> + 'b + use<'b, 'a, C, M, P, H>
     where
-        C: DeserializeOwned,
+        C: DeserializeOwned + 'b,
+        'a: 'b,
     {
         Self::provision_inner(
             mqtt,
@@ -95,19 +96,26 @@ impl FleetProvisioner {
             credential_handler,
             PayloadFormat::Cbor,
         )
-        .await
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub async fn provision_csr_cbor<'a, C, M: RawMutex>(
-        mqtt: &mqttrust::MqttClient<'a, M>,
-        template_name: &str,
-        parameters: Option<impl Serialize>,
-        csr: &str,
-        credential_handler: &mut impl CredentialHandler,
-    ) -> Result<Option<C>, Error>
+    pub fn provision_csr_cbor<
+        'a,
+        'b,
+        C,
+        M: RawMutex,
+        P: Serialize + 'b,
+        H: CredentialHandler + 'b,
+    >(
+        mqtt: &'b mqttrust::MqttClient<'a, M>,
+        template_name: &'b str,
+        parameters: Option<P>,
+        csr: &'b str,
+        credential_handler: &'b mut H,
+    ) -> impl Future<Output = Result<Option<C>, Error>> + 'b + use<'b, 'a, C, M, P, H>
     where
-        C: DeserializeOwned,
+        C: DeserializeOwned + 'b,
+        'a: 'b,
     {
         Self::provision_inner(
             mqtt,
@@ -117,7 +125,6 @@ impl FleetProvisioner {
             credential_handler,
             PayloadFormat::Cbor,
         )
-        .await
     }
 
     #[cfg(feature = "provision_cbor")]
