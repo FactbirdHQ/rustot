@@ -166,27 +166,22 @@ impl<'a> Topic<'a> {
         }
     }
 
-    pub fn format<const L: usize>(&self) -> Result<String<L>, Error> {
-        let mut topic_path = String::new();
+    fn format_inner(&self, w: &mut dyn Write) -> Result<(), core::fmt::Error> {
         match self {
-            Self::RegisterThing(template_name, payload_format) => {
-                topic_path.write_fmt(format_args!(
-                    "{}/{}/provision/{}",
-                    Self::PROVISIONING_PREFIX,
-                    template_name,
-                    payload_format,
-                ))
-            }
-            Topic::RegisterThingAny(template_name, payload_format) => {
-                topic_path.write_fmt(format_args!(
-                    "{}/{}/provision/{}/#",
-                    Self::PROVISIONING_PREFIX,
-                    template_name,
-                    payload_format,
-                ))
-            }
+            Self::RegisterThing(template_name, payload_format) => w.write_fmt(format_args!(
+                "{}/{}/provision/{}",
+                Self::PROVISIONING_PREFIX,
+                template_name,
+                payload_format,
+            )),
+            Topic::RegisterThingAny(template_name, payload_format) => w.write_fmt(format_args!(
+                "{}/{}/provision/{}/#",
+                Self::PROVISIONING_PREFIX,
+                template_name,
+                payload_format,
+            )),
             Topic::RegisterThingAccepted(template_name, payload_format) => {
-                topic_path.write_fmt(format_args!(
+                w.write_fmt(format_args!(
                     "{}/{}/provision/{}/accepted",
                     Self::PROVISIONING_PREFIX,
                     template_name,
@@ -194,7 +189,7 @@ impl<'a> Topic<'a> {
                 ))
             }
             Topic::RegisterThingRejected(template_name, payload_format) => {
-                topic_path.write_fmt(format_args!(
+                w.write_fmt(format_args!(
                     "{}/{}/provision/{}/rejected",
                     Self::PROVISIONING_PREFIX,
                     template_name,
@@ -202,47 +197,55 @@ impl<'a> Topic<'a> {
                 ))
             }
 
-            Topic::CreateKeysAndCertificate(payload_format) => topic_path.write_fmt(format_args!(
+            Topic::CreateKeysAndCertificate(payload_format) => w.write_fmt(format_args!(
                 "{}/create/{}",
                 Self::CERT_PREFIX,
                 payload_format,
             )),
 
-            Topic::CreateKeysAndCertificateAny(payload_format) => topic_path.write_fmt(
-                format_args!("{}/create/{}/#", Self::CERT_PREFIX, payload_format),
-            ),
-            Topic::CreateKeysAndCertificateAccepted(payload_format) => topic_path.write_fmt(
-                format_args!("{}/create/{}/accepted", Self::CERT_PREFIX, payload_format),
-            ),
-            Topic::CreateKeysAndCertificateRejected(payload_format) => topic_path.write_fmt(
-                format_args!("{}/create/{}/rejected", Self::CERT_PREFIX, payload_format),
-            ),
+            Topic::CreateKeysAndCertificateAny(payload_format) => w.write_fmt(format_args!(
+                "{}/create/{}/#",
+                Self::CERT_PREFIX,
+                payload_format
+            )),
+            Topic::CreateKeysAndCertificateAccepted(payload_format) => w.write_fmt(format_args!(
+                "{}/create/{}/accepted",
+                Self::CERT_PREFIX,
+                payload_format
+            )),
+            Topic::CreateKeysAndCertificateRejected(payload_format) => w.write_fmt(format_args!(
+                "{}/create/{}/rejected",
+                Self::CERT_PREFIX,
+                payload_format
+            )),
 
-            Topic::CreateCertificateFromCsr(payload_format) => topic_path.write_fmt(format_args!(
+            Topic::CreateCertificateFromCsr(payload_format) => w.write_fmt(format_args!(
                 "{}/create-from-csr/{}",
                 Self::CERT_PREFIX,
                 payload_format,
             )),
-            Topic::CreateCertificateFromCsrAny(payload_format) => topic_path.write_fmt(
-                format_args!("{}/create-from-csr/{}/+", Self::CERT_PREFIX, payload_format),
-            ),
-            Topic::CreateCertificateFromCsrAccepted(payload_format) => {
-                topic_path.write_fmt(format_args!(
-                    "{}/create-from-csr/{}/accepted",
-                    Self::CERT_PREFIX,
-                    payload_format
-                ))
-            }
-            Topic::CreateCertificateFromCsrRejected(payload_format) => {
-                topic_path.write_fmt(format_args!(
-                    "{}/create-from-csr/{}/rejected",
-                    Self::CERT_PREFIX,
-                    payload_format
-                ))
-            }
+            Topic::CreateCertificateFromCsrAny(payload_format) => w.write_fmt(format_args!(
+                "{}/create-from-csr/{}/+",
+                Self::CERT_PREFIX,
+                payload_format
+            )),
+            Topic::CreateCertificateFromCsrAccepted(payload_format) => w.write_fmt(format_args!(
+                "{}/create-from-csr/{}/accepted",
+                Self::CERT_PREFIX,
+                payload_format
+            )),
+            Topic::CreateCertificateFromCsrRejected(payload_format) => w.write_fmt(format_args!(
+                "{}/create-from-csr/{}/rejected",
+                Self::CERT_PREFIX,
+                payload_format
+            )),
         }
-        .map_err(|_| Error::Overflow)?;
+    }
 
+    pub fn format<const L: usize>(&self) -> Result<String<L>, Error> {
+        let mut topic_path = String::new();
+        self.format_inner(&mut topic_path)
+            .map_err(|_| Error::Overflow)?;
         Ok(topic_path)
     }
 }
