@@ -159,90 +159,91 @@ impl<'a> JobTopic<'a> {
         s.starts_with(Self::PREFIX)
     }
 
-    pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, JobError> {
-        let mut topic_path = heapless::String::new();
+    fn format_inner(&self, client_id: &str, w: &mut dyn Write) -> Result<(), core::fmt::Error> {
         match self {
-            Self::GetNext => topic_path.write_fmt(format_args!(
+            Self::GetNext => w.write_fmt(format_args!(
                 "{}/{}/jobs/$next/get",
                 Self::PREFIX,
                 client_id
             )),
             Self::GetPending => {
-                topic_path.write_fmt(format_args!("{}/{}/jobs/get", Self::PREFIX, client_id))
+                w.write_fmt(format_args!("{}/{}/jobs/get", Self::PREFIX, client_id))
             }
-            Self::StartNext => topic_path.write_fmt(format_args!(
+            Self::StartNext => w.write_fmt(format_args!(
                 "{}/{}/jobs/start-next",
                 Self::PREFIX,
                 client_id
             )),
-            Self::Get(job_id) => topic_path.write_fmt(format_args!(
+            Self::Get(job_id) => w.write_fmt(format_args!(
                 "{}/{}/jobs/{}/get",
                 Self::PREFIX,
                 client_id,
                 job_id
             )),
-            Self::Update(job_id) => topic_path.write_fmt(format_args!(
+            Self::Update(job_id) => w.write_fmt(format_args!(
                 "{}/{}/jobs/{}/update",
                 Self::PREFIX,
                 client_id,
                 job_id
             )),
 
-            Self::Notify => {
-                topic_path.write_fmt(format_args!("{}/{}/jobs/notify", Self::PREFIX, client_id))
-            }
-            Self::NotifyNext => topic_path.write_fmt(format_args!(
+            Self::Notify => w.write_fmt(format_args!("{}/{}/jobs/notify", Self::PREFIX, client_id)),
+            Self::NotifyNext => w.write_fmt(format_args!(
                 "{}/{}/jobs/notify-next",
                 Self::PREFIX,
                 client_id
             )),
-            Self::GetAccepted => topic_path.write_fmt(format_args!(
+            Self::GetAccepted => w.write_fmt(format_args!(
                 "{}/{}/jobs/get/accepted",
                 Self::PREFIX,
                 client_id
             )),
-            Self::GetRejected => topic_path.write_fmt(format_args!(
+            Self::GetRejected => w.write_fmt(format_args!(
                 "{}/{}/jobs/get/rejected",
                 Self::PREFIX,
                 client_id
             )),
-            Self::StartNextAccepted => topic_path.write_fmt(format_args!(
+            Self::StartNextAccepted => w.write_fmt(format_args!(
                 "{}/{}/jobs/start-next/accepted",
                 Self::PREFIX,
                 client_id
             )),
-            Self::StartNextRejected => topic_path.write_fmt(format_args!(
+            Self::StartNextRejected => w.write_fmt(format_args!(
                 "{}/{}/jobs/start-next/rejected",
                 Self::PREFIX,
                 client_id
             )),
-            Self::DescribeAccepted(job_id) => topic_path.write_fmt(format_args!(
+            Self::DescribeAccepted(job_id) => w.write_fmt(format_args!(
                 "{}/{}/jobs/{}/get/accepted",
                 Self::PREFIX,
                 client_id,
                 job_id
             )),
-            Self::DescribeRejected(job_id) => topic_path.write_fmt(format_args!(
+            Self::DescribeRejected(job_id) => w.write_fmt(format_args!(
                 "{}/{}/jobs/{}/get/rejected",
                 Self::PREFIX,
                 client_id,
                 job_id
             )),
-            Self::UpdateAccepted(job_id) => topic_path.write_fmt(format_args!(
+            Self::UpdateAccepted(job_id) => w.write_fmt(format_args!(
                 "{}/{}/jobs/{}/update/accepted",
                 Self::PREFIX,
                 client_id,
                 job_id
             )),
-            Self::UpdateRejected(job_id) => topic_path.write_fmt(format_args!(
+            Self::UpdateRejected(job_id) => w.write_fmt(format_args!(
                 "{}/{}/jobs/{}/update/rejected",
                 Self::PREFIX,
                 client_id,
                 job_id
             )),
         }
-        .map_err(|_| JobError::Overflow)?;
+    }
 
+    pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, JobError> {
+        let mut topic_path = heapless::String::new();
+        self.format_inner(client_id, &mut topic_path)
+            .map_err(|_| JobError::Overflow)?;
         Ok(topic_path)
     }
 }

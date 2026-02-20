@@ -29,25 +29,23 @@ impl Topic {
     #[cfg(not(feature = "metric_cbor"))]
     const PAYLOAD_FORMAT: &'static str = "json";
 
-    pub fn format<const L: usize>(&self, thing_name: &str) -> Result<String<L>, Error> {
-        let mut topic_path = String::new();
-
+    fn format_inner(&self, thing_name: &str, w: &mut dyn Write) -> Result<(), core::fmt::Error> {
         match self {
-            Self::Accepted => topic_path.write_fmt(format_args!(
+            Self::Accepted => w.write_fmt(format_args!(
                 "{}/{}/{}/{}/accepted",
                 Self::PREFIX,
                 thing_name,
                 Self::NAME,
                 Self::PAYLOAD_FORMAT,
             )),
-            Self::Rejected => topic_path.write_fmt(format_args!(
+            Self::Rejected => w.write_fmt(format_args!(
                 "{}/{}/{}/{}/rejected",
                 Self::PREFIX,
                 thing_name,
                 Self::NAME,
                 Self::PAYLOAD_FORMAT,
             )),
-            Self::Publish => topic_path.write_fmt(format_args!(
+            Self::Publish => w.write_fmt(format_args!(
                 "{}/{}/{}/{}",
                 Self::PREFIX,
                 thing_name,
@@ -55,8 +53,12 @@ impl Topic {
                 Self::PAYLOAD_FORMAT,
             )),
         }
-        .map_err(|_| Error::Overflow)?;
+    }
 
+    pub fn format<const L: usize>(&self, thing_name: &str) -> Result<String<L>, Error> {
+        let mut topic_path = String::new();
+        self.format_inner(thing_name, &mut topic_path)
+            .map_err(|_| Error::Overflow)?;
         Ok(topic_path)
     }
 

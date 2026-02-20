@@ -193,8 +193,14 @@ impl FleetProvisioner {
             }
         };
 
+        let ownership_token_owned: heapless::String<512> =
+            heapless::String::try_from(ownership_token).map_err(|_| Error::Overflow)?;
+
+        drop(message);
+        create_subscription.unsubscribe().await?;
+
         let register_request = RegisterThingRequest {
-            certificate_ownership_token: ownership_token,
+            certificate_ownership_token: &ownership_token_owned,
             parameters,
         };
 
@@ -254,9 +260,6 @@ impl FleetProvisioner {
                 .build(),
         )
         .await?;
-
-        drop(message);
-        create_subscription.unsubscribe().await?;
 
         let mut message = register_subscription
             .next_message()
