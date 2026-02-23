@@ -83,7 +83,7 @@ hex = { version = "0.4.3", features = ["alloc"] }
 
 
 [features]
-default = ["ota_mqtt_data", "metric_cbor", "provision_cbor", "std", "shadows_kv_persist"]
+default = ["ota_mqtt_data", "metric_cbor", "provision_cbor", "shadows_kv_persist"]
 
 metric_cbor = ["dep:minicbor", "dep:minicbor-serde"]
 
