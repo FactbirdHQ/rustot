@@ -488,14 +488,16 @@ where
     /// same cloud shadow.
     pub async fn update<F: FnOnce(&S, &mut S::Reported)>(&self, f: F) -> Result<(), Error> {
         let mut update = S::Reported::default();
-        let mut state = self.dao.lock().await.read().await?;
+        let state = self.dao.lock().await.read().await?;
         f(&state, &mut update);
+        self.update_reported_inner(update, state).await
+    }
 
+    async fn update_reported_inner(&self, update: S::Reported, mut state: S) -> Result<(), Error> {
         let response = self.handler.update_shadow(None, Some(update)).await?;
 
         if let Some(delta) = response.delta {
             state.apply_patch(delta.clone());
-
             self.dao.lock().await.write(&state).await?;
         }
 
@@ -507,7 +509,10 @@ where
     pub async fn update_desired<F: FnOnce(&mut S::Delta)>(&self, f: F) -> Result<(), Error> {
         let mut update = S::Delta::default();
         f(&mut update);
+        self.update_desired_inner(update).await
+    }
 
+    async fn update_desired_inner(&self, update: S::Delta) -> Result<(), Error> {
         let response = self.handler.update_shadow(Some(update), None).await?;
 
         if let Some(delta) = response.delta {
@@ -593,7 +598,10 @@ where
     pub async fn update<F: FnOnce(&S, &mut S::Reported)>(&mut self, f: F) -> Result<(), Error> {
         let mut update = S::Reported::default();
         f(&self.state, &mut update);
+        self.update_inner(update).await
+    }
 
+    async fn update_inner(&mut self, update: S::Reported) -> Result<(), Error> {
         let response = self.handler.update_shadow(None, Some(update)).await?;
 
         if let Some(delta) = response.delta {

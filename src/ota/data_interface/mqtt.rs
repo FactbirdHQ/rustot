@@ -97,28 +97,31 @@ enum OtaTopic<'a> {
 }
 
 impl OtaTopic<'_> {
-    pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, OtaError> {
-        let mut topic_path = heapless::String::new();
+    fn format_inner(&self, client_id: &str, w: &mut dyn Write) -> Result<(), core::fmt::Error> {
         match self {
-            Self::Data(encoding, stream_name) => topic_path.write_fmt(format_args!(
+            Self::Data(encoding, stream_name) => w.write_fmt(format_args!(
                 "$aws/things/{}/streams/{}/data/{}",
                 client_id, stream_name, encoding
             )),
-            Self::Description(encoding, stream_name) => topic_path.write_fmt(format_args!(
+            Self::Description(encoding, stream_name) => w.write_fmt(format_args!(
                 "$aws/things/{}/streams/{}/description/{}",
                 client_id, stream_name, encoding
             )),
-            Self::Rejected(encoding, stream_name) => topic_path.write_fmt(format_args!(
+            Self::Rejected(encoding, stream_name) => w.write_fmt(format_args!(
                 "$aws/things/{}/streams/{}/rejected/{}",
                 client_id, stream_name, encoding
             )),
-            Self::Get(encoding, stream_name) => topic_path.write_fmt(format_args!(
+            Self::Get(encoding, stream_name) => w.write_fmt(format_args!(
                 "$aws/things/{}/streams/{}/get/{}",
                 client_id, stream_name, encoding
             )),
         }
-        .map_err(|_| OtaError::Overflow)?;
+    }
 
+    pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, OtaError> {
+        let mut topic_path = heapless::String::new();
+        self.format_inner(client_id, &mut topic_path)
+            .map_err(|_| OtaError::Overflow)?;
         Ok(topic_path)
     }
 }

@@ -93,17 +93,17 @@ impl Topic {
         }
     }
 
-    pub fn format<const L: usize>(
+    fn format_inner(
         &self,
         prefix: &str,
         thing_name: &str,
         shadow_name: Option<&'static str>,
-    ) -> Result<String<L>, Error> {
+        w: &mut dyn Write,
+    ) -> Result<(), core::fmt::Error> {
         let (name_prefix, shadow_name) = shadow_name.map(|n| ("/name/", n)).unwrap_or_default();
 
-        let mut topic_path = String::new();
         match self {
-            Self::Get => topic_path.write_fmt(format_args!(
+            Self::Get => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/get",
                 prefix,
                 Self::PREFIX,
@@ -112,7 +112,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::Update => topic_path.write_fmt(format_args!(
+            Self::Update => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/update",
                 prefix,
                 Self::PREFIX,
@@ -121,7 +121,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::Delete => topic_path.write_fmt(format_args!(
+            Self::Delete => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/delete",
                 prefix,
                 Self::PREFIX,
@@ -131,7 +131,7 @@ impl Topic {
                 shadow_name
             )),
 
-            Self::GetAccepted => topic_path.write_fmt(format_args!(
+            Self::GetAccepted => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/get/accepted",
                 prefix,
                 Self::PREFIX,
@@ -140,7 +140,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::GetRejected => topic_path.write_fmt(format_args!(
+            Self::GetRejected => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/get/rejected",
                 prefix,
                 Self::PREFIX,
@@ -149,7 +149,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::UpdateDelta => topic_path.write_fmt(format_args!(
+            Self::UpdateDelta => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/update/delta",
                 prefix,
                 Self::PREFIX,
@@ -158,7 +158,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::UpdateAccepted => topic_path.write_fmt(format_args!(
+            Self::UpdateAccepted => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/update/accepted",
                 prefix,
                 Self::PREFIX,
@@ -167,7 +167,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::UpdateDocuments => topic_path.write_fmt(format_args!(
+            Self::UpdateDocuments => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/update/documents",
                 prefix,
                 Self::PREFIX,
@@ -176,7 +176,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::UpdateRejected => topic_path.write_fmt(format_args!(
+            Self::UpdateRejected => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/update/rejected",
                 prefix,
                 Self::PREFIX,
@@ -185,7 +185,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::DeleteAccepted => topic_path.write_fmt(format_args!(
+            Self::DeleteAccepted => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/delete/accepted",
                 prefix,
                 Self::PREFIX,
@@ -194,7 +194,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::DeleteRejected => topic_path.write_fmt(format_args!(
+            Self::DeleteRejected => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/delete/rejected",
                 prefix,
                 Self::PREFIX,
@@ -203,7 +203,7 @@ impl Topic {
                 name_prefix,
                 shadow_name
             )),
-            Self::Any => topic_path.write_fmt(format_args!(
+            Self::Any => w.write_fmt(format_args!(
                 "{}/{}/{}/{}{}{}/#",
                 prefix,
                 Self::PREFIX,
@@ -213,8 +213,17 @@ impl Topic {
                 shadow_name
             )),
         }
-        .map_err(|_| Error::Overflow)?;
+    }
 
+    pub fn format<const L: usize>(
+        &self,
+        prefix: &str,
+        thing_name: &str,
+        shadow_name: Option<&'static str>,
+    ) -> Result<String<L>, Error> {
+        let mut topic_path = String::new();
+        self.format_inner(prefix, thing_name, shadow_name, &mut topic_path)
+            .map_err(|_| Error::Overflow)?;
         Ok(topic_path)
     }
 }

@@ -62,6 +62,13 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
             .await
             .map_err(|_| MetricError::PublishSubscribe)?;
 
+        self.await_metric_response(&mut subscription).await
+    }
+
+    async fn await_metric_response(
+        &self,
+        subscription: &mut mqttrust::Subscription<'a, '_, M, 2>,
+    ) -> Result<(), MetricError> {
         loop {
             let message = subscription
                 .next_message()
