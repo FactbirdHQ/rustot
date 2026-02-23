@@ -17,8 +17,8 @@ use common::credentials;
 use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{self, transport::embedded_nal::NalTransport, Config, DomainBroker, State};
 use heapless::LinearMap;
+use mqttrust::{self, transport::embedded_nal::NalTransport, Config, DomainBroker, State};
 use rustot::defender_metrics::{
     data_types::{CustomMetric, Metric},
     MetricHandler,
@@ -43,8 +43,7 @@ async fn test_publish_metric() {
     let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
     // Create the MQTT stack
-    let broker =
-        DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
+    let broker = DomainBroker::<_, 128>::new_with_port(hostname, 8883, network).unwrap();
 
     let config = Config::builder()
         .client_id(thing_name.try_into().unwrap())
@@ -53,7 +52,7 @@ async fn test_publish_metric() {
 
     static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }>> = StaticCell::new();
     let state = STATE.init(State::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let (mut stack, client) = mqttrust::new(state, config);
 
     // Define metrics
     let mut custom_metrics: LinearMap<String, [CustomMetric; 1], 4> = LinearMap::new();

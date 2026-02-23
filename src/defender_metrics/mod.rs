@@ -1,8 +1,8 @@
 use crate::shadows::Error;
 use data_types::Metric;
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use errors::{ErrorResponse, MetricError};
+use mqttrust::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use serde::{Deserialize, Serialize};
 use topics::Topic;
 
@@ -13,11 +13,11 @@ pub mod errors;
 pub mod topics;
 
 pub struct MetricHandler<'a, 'm, M: RawMutex> {
-    mqtt: &'m embedded_mqtt::MqttClient<'a, M>,
+    mqtt: &'m mqttrust::MqttClient<'a, M>,
 }
 
 impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
-    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M>) -> Self {
+    pub fn new(mqtt: &'m mqttrust::MqttClient<'a, M>) -> Self {
         Self { mqtt }
     }
 
@@ -41,7 +41,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
                         Ok(_) => {}
                         Err(_) => {
                             error!("An error happened when serializing metric with cbor");
-                            return Err(embedded_mqtt::EncodingError::BufferSize);
+                            return Err(mqttrust::EncodingError::BufferSize);
                         }
                     };
 
@@ -51,7 +51,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
                 #[cfg(not(feature = "metric_cbor"))]
                 {
                     serde_json_core::to_slice(&metric, buf)
-                        .map_err(|_| embedded_mqtt::EncodingError::BufferSize)
+                        .map_err(|_| mqttrust::EncodingError::BufferSize)
                 }
             },
             max_payload_size,
@@ -97,7 +97,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
     async fn publish_and_subscribe(
         &self,
         payload: impl ToPayload,
-    ) -> Result<embedded_mqtt::Subscription<'a, '_, M, 2>, Error> {
+    ) -> Result<mqttrust::Subscription<'a, '_, M, 2>, Error> {
         let sub = self
             .mqtt
             .subscribe::<2>(
@@ -140,7 +140,7 @@ impl<'a, 'm, M: RawMutex> MetricHandler<'a, 'm, M> {
             Ok(_) => {}
             Err(_) => {
                 error!("ERROR PUBLISHING PAYLOAD");
-                return Err(Error::MqttError(embedded_mqtt::Error::BadTopicFilter));
+                return Err(Error::MqttError(mqttrust::Error::BadTopicFilter));
             }
         };
 
@@ -154,8 +154,8 @@ mod tests {
 
     use super::data_types::*;
 
-    use heapless::{LinearMap, String};
     use serde::{ser::SerializeStruct, Serialize};
+    use serde_json_core::heapless::{LinearMap, String};
 
     #[test]
     fn serialize_version_json() {

@@ -8,7 +8,7 @@ use common::network::TlsNetwork;
 use ecdsa::Signature;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{transport::embedded_nal::NalTransport, Config, DomainBroker, State};
+use mqttrust::{transport::embedded_nal::NalTransport, Config, DomainBroker, State};
 use p256::{ecdsa::signature::Signer, NistP256};
 use rustot::provisioning::{CredentialHandler, Credentials, Error, FleetProvisioner};
 use serde::{Deserialize, Serialize};
@@ -73,8 +73,7 @@ async fn test_provisioning() {
     let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), claim_identity));
 
     // Create the MQTT stack
-    let broker =
-        DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
+    let broker = DomainBroker::<_, 128>::new_with_port(hostname, 8883, network).unwrap();
     let config = Config::builder()
         .client_id(thing_name.try_into().unwrap())
         .keepalive_interval(embassy_time::Duration::from_secs(50))
@@ -82,7 +81,7 @@ async fn test_provisioning() {
 
     static STATE: StaticCell<State<NoopRawMutex, 2048, 4096>> = StaticCell::new();
     let state = STATE.init(State::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let (mut stack, client) = mqttrust::new(state, config);
 
     let signing_key = credentials::signing_key();
     let signature: Signature<NistP256> = signing_key.sign(thing_name.as_bytes());

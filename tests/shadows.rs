@@ -30,7 +30,7 @@ use common::credentials;
 use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{
+use mqttrust::{
     self, transport::embedded_nal::NalTransport, Config, DomainBroker, MqttClient, Publish, QoS,
     State, Subscribe, SubscribeTopic,
 };
@@ -128,8 +128,7 @@ async fn test_shadow_update_from_device() {
     let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
     // Create the MQTT stack
-    let broker =
-        DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
+    let broker = DomainBroker::<_, 128>::new_with_port(hostname, 8883, network).unwrap();
 
     let config = Config::builder()
         .client_id(thing_name.try_into().unwrap())
@@ -138,7 +137,7 @@ async fn test_shadow_update_from_device() {
 
     static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }>> = StaticCell::new();
     let state = STATE.init(State::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let (mut stack, client) = mqttrust::new(state, config);
 
     // Create the shadow
     let mut shadow = Shadow::new(TestShadow::default(), &client);

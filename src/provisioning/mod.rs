@@ -5,9 +5,7 @@ pub mod topics;
 use core::future::Future;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{
-    DeferredPayload, EncodingError, Publish, Subscribe, SubscribeTopic, Subscription,
-};
+use mqttrust::{DeferredPayload, EncodingError, Publish, Subscribe, SubscribeTopic, Subscription};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub use error::Error;
@@ -39,7 +37,7 @@ pub struct FleetProvisioner;
 
 impl FleetProvisioner {
     pub async fn provision<'a, C, M: RawMutex>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M>,
+        mqtt: &mqttrust::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         credential_handler: &mut impl CredentialHandler,
@@ -59,7 +57,7 @@ impl FleetProvisioner {
     }
 
     pub async fn provision_csr<'a, C, M: RawMutex>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M>,
+        mqtt: &mqttrust::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: &str,
@@ -81,7 +79,7 @@ impl FleetProvisioner {
 
     #[cfg(feature = "provision_cbor")]
     pub async fn provision_cbor<'a, C, M: RawMutex>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M>,
+        mqtt: &mqttrust::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         credential_handler: &mut impl CredentialHandler,
@@ -102,7 +100,7 @@ impl FleetProvisioner {
 
     #[cfg(feature = "provision_cbor")]
     pub async fn provision_csr_cbor<'a, C, M: RawMutex>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M>,
+        mqtt: &mqttrust::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: &str,
@@ -124,7 +122,7 @@ impl FleetProvisioner {
 
     #[cfg(feature = "provision_cbor")]
     async fn provision_inner<'a, C, M: RawMutex>(
-        mqtt: &embedded_mqtt::MqttClient<'a, M>,
+        mqtt: &mqttrust::MqttClient<'a, M>,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: Option<&str>,
@@ -218,21 +216,22 @@ impl FleetProvisioner {
         let mut register_subscription = mqtt
             .subscribe::<2>(
                 Subscribe::builder()
-                    .topics(&[SubscribeTopic::builder()
-                        .topic_path(
-                            Topic::RegisterThingAccepted(template_name, payload_format)
-                                .format::<150>()?
-                                .as_str(),
-                        )
-                        .build(),
+                    .topics(&[
                         SubscribeTopic::builder()
-                        .topic_path(
-                            Topic::RegisterThingRejected(template_name, payload_format)
-                                .format::<150>()?
-                                .as_str(),
-                        )
-                        .build()
-                        ])
+                            .topic_path(
+                                Topic::RegisterThingAccepted(template_name, payload_format)
+                                    .format::<150>()?
+                                    .as_str(),
+                            )
+                            .build(),
+                        SubscribeTopic::builder()
+                            .topic_path(
+                                Topic::RegisterThingRejected(template_name, payload_format)
+                                    .format::<150>()?
+                                    .as_str(),
+                            )
+                            .build(),
+                    ])
                     .build(),
             )
             .await?;
@@ -281,7 +280,7 @@ impl FleetProvisioner {
     }
 
     async fn begin<'a, 'b, M: RawMutex>(
-        mqtt: &'b embedded_mqtt::MqttClient<'a, M>,
+        mqtt: &'b mqttrust::MqttClient<'a, M>,
         csr: Option<&str>,
         payload_format: PayloadFormat,
     ) -> Result<Subscription<'a, 'b, M, 2>, Error> {

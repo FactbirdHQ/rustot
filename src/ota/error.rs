@@ -21,7 +21,7 @@ pub enum OtaError {
         #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
         embedded_storage_async::nor_flash::NorFlashErrorKind,
     ),
-    Mqtt(embedded_mqtt::Error),
+    Mqtt(mqttrust::Error),
     Encoding,
     Pal,
     Timeout,
@@ -33,8 +33,8 @@ impl OtaError {
     }
 }
 
-impl From<embedded_mqtt::Error> for OtaError {
-    fn from(e: embedded_mqtt::Error) -> Self {
+impl From<mqttrust::Error> for OtaError {
+    fn from(e: mqttrust::Error) -> Self {
         Self::Mqtt(e)
     }
 }

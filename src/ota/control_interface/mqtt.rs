@@ -1,7 +1,7 @@
 use core::fmt::Write;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{DeferredPayload, EncodingError, Publish, QoS};
+use mqttrust::{DeferredPayload, EncodingError, Publish, QoS};
 
 use super::ControlInterface;
 use crate::jobs::data_types::JobStatus;
@@ -11,7 +11,7 @@ use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
 use crate::ota::ProgressState;
 
-impl<M: RawMutex> ControlInterface for embedded_mqtt::MqttClient<'_, M> {
+impl<M: RawMutex> ControlInterface for mqttrust::MqttClient<'_, M> {
     /// Check for next available OTA job from the job service by publishing a
     /// "get next job" message to the job service.
     async fn request_job(&self) -> Result<(), OtaError> {

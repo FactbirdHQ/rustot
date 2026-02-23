@@ -3,7 +3,7 @@ use core::ops::DerefMut;
 use core::str::FromStr;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{
+use mqttrust::{
     DeferredPayload, EncodingError, MqttClient, Publish, Subscribe, SubscribeTopic, Subscription,
 };
 
@@ -216,7 +216,7 @@ impl<'a, M: RawMutex> DataInterface for MqttClient<'a, M> {
                         )?
                         .as_str(),
                 )
-                // .qos(embedded_mqtt::QoS::AtMostOnce)
+                // .qos(mqttrust::QoS::AtMostOnce)
                 .payload(payload)
                 .build(),
         )

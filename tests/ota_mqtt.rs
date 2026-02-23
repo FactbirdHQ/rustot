@@ -8,8 +8,8 @@ use common::file_handler::{FileHandler, State as FileHandlerState};
 use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::transport::embedded_nal::NalTransport;
-use embedded_mqtt::{
+use mqttrust::transport::embedded_nal::NalTransport;
+use mqttrust::{
     Config, DomainBroker, Message, SliceBufferProvider, State, Subscribe, SubscribeTopic,
 };
 use serde::Deserialize;
@@ -98,8 +98,7 @@ async fn test_mqtt_ota() {
     let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
     // Create the MQTT stack
-    let broker =
-        DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
+    let broker = DomainBroker::<_, 128>::new_with_port(hostname, 8883, network).unwrap();
     let config = Config::builder()
         .client_id(thing_name.try_into().unwrap())
         .keepalive_interval(embassy_time::Duration::from_secs(50))
@@ -107,7 +106,7 @@ async fn test_mqtt_ota() {
 
     static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }>> = StaticCell::new();
     let state = STATE.init(State::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let (mut stack, client) = mqttrust::new(state, config);
 
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
 
@@ -142,7 +141,7 @@ async fn test_mqtt_ota() {
         let message = jobs_subscription.next_message().await.unwrap();
 
         if let Some(mut file_ctx) = handle_ota(message, &config) {
-            // Nested subscriptions are a problem for embedded-mqtt, so unsubscribe here
+            // Nested subscriptions are a problem for mqttrust, so unsubscribe here
             jobs_subscription.unsubscribe().await.unwrap();
 
             // We have an OTA job, leeeets go!

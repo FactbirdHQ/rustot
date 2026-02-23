@@ -12,8 +12,8 @@ use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
     mutex::Mutex,
 };
-use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 pub use error::Error;
+use mqttrust::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use serde::{de::DeserializeOwned, Serialize};
 
 use data_types::{
@@ -45,8 +45,8 @@ pub trait ShadowPatch: Default + Clone + Sized {
 }
 
 struct ShadowHandler<'a, 'm, M: RawMutex, S> {
-    mqtt: &'m embedded_mqtt::MqttClient<'a, M>,
-    subscription: Mutex<NoopRawMutex, Option<embedded_mqtt::Subscription<'a, 'm, M, 2>>>,
+    mqtt: &'m mqttrust::MqttClient<'a, M>,
+    subscription: Mutex<NoopRawMutex, Option<mqttrust::Subscription<'a, 'm, M, 2>>>,
     _shadow: PhantomData<S>,
 }
 
@@ -69,7 +69,11 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
                                 .topics(&[SubscribeTopic::builder()
                                     .topic_path(
                                         topics::Topic::UpdateDelta
-                                            .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
+                                            .format::<64>(
+                                                S::PREFIX,
+                                                self.mqtt.client_id(),
+                                                S::NAME,
+                                            )?
                                             .as_str(),
                                     )
                                     .build()])
@@ -148,7 +152,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
                 serde_json_core::to_slice(&request, buf)
-                    .map_err(|_| embedded_mqtt::EncodingError::BufferSize)
+                    .map_err(|_| mqttrust::EncodingError::BufferSize)
             },
             S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD,
         );
@@ -309,7 +313,7 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         &self,
         topic: topics::Topic,
         payload: impl ToPayload,
-    ) -> Result<embedded_mqtt::Subscription<'a, '_, M, 2>, Error> {
+    ) -> Result<mqttrust::Subscription<'a, '_, M, 2>, Error> {
         let (accepted, rejected) = match topic {
             Topic::Get => (Topic::GetAccepted, Topic::GetRejected),
             Topic::Update => (Topic::UpdateAccepted, Topic::UpdateRejected),
@@ -373,7 +377,7 @@ where
 {
     /// Instantiate a new shadow that will be automatically persisted to NVM
     /// based on the passed `DAO`.
-    pub fn new(mqtt: &'m embedded_mqtt::MqttClient<'a, M>, dao: D) -> Self {
+    pub fn new(mqtt: &'m mqttrust::MqttClient<'a, M>, dao: D) -> Self {
         let handler = ShadowHandler {
             mqtt,
             subscription: Mutex::new(None),
@@ -531,7 +535,7 @@ where
     M: RawMutex,
 {
     /// Instantiate a new non-persisted shadow
-    pub fn new(state: S, mqtt: &'m embedded_mqtt::MqttClient<'a, M>) -> Self {
+    pub fn new(state: S, mqtt: &'m mqttrust::MqttClient<'a, M>) -> Self {
         let handler = ShadowHandler {
             mqtt,
             subscription: Mutex::new(None),
