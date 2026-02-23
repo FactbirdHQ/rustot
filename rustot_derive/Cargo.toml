@@ -23,6 +23,5 @@ proc-macro2 = "1"
 proc-macro-crate = "3"
 
 [dev-dependencies]
-rustot = { path = ".." }
 serde = "1"
 heapless = "0.8"
