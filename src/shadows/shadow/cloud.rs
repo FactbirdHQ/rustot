@@ -3,7 +3,7 @@
 use core::ops::DerefMut;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embedded_mqtt::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
+use mqttrust::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::shadows::{
@@ -147,7 +147,7 @@ where
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
                 serde_json_core::to_slice(&request, buf)
-                    .map_err(|_| embedded_mqtt::EncodingError::BufferSize)
+                    .map_err(|_| mqttrust::EncodingError::BufferSize)
             },
             S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD,
         );
@@ -303,7 +303,7 @@ where
         &self,
         topic: Topic,
         payload: impl ToPayload,
-    ) -> Result<embedded_mqtt::Subscription<'a, 'm, M, 2>, Error> {
+    ) -> Result<mqttrust::Subscription<'a, 'm, M, 2>, Error> {
         let (accepted, rejected) = match topic {
             Topic::Get => (Topic::GetAccepted, Topic::GetRejected),
             Topic::Update => (Topic::UpdateAccepted, Topic::UpdateRejected),

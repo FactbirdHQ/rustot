@@ -82,9 +82,9 @@ pub struct Shadow<'a, 'm, S: ShadowRoot, M: RawMutex, K: StateStore<S>> {
     /// Reference to the StateStore (interior mutability).
     pub(crate) store: &'a K,
     /// Reference to the MQTT client for cloud communication.
-    pub(crate) mqtt: &'m embedded_mqtt::MqttClient<'a, M>,
+    pub(crate) mqtt: &'m mqttrust::MqttClient<'a, M>,
     /// Cached subscription for delta topic.
-    pub(crate) subscription: Mutex<NoopRawMutex, Option<embedded_mqtt::Subscription<'a, 'm, M, 2>>>,
+    pub(crate) subscription: Mutex<NoopRawMutex, Option<mqttrust::Subscription<'a, 'm, M, 2>>>,
     /// Marker for the shadow state type.
     _marker: PhantomData<S>,
 }
@@ -114,7 +114,7 @@ where
     /// shadow.load().await?;  // Loads from storage or initializes on first boot
     /// let state = shadow.state().await?;  // Get current state
     /// ```
-    pub fn new(store: &'a K, mqtt: &'m embedded_mqtt::MqttClient<'a, M>) -> Self {
+    pub fn new(store: &'a K, mqtt: &'m mqttrust::MqttClient<'a, M>) -> Self {
         Self {
             store,
             mqtt,

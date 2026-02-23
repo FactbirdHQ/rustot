@@ -7,8 +7,8 @@ use common::credentials;
 use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::transport::embedded_nal::NalTransport;
-use embedded_mqtt::{Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic};
+use mqttrust::transport::embedded_nal::NalTransport;
+use mqttrust::{Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic};
 use postcard::experimental::max_size::MaxSize;
 use rustot_derive::shadow_root;
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ pub struct TestShadow {
 
 /// Publish a desired state update to the cloud and wait for accepted response.
 async fn cloud_update_desired(
-    client: &embedded_mqtt::MqttClient<'_, NoopRawMutex>,
+    client: &mqttrust::MqttClient<'_, NoopRawMutex>,
     thing_name: &str,
     desired_json: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -90,7 +90,7 @@ async fn cloud_update_desired(
 
 /// Get the full shadow document from the cloud.
 async fn cloud_get_shadow(
-    client: &embedded_mqtt::MqttClient<'_, NoopRawMutex>,
+    client: &mqttrust::MqttClient<'_, NoopRawMutex>,
     thing_name: &str,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let get_accepted = format!("$aws/things/{}/shadow/name/state/get/accepted", thing_name);
@@ -161,8 +161,7 @@ async fn test_shadow_end_to_end() {
     static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
     let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
-    let broker =
-        DomainBroker::<_, 128>::new(format!("{}:8883", hostname).as_str(), network).unwrap();
+    let broker = DomainBroker::<_, 128>::new_with_port(hostname, 8883, network).unwrap();
     let config = Config::builder()
         .client_id(thing_name.try_into().unwrap())
         .keepalive_interval(embassy_time::Duration::from_secs(50))
@@ -170,7 +169,7 @@ async fn test_shadow_end_to_end() {
 
     static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 10 }>> = StaticCell::new();
     let state = STATE.init(State::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let (mut stack, client) = mqttrust::new(state, config);
 
     // =========================================================================
     // Test logic future
