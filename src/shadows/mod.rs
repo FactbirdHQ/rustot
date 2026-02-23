@@ -5,7 +5,7 @@ pub mod topics;
 
 pub use rustot_derive;
 
-use core::{marker::PhantomData, ops::DerefMut};
+use core::{future::Future, marker::PhantomData, ops::DerefMut};
 
 pub use data_types::Patch;
 use embassy_sync::{
@@ -50,7 +50,7 @@ struct ShadowHandler<'a, 'm, M: RawMutex, S> {
     _shadow: PhantomData<S>,
 }
 
-impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
+impl<'a, 'm, M: RawMutex, S: ShadowState> ShadowHandler<'a, 'm, M, S> {
     async fn handle_delta(&self) -> Result<Option<S::Delta>, Error> {
         // Loop to automatically retry on clean session
         loop {
@@ -296,13 +296,15 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
         }
     }
 
-    pub async fn create_shadow(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
+    pub fn create_shadow(
+        &self,
+    ) -> impl Future<Output = Result<DeltaState<S::Delta, S::Delta>, Error>> + '_ + use<'_, 'a, 'm, M, S>
+    {
         debug!(
             "[{:?}] Creating initial shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
-
-        self.update_shadow(None, Some(S::Reported::default())).await
+        self.update_shadow(None, Some(S::Reported::default()))
     }
 
     /// This function will subscribe to accepted and rejected topics and then do a publish.
@@ -616,8 +618,10 @@ where
         Ok(&self.state)
     }
 
-    pub async fn delete_shadow(&mut self) -> Result<(), Error> {
-        self.handler.delete_shadow().await
+    pub fn delete_shadow(
+        &mut self,
+    ) -> impl Future<Output = Result<(), Error>> + '_ + use<'_, 'a, 'm, S, M> {
+        self.handler.delete_shadow()
     }
 }
 
