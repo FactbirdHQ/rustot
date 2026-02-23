@@ -1,23 +1,21 @@
 use crate::jobs::data_types::JobStatus;
 
 use super::{
-    config::Config,
     encoding::{json::JobStatusReason, FileContext},
     error::OtaError,
+    ProgressState,
 };
 
 pub mod mqtt;
 
 // Interfaces required for OTA
 pub trait ControlInterface {
-    fn init(&self) -> Result<(), OtaError>;
-    fn request_job(&self) -> Result<(), OtaError>;
-    fn update_job_status(
+    async fn request_job(&self) -> Result<(), OtaError>;
+    async fn update_job_status(
         &self,
-        file_ctx: &mut FileContext,
-        config: &Config,
+        file_ctx: &FileContext,
+        progress: &mut ProgressState,
         status: JobStatus,
         reason: JobStatusReason,
     ) -> Result<(), OtaError>;
-    fn cleanup(&self) -> Result<(), OtaError>;
 }

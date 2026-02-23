@@ -1,24 +1,23 @@
+#![allow(async_fn_in_trait)]
+#![feature(type_alias_impl_trait)]
+
 mod common;
 
-use mqttrust::Mqtt;
-use mqttrust_core::{bbqueue::BBBuffer, EventLoop, MqttOptions, Notification, PublishNotification};
-
-use common::clock::SysClock;
-use common::network::{Network, TcpSocket};
-use native_tls::{Identity, TlsConnector, TlsStream};
-use p256::ecdsa::signature::Signer;
-use rustot::provisioning::{topics::Topic, Credentials, FleetProvisioner, Response};
-use std::net::TcpStream;
-use std::ops::DerefMut;
-
 use common::credentials;
-
-static mut Q: BBBuffer<{ 1024 * 10 }> = BBBuffer::new();
+use common::network::TlsNetwork;
+use ecdsa::Signature;
+use embassy_futures::select;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use mqttrust::{transport::embedded_nal::NalTransport, Config, DomainBroker, State};
+use p256::{ecdsa::signature::Signer, NistP256};
+use rustot::provisioning::{CredentialHandler, Credentials, Error, FleetProvisioner};
+use serde::{Deserialize, Serialize};
+use static_cell::StaticCell;
 
 pub struct OwnedCredentials {
-    certificate_id: String,
-    certificate_pem: String,
-    private_key: Option<String>,
+    pub certificate_id: String,
+    pub certificate_pem: String,
+    pub private_key: Option<String>,
 }
 
 impl<'a> From<Credentials<'a>> for OwnedCredentials {
@@ -31,102 +30,35 @@ impl<'a> From<Credentials<'a>> for OwnedCredentials {
     }
 }
 
-fn provision_credentials<'a, const L: usize>(
-    hostname: &'a str,
-    identity: Identity,
-    mqtt_eventloop: &mut EventLoop<'a, 'a, TcpSocket<TlsStream<TcpStream>>, SysClock, 1000, L>,
-    mqtt_client: &mqttrust_core::Client<L>,
-) -> Result<OwnedCredentials, ()> {
-    let template_name =
-        std::env::var("TEMPLATE_NAME").unwrap_or_else(|_| "duoProvisioningTemplate".to_string());
-
-    let connector = TlsConnector::builder()
-        .identity(identity)
-        .add_root_certificate(credentials::root_ca())
-        .build()
-        .unwrap();
-
-    let mut network = Network::new_tls(connector, String::from(hostname));
-
-    nb::block!(mqtt_eventloop.connect(&mut network))
-        .expect("To connect to MQTT with claim credentials");
-
-    log::info!("Successfully connected to broker with claim credentials");
-
-    #[cfg(not(feature = "provision_cbor"))]
-    let mut provisioner = FleetProvisioner::new(mqtt_client, &template_name);
-    #[cfg(feature = "provision_cbor")]
-    let mut provisioner = FleetProvisioner::new_cbor(mqtt_client, &template_name);
-
-    provisioner
-        .initialize()
-        .expect("Failed to initialize FleetProvisioner");
-
-    let mut provisioned_credentials: Option<OwnedCredentials> = None;
-
-    let signing_key = credentials::signing_key();
-    let signature = hex::encode(signing_key.sign(mqtt_client.client_id().as_bytes()));
-
-    let result = loop {
-        match mqtt_eventloop.yield_event(&mut network) {
-            Ok(Notification::Publish(mut publish)) if Topic::check(publish.topic_name.as_str()) => {
-                let PublishNotification {
-                    topic_name,
-                    payload,
-                    ..
-                } = publish.deref_mut();
-
-                match provisioner.handle_message::<4>(topic_name.as_str(), payload) {
-                    Ok(Some(Response::Credentials(credentials))) => {
-                        log::info!("Got credentials! {:?}", credentials);
-                        provisioned_credentials = Some(credentials.into());
-
-                        let mut parameters = heapless::LinearMap::new();
-                        parameters.insert("uuid", mqtt_client.client_id()).unwrap();
-                        parameters.insert("signature", &signature).unwrap();
-
-                        provisioner
-                            .register_thing::<2>(Some(parameters))
-                            .expect("To successfully publish to RegisterThing");
-                    }
-                    Ok(Some(Response::DeviceConfiguration(config))) => {
-                        // Store Device configuration parameters, if any.
-
-                        log::info!("Got device config! {:?}", config);
-
-                        break Ok(());
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        log::error!("Got provision error! {:?}", e);
-                        provisioned_credentials = None;
-
-                        break Err(());
-                    }
-                }
-            }
-            Ok(Notification::Suback(_)) => {
-                log::info!("Starting provisioning");
-                provisioner.begin().expect("To begin provisioning");
-            }
-            Ok(n) => {
-                log::trace!("{:?}", n);
-            }
-            _ => {}
-        }
-    };
-
-    // Disconnect from AWS IoT Core
-    mqtt_eventloop.disconnect(&mut network);
-
-    result.and_then(|_| provisioned_credentials.ok_or(()))
+pub struct CredentialDAO {
+    pub creds: Option<OwnedCredentials>,
 }
 
-#[test]
-fn test_provisioning() {
-    env_logger::init();
+impl CredentialHandler for CredentialDAO {
+    async fn store_credentials(&mut self, credentials: Credentials<'_>) -> Result<(), Error> {
+        log::info!("Provisioned credentials: {:#?}", credentials);
 
-    let (p, c) = unsafe { Q.try_split_framed().unwrap() };
+        self.creds.replace(credentials.into());
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct Parameters<'a> {
+    uuid: &'a str,
+    signature: &'a str,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct DeviceConfig {
+    #[serde(rename = "SoftwareId")]
+    software_id: heapless::String<64>,
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_provisioning() {
+    env_logger::init();
 
     log::info!("Starting provisioning test...");
 
@@ -134,17 +66,68 @@ fn test_provisioning() {
 
     // Connect to AWS IoT Core with provisioning claim credentials
     let hostname = credentials::HOSTNAME.unwrap();
+    let template_name =
+        std::env::var("TEMPLATE_NAME").unwrap_or_else(|_| "duoProvisioningTemplate".to_string());
 
-    let mut mqtt_eventloop = EventLoop::new(
-        c,
-        SysClock::new(),
-        MqttOptions::new(thing_name, hostname.into(), 8883).set_clean_session(true),
+    static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
+    let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), claim_identity));
+
+    // Create the MQTT stack
+    let broker = DomainBroker::<_, 128>::new_with_port(hostname, 8883, network).unwrap();
+    let config = Config::builder()
+        .client_id(thing_name.try_into().unwrap())
+        .keepalive_interval(embassy_time::Duration::from_secs(50))
+        .build();
+
+    static STATE: StaticCell<State<NoopRawMutex, 2048, 4096>> = StaticCell::new();
+    let state = STATE.init(State::new());
+    let (mut stack, client) = mqttrust::new(state, config);
+
+    let signing_key = credentials::signing_key();
+    let signature: Signature<NistP256> = signing_key.sign(thing_name.as_bytes());
+    let hex_signature: String = hex::encode(signature.to_bytes());
+
+    let parameters = Parameters {
+        uuid: thing_name,
+        signature: &hex_signature,
+    };
+
+    let mut credential_handler = CredentialDAO { creds: None };
+
+    #[cfg(not(feature = "provision_cbor"))]
+    let provision_fut = FleetProvisioner::provision::<DeviceConfig, NoopRawMutex>(
+        &client,
+        &template_name,
+        Some(parameters),
+        &mut credential_handler,
+    );
+    #[cfg(feature = "provision_cbor")]
+    let provision_fut = FleetProvisioner::provision_cbor::<DeviceConfig, NoopRawMutex>(
+        &client,
+        &template_name,
+        Some(parameters),
+        &mut credential_handler,
     );
 
-    let mqtt_client = mqttrust_core::Client::new(p, thing_name);
+    let mut transport = NalTransport::new(network, broker);
 
-    let credentials =
-        provision_credentials(hostname, claim_identity, &mut mqtt_eventloop, &mqtt_client).unwrap();
-
-    assert!(credentials.certificate_id.len() > 0);
+    let device_config = match embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(15),
+        select::select(stack.run(&mut transport), provision_fut),
+    )
+    .await
+    .unwrap()
+    {
+        select::Either::First(_) => {
+            unreachable!()
+        }
+        select::Either::Second(result) => result.unwrap(),
+    };
+    assert_eq!(
+        device_config,
+        Some(DeviceConfig {
+            software_id: heapless::String::try_from("82b3509e0e924e06ab1bdb1cf1625dcb").unwrap()
+        })
+    );
+    assert!(!credential_handler.creds.unwrap().certificate_id.is_empty());
 }

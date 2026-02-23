@@ -1,91 +1,156 @@
-use rustot::ota::pal::{OtaPal, OtaPalError, PalImageState};
-use std::fs::File;
-use std::io::{Cursor, Write};
+use core::ops::Deref;
+use embedded_storage_async::nor_flash::{ErrorType, NorFlash, ReadNorFlash};
+use rustot::ota::{
+    encoding::json,
+    pal::{OtaPal, OtaPalError, PalImageState},
+};
+use sha2::{Digest, Sha256};
+use std::{
+    convert::Infallible,
+    io::{Cursor, Write},
+};
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum State {
+    Swap,
+    Boot,
+}
+
+pub struct BlockFile {
+    filebuf: Cursor<Vec<u8>>,
+}
+
+impl NorFlash for BlockFile {
+    const WRITE_SIZE: usize = 1;
+
+    const ERASE_SIZE: usize = 1;
+
+    async fn erase(&mut self, _from: u32, _to: u32) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.filebuf.set_position(offset as u64);
+        self.filebuf.write_all(bytes).unwrap();
+        Ok(())
+    }
+}
+
+impl ReadNorFlash for BlockFile {
+    const READ_SIZE: usize = 1;
+
+    async fn read(&mut self, _offset: u32, _bytes: &mut [u8]) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn capacity(&self) -> usize {
+        self.filebuf.get_ref().capacity()
+    }
+}
+
+impl ErrorType for BlockFile {
+    type Error = Infallible;
+}
 
 pub struct FileHandler {
-    filebuf: Option<Cursor<Vec<u8>>>,
+    filebuf: Option<BlockFile>,
+    compare_file_path: String,
+    pub plateform_state: State,
 }
 
 impl FileHandler {
-    pub fn new() -> Self {
-        FileHandler { filebuf: None }
+    #[allow(dead_code)]
+    pub fn new(compare_file_path: String) -> Self {
+        FileHandler {
+            filebuf: None,
+            compare_file_path,
+            plateform_state: State::Boot,
+        }
     }
 }
 
 impl OtaPal for FileHandler {
-    type Error = ();
+    type BlockWriter = BlockFile;
 
-    fn abort(
+    async fn abort(
         &mut self,
         _file: &rustot::ota::encoding::FileContext,
-    ) -> Result<(), OtaPalError<Self::Error>> {
+    ) -> Result<(), OtaPalError> {
         Ok(())
     }
 
-    fn create_file_for_rx(
+    async fn create_file_for_rx(
         &mut self,
         file: &rustot::ota::encoding::FileContext,
-    ) -> Result<(), OtaPalError<Self::Error>> {
-        self.filebuf = Some(Cursor::new(Vec::with_capacity(file.filesize)));
-        Ok(())
+    ) -> Result<&mut Self::BlockWriter, OtaPalError> {
+        Ok(self.filebuf.get_or_insert(BlockFile {
+            filebuf: Cursor::new(Vec::with_capacity(file.filesize)),
+        }))
     }
 
-    fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError<Self::Error>> {
-        Ok(PalImageState::Valid)
+    async fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError> {
+        Ok(match self.plateform_state {
+            State::Swap => PalImageState::PendingCommit,
+            State::Boot => PalImageState::Valid,
+        })
     }
 
-    fn set_platform_image_state(
+    async fn set_platform_image_state(
         &mut self,
-        _image_state: rustot::ota::pal::ImageState<()>,
-    ) -> Result<(), OtaPalError<Self::Error>> {
+        image_state: rustot::ota::pal::ImageState,
+    ) -> Result<(), OtaPalError> {
+        if matches!(image_state, rustot::ota::pal::ImageState::Accepted) {
+            self.plateform_state = State::Boot;
+        }
+
         Ok(())
     }
 
-    fn reset_device(&mut self) -> Result<(), OtaPalError<Self::Error>> {
+    async fn reset_device(&mut self) -> Result<(), OtaPalError> {
         Ok(())
     }
 
-    fn close_file(
+    async fn close_file(
         &mut self,
         file: &rustot::ota::encoding::FileContext,
-    ) -> Result<(), OtaPalError<Self::Error>> {
+    ) -> Result<(), OtaPalError> {
         if let Some(ref mut buf) = &mut self.filebuf {
             log::debug!(
                 "Closing completed file. Len: {}/{} -> {}",
-                buf.get_ref().len(),
+                buf.filebuf.get_ref().len(),
                 file.filesize,
                 file.filepath.as_str()
             );
-            let mut file =
-                File::create(file.filepath.as_str()).map_err(|_| OtaPalError::FileWriteFailed)?;
-            file.write_all(buf.get_ref())
-                .map_err(|_| OtaPalError::FileWriteFailed)?;
+
+            let expected_data = std::fs::read(self.compare_file_path.as_str()).unwrap();
+            let mut expected_hasher = <Sha256 as Digest>::new();
+            expected_hasher.update(&expected_data);
+            let expected_hash = expected_hasher.finalize();
+
+            log::info!(
+                "Comparing {:?} with {:?}",
+                self.compare_file_path,
+                file.filepath.as_str()
+            );
+            assert_eq!(buf.filebuf.get_ref().len(), file.filesize);
+
+            let mut hasher = <Sha256 as Digest>::new();
+            hasher.update(buf.filebuf.get_ref());
+            assert_eq!(hasher.finalize().deref(), expected_hash.deref());
+
+            // Check file signature
+            let signature = match file.signature.as_ref() {
+                Some(json::Signature::Sha256Ecdsa(ref s)) => s.as_str(),
+                sig => panic!("Unexpected signature format! {:?}", sig),
+            };
+
+            assert_eq!(signature, "This is my custom signature\\n");
+
+            self.plateform_state = State::Swap;
 
             Ok(())
         } else {
             Err(OtaPalError::BadFileHandle)
         }
-    }
-
-    fn write_block(
-        &mut self,
-        _file: &rustot::ota::encoding::FileContext,
-        block_offset: usize,
-        block_payload: &[u8],
-    ) -> Result<usize, OtaPalError<Self::Error>> {
-        if let Some(ref mut buf) = &mut self.filebuf {
-            buf.set_position(block_offset as u64);
-            buf.write(block_payload)
-                .map_err(|_e| OtaPalError::FileWriteFailed)?;
-            Ok(block_payload.len())
-        } else {
-            Err(OtaPalError::BadFileHandle)
-        }
-    }
-
-    fn get_active_firmware_version(
-        &self,
-    ) -> Result<rustot::ota::pal::Version, OtaPalError<Self::Error>> {
-        Ok(rustot::ota::pal::Version::new(0, 1, 0))
     }
 }

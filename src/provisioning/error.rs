@@ -1,18 +1,15 @@
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+
 pub enum Error {
     Overflow,
     InvalidPayload,
     InvalidState,
-    Mqtt(mqttrust::MqttError),
-    DeserializeJson(serde_json_core::de::Error),
+    Mqtt(mqttrust::Error),
+    DeserializeJson(#[cfg_attr(feature = "defmt", defmt(Debug2Format))] serde_json_core::de::Error),
     DeserializeCbor,
+    CertificateStorage,
     Response(u16),
-}
-
-impl From<mqttrust::MqttError> for Error {
-    fn from(e: mqttrust::MqttError) -> Self {
-        Self::Mqtt(e)
-    }
 }
 
 impl From<serde_json_core::ser::Error> for Error {
@@ -33,8 +30,8 @@ impl From<minicbor_serde::error::DecodeError> for Error {
     }
 }
 
-impl<E> From<minicbor_serde::error::EncodeError<E>> for Error {
-    fn from(_: minicbor_serde::error::EncodeError<E>) -> Self {
-        Self::Overflow
+impl From<mqttrust::Error> for Error {
+    fn from(e: mqttrust::Error) -> Self {
+        Self::Mqtt(e)
     }
 }

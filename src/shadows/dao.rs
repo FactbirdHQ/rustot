@@ -2,53 +2,23 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use super::{Error, ShadowState};
 
-pub trait ShadowDAO<S: Serialize + DeserializeOwned> {
-    fn read(&mut self) -> Result<S, Error>;
-    fn write(&mut self, state: &S) -> Result<(), Error>;
+pub trait ShadowDAO<S: ShadowState + Serialize + DeserializeOwned> {
+    async fn read(&mut self) -> Result<S, Error>;
+    async fn write(&mut self, state: &S) -> Result<(), Error>;
 }
 
-impl<S: Serialize + DeserializeOwned> ShadowDAO<S> for () {
-    fn read(&mut self) -> Result<S, Error> {
-        Err(Error::NoPersistence)
-    }
+const U32_SIZE: usize = 4;
 
-    fn write(&mut self, _state: &S) -> Result<(), Error> {
-        Err(Error::NoPersistence)
-    }
-}
-
-pub struct EmbeddedStorageDAO<T: embedded_storage::Storage, const OFFSET: u32>(T);
-
-impl<T, const OFFSET: u32> From<T> for EmbeddedStorageDAO<T, OFFSET>
+impl<S, T> ShadowDAO<S> for T
 where
-    T: embedded_storage::Storage,
-{
-    fn from(v: T) -> Self {
-        Self::new(v)
-    }
-}
-
-impl<T, const OFFSET: u32> EmbeddedStorageDAO<T, OFFSET>
-where
-    T: embedded_storage::Storage,
-{
-    pub fn new(storage: T) -> Self {
-        Self(storage)
-    }
-}
-
-const U32_SIZE: usize = core::mem::size_of::<u32>();
-
-impl<S, T, const OFFSET: u32> ShadowDAO<S> for EmbeddedStorageDAO<T, OFFSET>
-where
-    S: ShadowState + DeserializeOwned,
-    T: embedded_storage::Storage,
+    S: ShadowState + Serialize + DeserializeOwned,
+    T: embedded_storage_async::nor_flash::NorFlash,
     [(); S::MAX_PAYLOAD_SIZE + U32_SIZE]:,
 {
-    fn read(&mut self) -> Result<S, Error> {
+    async fn read(&mut self) -> Result<S, Error> {
         let buf = &mut [0u8; S::MAX_PAYLOAD_SIZE + U32_SIZE];
 
-        self.0.read(OFFSET, buf).map_err(|_| Error::DaoRead)?;
+        self.read(0, buf).await.map_err(|_| Error::DaoRead)?;
 
         match buf[..U32_SIZE].try_into() {
             Ok(len_bytes) => {
@@ -58,7 +28,7 @@ where
                 }
 
                 Ok(
-                    minicbor_serde::from_slice::<S>(&mut buf[U32_SIZE..len as usize + U32_SIZE])
+                    minicbor_serde::from_slice(&buf[U32_SIZE..len as usize + U32_SIZE])
                         .map_err(|_| Error::InvalidPayload)?,
                 )
             }
@@ -66,8 +36,8 @@ where
         }
     }
 
-    fn write(&mut self, state: &S) -> Result<(), Error> {
-        assert!(S::MAX_PAYLOAD_SIZE <= self.0.capacity() - OFFSET as usize);
+    async fn write(&mut self, state: &S) -> Result<(), Error> {
+        assert!(S::MAX_PAYLOAD_SIZE <= self.capacity());
 
         let buf = &mut [0u8; S::MAX_PAYLOAD_SIZE + U32_SIZE];
 
@@ -78,6 +48,7 @@ where
         state
             .serialize(&mut serializer)
             .map_err(|_| Error::InvalidPayload)?;
+
         let len = serializer.into_encoder().writer().position();
 
         if len > S::MAX_PAYLOAD_SIZE {
@@ -86,11 +57,11 @@ where
 
         buf[..U32_SIZE].copy_from_slice(&(len as u32).to_le_bytes());
 
-        self.0
-            .write(OFFSET, &buf[..len + U32_SIZE])
+        self.write(0, &buf[..len + U32_SIZE])
+            .await
             .map_err(|_| Error::DaoWrite)?;
 
-        debug!("Wrote {} bytes to DAO @ {}", len + U32_SIZE, OFFSET);
+        debug!("Wrote {} bytes to DAO", len + U32_SIZE);
 
         Ok(())
     }
@@ -122,11 +93,11 @@ where
 #[cfg(any(feature = "std", test))]
 impl<S, T> ShadowDAO<S> for StdIODAO<T>
 where
-    S: ShadowState + DeserializeOwned,
+    S: ShadowState + Serialize + DeserializeOwned,
     T: std::io::Write + std::io::Read,
     [(); S::MAX_PAYLOAD_SIZE]:,
 {
-    fn read(&mut self) -> Result<S, Error> {
+    async fn read(&mut self) -> Result<S, Error> {
         let bytes = &mut [0u8; S::MAX_PAYLOAD_SIZE];
 
         self.0.read(bytes).map_err(|_| Error::DaoRead)?;
@@ -134,7 +105,7 @@ where
         Ok(shadow)
     }
 
-    fn write(&mut self, state: &S) -> Result<(), Error> {
+    async fn write(&mut self, state: &S) -> Result<(), Error> {
         let bytes = serde_json_core::to_vec::<_, { S::MAX_PAYLOAD_SIZE }>(state)
             .map_err(|_| Error::Overflow)?;
 

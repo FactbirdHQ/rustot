@@ -32,7 +32,8 @@ pub struct FileDescription<'a> {
     #[serde(rename = "fileid")]
     pub fileid: u8,
     #[serde(rename = "certfile")]
-    pub certfile: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certfile: Option<&'a str>,
     #[serde(rename = "update_data_url")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_data_url: Option<&'a str>,
@@ -58,21 +59,27 @@ pub struct FileDescription<'a> {
     pub file_type: Option<u32>,
 }
 
-impl<'a> FileDescription<'a> {
-    pub fn signature(&self) -> Signature {
+impl FileDescription<'_> {
+    pub fn signature(&self) -> Option<Signature> {
         if let Some(sig) = self.sha1_rsa {
-            return Signature::Sha1Rsa(heapless::String::from(sig));
+            return Some(Signature::Sha1Rsa(heapless::String::try_from(sig).unwrap()));
         }
         if let Some(sig) = self.sha256_rsa {
-            return Signature::Sha256Rsa(heapless::String::from(sig));
+            return Some(Signature::Sha256Rsa(
+                heapless::String::try_from(sig).unwrap(),
+            ));
         }
         if let Some(sig) = self.sha1_ecdsa {
-            return Signature::Sha1Ecdsa(heapless::String::from(sig));
+            return Some(Signature::Sha1Ecdsa(
+                heapless::String::try_from(sig).unwrap(),
+            ));
         }
         if let Some(sig) = self.sha256_ecdsa {
-            return Signature::Sha256Ecdsa(heapless::String::from(sig));
+            return Some(Signature::Sha256Ecdsa(
+                heapless::String::try_from(sig).unwrap(),
+            ));
         }
-        unreachable!()
+        None
     }
 }
 
@@ -132,6 +139,7 @@ mod tests {
             (JobStatusReason::Accepted, "accepted"),
             (JobStatusReason::Rejected, "rejected"),
             (JobStatusReason::Aborted, "aborted"),
+            (JobStatusReason::Pal(123), "pal err"),
         ];
 
         for (reason, exp) in reasons {
@@ -146,5 +154,29 @@ mod tests {
                 format!("{{\"self_test\":\"{}\"}}", exp).as_str()
             );
         }
+    }
+
+    #[test]
+    fn deserializ() {
+        let data = r#"{
+            "protocols": [
+            "MQTT"
+            ],
+            "streamname": "AFR_OTA-d11032e9-38d5-4dca-8c7c-1e6f24533ede",
+            "files": [
+            {
+                "filepath": "3.8.4",
+                "filesize": 537600,
+                "fileid": 0,
+                "certfile": null,
+                "fileType": 0,
+                "update_data_url": null,
+                "auth_scheme": null,
+                "sig--": null
+            }
+            ]
+        }"#;
+
+        serde_json_core::from_str::<OtaJob>(data).unwrap();
     }
 }

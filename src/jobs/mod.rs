@@ -102,14 +102,13 @@ pub mod describe;
 pub mod get_pending;
 pub mod start_next;
 pub mod subscribe;
-pub mod unsubscribe;
 pub mod update;
 
 use core::fmt::Write;
 
 use self::{
     data_types::JobStatus, describe::Describe, get_pending::GetPending, start_next::StartNext,
-    subscribe::Subscribe, unsubscribe::Unsubscribe, update::Update,
+    update::Update,
 };
 pub use subscribe::Topic;
 
@@ -124,17 +123,11 @@ pub const MAX_RUNNING_JOBS: usize = 1;
 pub type StatusDetails<'a> = heapless::LinearMap<&'a str, &'a str, 4>;
 pub type StatusDetailsOwned = heapless::LinearMap<heapless::String<15>, heapless::String<11>, 4>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobError {
     Overflow,
     Encoding,
-    Mqtt(mqttrust::MqttError),
-}
-
-impl From<mqttrust::MqttError> for JobError {
-    fn from(e: mqttrust::MqttError) -> Self {
-        Self::Mqtt(e)
-    }
+    Mqtt(mqttrust::Error),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -269,15 +262,7 @@ impl Jobs {
         Describe::new()
     }
 
-    pub fn update(job_id: &str, status: JobStatus) -> Update {
-        Update::new(job_id, status)
-    }
-
-    pub fn subscribe<'a, const N: usize>() -> Subscribe<'a, N> {
-        Subscribe::new()
-    }
-
-    pub fn unsubscribe<'a, const N: usize>() -> Unsubscribe<'a, N> {
-        Unsubscribe::new()
+    pub fn update<'a>(status: JobStatus) -> Update<'a> {
+        Update::new(status)
     }
 }

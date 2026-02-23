@@ -1,101 +1,195 @@
 use core::fmt::Write;
 
-use mqttrust::QoS;
+use embassy_sync::blocking_mutex::raw::RawMutex;
+use mqttrust::{DeferredPayload, EncodingError, Publish, QoS};
 
 use super::ControlInterface;
 use crate::jobs::data_types::JobStatus;
-use crate::jobs::subscribe::Topic;
-use crate::jobs::Jobs;
-use crate::ota::config::Config;
+use crate::jobs::{JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
+use crate::ota::ProgressState;
 
-impl<T: mqttrust::Mqtt> ControlInterface for T {
-    /// Initialize the control interface by subscribing to the OTA job
-    /// notification topics.
-    fn init(&self) -> Result<(), OtaError> {
-        Jobs::subscribe::<1>()
-            .topic(Topic::NotifyNext, QoS::AtLeastOnce)
-            .send(self)?;
-        Ok(())
-    }
-
+impl<M: RawMutex> ControlInterface for mqttrust::MqttClient<'_, M> {
     /// Check for next available OTA job from the job service by publishing a
     /// "get next job" message to the job service.
-    fn request_job(&self) -> Result<(), OtaError> {
-        Jobs::describe().send(self, QoS::AtLeastOnce)?;
+    async fn request_job(&self) -> Result<(), OtaError> {
+        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
+        let mut buf = [0u8; 512];
+        let (topic, payload_len) = Jobs::describe().topic_payload(self.client_id(), &mut buf)?;
+
+        self.publish(
+            Publish::builder()
+                .topic_name(&topic)
+                .payload(&buf[..payload_len])
+                .build(),
+        )
+        .await?;
 
         Ok(())
     }
 
-    /// Update the job status on the service side with progress or completion
-    /// info
-    fn update_job_status(
+    /// Update the job status on the service side.
+    ///
+    /// Returns a Result indicating success or an error,
+    /// along with an Option containing the updated status details
+    /// if they were modified.
+    async fn update_job_status(
         &self,
-        file_ctx: &mut FileContext,
-        config: &Config,
+        file_ctx: &FileContext,
+        progress_state: &mut ProgressState,
         status: JobStatus,
         reason: JobStatusReason,
     ) -> Result<(), OtaError> {
-        file_ctx
+        // Update the status details within this function.
+        progress_state
             .status_details
             .insert(
-                heapless::String::from("self_test"),
-                heapless::String::from(reason.as_str()),
+                heapless::String::try_from("self_test").unwrap(),
+                heapless::String::try_from(reason.as_str()).unwrap(),
             )
             .map_err(|_| OtaError::Overflow)?;
 
-        let mut qos = QoS::AtLeastOnce;
+        let qos = QoS::AtLeastOnce;
 
-        if let (JobStatus::InProgress, _) | (JobStatus::Succeeded, _) = (status, reason) {
-            let total_blocks =
-                ((file_ctx.filesize + config.block_size - 1) / config.block_size) as u32;
-            let received_blocks = total_blocks - file_ctx.blocks_remaining as u32;
-
-            // Output a status update once in a while. Always update first and
-            // last status
-            if file_ctx.blocks_remaining != 0
-                && received_blocks != 0
-                && received_blocks % config.status_update_frequency != 0
-            {
-                return Ok(());
-            }
+        if let JobStatus::InProgress | JobStatus::Succeeded = status {
+            let received_blocks = progress_state.total_blocks - progress_state.blocks_remaining;
 
             // Don't override the progress on succeeded, nor on self-test
-            // active. (Cases where progess counter is lost due to device
+            // active. (Cases where progress counter is lost due to device
             // restarts)
             if status != JobStatus::Succeeded && reason != JobStatusReason::SelfTestActive {
                 let mut progress = heapless::String::new();
                 progress
-                    .write_fmt(format_args!("{}/{}", received_blocks, total_blocks))
+                    .write_fmt(format_args!(
+                        "{}/{}",
+                        received_blocks, progress_state.total_blocks
+                    ))
                     .map_err(|_| OtaError::Overflow)?;
 
-                file_ctx
+                progress_state
                     .status_details
-                    .insert(heapless::String::from("progress"), progress)
+                    .insert(heapless::String::try_from("progress").unwrap(), progress)
                     .map_err(|_| OtaError::Overflow)?;
             }
 
             // Downgrade progress updates to QOS 0 to avoid overloading MQTT
-            // buffers during active streaming
-            if status == JobStatus::InProgress {
-                qos = QoS::AtMostOnce;
-            }
+            // buffers during active streaming. But make sure to always send and await ack for first update and last update
+            // if status == JobStatus::InProgress
+            //     && progress_state.blocks_remaining != 0
+            //     && received_blocks != 0
+            // {
+            //     qos = QoS::AtMostOnce;
+            // }
         }
 
-        Jobs::update(file_ctx.job_name.as_str(), status)
-            .status_details(&file_ctx.status_details)
-            .send(self, qos)?;
+        // let mut sub = self
+        //     .subscribe::<2>(
+        //         Subscribe::builder()
+        //             .topics(&[
+        //                 SubscribeTopic::builder()
+        //                     .topic_path(
+        //                         JobTopic::UpdateAccepted(file_ctx.job_name.as_str())
+        //                             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
+        //                                 self.client_id(),
+        //                             )?
+        //                             .as_str(),
+        //                     )
+        //                     .build(),
+        //                 SubscribeTopic::builder()
+        //                     .topic_path(
+        //                         JobTopic::UpdateRejected(file_ctx.job_name.as_str())
+        //                             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
+        //                                 self.client_id(),
+        //                             )?
+        //                             .as_str(),
+        //                     )
+        //                     .build(),
+        //             ])
+        //             .build(),
+        //     )
+        //     .await?;
+
+        let topic = JobTopic::Update(file_ctx.job_name.as_str())
+            .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.client_id())?;
+        let payload = DeferredPayload::new(
+            |buf| {
+                Jobs::update(status)
+                    .client_token(self.client_id())
+                    .status_details(&progress_state.status_details)
+                    .payload(buf)
+                    .map_err(|_| EncodingError::BufferSize)
+            },
+            512,
+        );
+
+        debug!("Updating job status! {:?}", status);
+
+        self.publish(
+            Publish::builder()
+                .qos(qos)
+                .topic_name(&topic)
+                .payload(payload)
+                .build(),
+        )
+        .await?;
 
         Ok(())
-    }
 
-    /// Perform any cleanup operations required for control plane
-    fn cleanup(&self) -> Result<(), OtaError> {
-        Jobs::unsubscribe::<1>()
-            .topic(Topic::NotifyNext)
-            .send(self)?;
-        Ok(())
+        // loop {
+        //     let message = match with_timeout(
+        //         embassy_time::Duration::from_secs(1),
+        //         sub.next_message(),
+        //     )
+        //     .await
+        //     {
+        //         Ok(res) => res.ok_or(JobError::Encoding)?,
+        //         Err(_) => return Err(OtaError::Timeout),
+        //     };
+
+        //     // Check if topic is GetAccepted
+        //     match crate::jobs::Topic::from_str(message.topic_name()) {
+        //         Some(crate::jobs::Topic::UpdateAccepted(_)) => {
+        //             // Check client token
+        //             let (response, _) = serde_json_core::from_slice::<
+        //                 UpdateJobExecutionResponse<encoding::json::OtaJob<'_>>,
+        //             >(message.payload())
+        //             .map_err(|_| JobError::Encoding)?;
+
+        //             if response.client_token != Some(self.client_id()) {
+        //                 error!(
+        //                     "Unexpected client token received: {}, expected: {}",
+        //                     response.client_token.unwrap_or("None"),
+        //                     self.client_id()
+        //                 );
+        //                 continue;
+        //             }
+
+        //             return Ok(());
+        //         }
+        //         Some(crate::jobs::Topic::UpdateRejected(_)) => {
+        //             let (error_response, _) =
+        //                 serde_json_core::from_slice::<ErrorResponse>(message.payload())
+        //                     .map_err(|_| JobError::Encoding)?;
+
+        //             if error_response.client_token != Some(self.client_id()) {
+        //                 error!(
+        //                     "Unexpected client token received: {}, expected: {}",
+        //                     error_response.client_token.unwrap_or("None"),
+        //                     self.client_id()
+        //                 );
+        //                 continue;
+        //             }
+
+        //             error!("OTA Update rejected: {:?}", error_response.message);
+
+        //             return Err(OtaError::UpdateRejected(error_response.code));
+        //         }
+        //         _ => {
+        //             error!("Expected Topic name GetRejected or GetAccepted but got something else");
+        //         }
+        //     }
+        // }
     }
 }

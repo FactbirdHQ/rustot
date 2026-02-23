@@ -1,4 +1,3 @@
-use mqttrust::{Mqtt, QoS};
 use serde::Serialize;
 
 use crate::jobs::JobTopic;
@@ -79,18 +78,22 @@ impl<'a> Describe<'a> {
     pub fn topic_payload(
         self,
         client_id: &str,
+        buf: &mut [u8],
     ) -> Result<
         (
             heapless::String<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 22 }>,
-            heapless::Vec<u8, { MAX_CLIENT_TOKEN_LEN + 2 }>,
+            usize,
         ),
         JobError,
     > {
-        let payload = serde_json_core::to_vec(&DescribeJobExecutionRequest {
-            execution_number: self.execution_number,
-            include_job_document: self.include_job_document.then(|| true),
-            client_token: self.client_token,
-        })
+        let payload_len = serde_json_core::to_slice(
+            &DescribeJobExecutionRequest {
+                execution_number: self.execution_number,
+                include_job_document: self.include_job_document.then_some(true),
+                client_token: self.client_token,
+            },
+            buf,
+        )
         .map_err(|_| JobError::Encoding)?;
 
         Ok((
@@ -98,16 +101,8 @@ impl<'a> Describe<'a> {
                 .map(JobTopic::Get)
                 .unwrap_or(JobTopic::GetNext)
                 .format(client_id)?,
-            payload,
+            payload_len,
         ))
-    }
-
-    pub fn send<M: Mqtt>(self, mqtt: &M, qos: QoS) -> Result<(), JobError> {
-        let (topic, payload) = self.topic_payload(mqtt.client_id())?;
-
-        mqtt.publish(topic.as_str(), &payload, qos)?;
-
-        Ok(())
     }
 }
 
@@ -131,15 +126,16 @@ mod test {
 
     #[test]
     fn topic_payload() {
-        let (topic, payload) = Describe::new()
+        let mut buf = [0u8; 512];
+        let (topic, payload_len) = Describe::new()
             .include_job_document()
             .execution_number(1)
             .client_token("test_client:token")
-            .topic_payload("test_client")
+            .topic_payload("test_client", &mut buf)
             .unwrap();
 
         assert_eq!(
-            payload,
+            &buf[..payload_len],
             br#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
         );
 
@@ -148,16 +144,17 @@ mod test {
 
     #[test]
     fn topic_job_id() {
-        let (topic, payload) = Describe::new()
+        let mut buf = [0u8; 512];
+        let (topic, payload_len) = Describe::new()
             .include_job_document()
             .execution_number(1)
             .job_id("test_job_id")
             .client_token("test_client:token")
-            .topic_payload("test_client")
+            .topic_payload("test_client", &mut buf)
             .unwrap();
 
         assert_eq!(
-            payload,
+            &buf[..payload_len],
             br#"{"executionNumber":1,"includeJobDocument":true,"clientToken":"test_client:token"}"#
         );
 

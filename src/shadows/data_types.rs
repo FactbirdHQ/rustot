@@ -1,17 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Patch<T> {
-    #[serde(rename = "unset")]
+    #[default]
     Unset,
-    #[serde(rename = "set")]
     Set(T),
-}
-
-impl<T> Default for Patch<T> {
-    fn default() -> Self {
-        Self::Unset
-    }
 }
 
 impl<T> Clone for Patch<T>
@@ -32,22 +26,21 @@ impl<T> From<T> for Patch<T> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct State<T> {
-    #[serde(rename = "desired")]
-    pub desired: Option<T>,
-    #[serde(rename = "reported")]
-    pub reported: Option<T>,
+#[derive(Serialize)]
+pub struct RequestState<D, R> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desired: Option<D>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported: Option<R>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeltaState<T> {
-    #[serde(rename = "desired")]
-    pub desired: Option<T>,
-    #[serde(rename = "reported")]
-    pub reported: Option<T>,
-    #[serde(rename = "delta")]
-    pub delta: Option<T>,
+#[derive(Deserialize)]
+pub struct DeltaState<D, R> {
+    pub desired: Option<D>,
+
+    pub reported: Option<R>,
+
+    pub delta: Option<D>,
 }
 
 /// A request state document has the following format:
@@ -61,13 +54,15 @@ pub struct DeltaState<T> {
 ///   response by the client token.
 /// - **version** — If used, the Device Shadow service processes the update only
 ///   if the specified version matches the latest version it has.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(default)]
-pub struct Request<'a, T> {
-    pub state: State<T>,
+pub struct Request<'a, D, R> {
+    pub state: RequestState<D, R>,
+
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_token: Option<&'a str>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<i64>,
 }
@@ -92,13 +87,16 @@ pub struct Request<'a, T> {
 /// - **version** — The current version of the document for the device's shadow
 ///   shared in AWS IoT. It is increased by one over the previous version of the
 ///   document.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AcceptedResponse<'a, T> {
-    pub state: DeltaState<T>,
+#[derive(Deserialize)]
+pub struct AcceptedResponse<'a, D, R> {
+    pub state: DeltaState<D, R>,
+    // pub metadata: Metadata<>.
     pub timestamp: u64,
+
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_token: Option<&'a str>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<i64>,
 }
@@ -115,9 +113,10 @@ pub struct AcceptedResponse<'a, T> {
 /// - **version** — The current version of the document for the device's shadow
 ///   shared in AWS IoT. It is increased by one over the previous version of the
 ///   document.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeltaResponse<'a, T> {
-    pub state: Option<T>,
+#[derive(Deserialize)]
+pub struct DeltaResponse<'a, U> {
+    pub state: Option<U>,
+    // pub metadata: Metadata<>.
     pub timestamp: u64,
     #[serde(rename = "clientToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -172,7 +171,7 @@ mod tests {
         exp_map
             .0
             .insert(
-                heapless::String::from("1"),
+                heapless::String::try_from("1").unwrap(),
                 Patch::Set(Test { field: true }),
             )
             .unwrap();
@@ -189,7 +188,7 @@ mod tests {
         exp_map
             .0
             .insert(
-                heapless::String::from("1"),
+                heapless::String::try_from("1").unwrap(),
                 Patch::Set(Test { field: true }),
             )
             .unwrap();
@@ -215,7 +214,7 @@ mod tests {
         let mut exp_map = TestMap(heapless::LinearMap::default());
         exp_map
             .0
-            .insert(heapless::String::from("1"), Patch::Unset)
+            .insert(heapless::String::try_from("1").unwrap(), Patch::Unset)
             .unwrap();
 
         let (patch, _) = serde_json_core::from_str::<TestMap>(payload).unwrap();
