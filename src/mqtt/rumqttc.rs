@@ -1,7 +1,7 @@
 //! Implementation of MQTT traits for `rumqttc`.
 //!
 //! This module provides an std/tokio-based MQTT client using `rumqttc`.
-//! Unlike embedded-mqtt, rumqttc separates sending (AsyncClient) from
+//! Unlike mqttrust, rumqttc separates sending (AsyncClient) from
 //! receiving (EventLoop), requiring a wrapper that manages message routing.
 
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ use crate::mqtt::{MqttMessage, MqttSubscription, PublishOptions, QoS, ToPayload}
 
 /// Wrapper around rumqttc providing our [`MqttClient`](crate::mqtt::MqttClient) trait.
 ///
-/// Unlike embedded-mqtt, rumqttc separates sending (AsyncClient) from
+/// Unlike mqttrust, rumqttc separates sending (AsyncClient) from
 /// receiving (EventLoop). This wrapper:
 /// 1. Spawns a task to poll the EventLoop
 /// 2. Routes incoming messages to subscriptions via channels
@@ -224,7 +224,7 @@ impl<const N: usize> MqttSubscription for RumqttcSubscription<N> {
     }
 }
 
-/// Message wrapper for rumqttc (owns data, unlike embedded-mqtt which borrows).
+/// Message wrapper for rumqttc (owns data, unlike mqttrust which borrows).
 pub struct RumqttcMessage {
     topic: String,
     payload: Vec<u8>,

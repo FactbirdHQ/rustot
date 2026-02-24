@@ -58,11 +58,8 @@ where
                 debug!("Subscribing to delta topic");
                 self.mqtt.wait_connected().await;
 
-                let topic = Topic::UpdateDelta.format::<64>(
-                    S::PREFIX,
-                    self.mqtt.client_id(),
-                    S::NAME,
-                )?;
+                let topic =
+                    Topic::UpdateDelta.format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
 
                 let sub = self
                     .mqtt
@@ -89,10 +86,9 @@ where
                         );
 
                         let mut buf = [0u8; 64];
-                        let parsed = serde_json_core::from_slice_escaped::<
-                            DeltaResponse<S::Delta>,
-                        >(
-                            delta_message.payload(), &mut buf
+                        let parsed = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
+                            delta_message.payload(),
+                            &mut buf,
                         );
 
                         Some(

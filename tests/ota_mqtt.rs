@@ -117,7 +117,7 @@ async fn test_mqtt_ota() {
 
     let ota_fut = async {
         let mut jobs_subscription = client
-            .subscribe(
+            .subscribe::<2>(
                 Subscribe::builder()
                     .topics(&[
                         SubscribeTopic::builder()

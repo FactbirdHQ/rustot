@@ -1,7 +1,7 @@
 //! MQTT abstraction traits for AWS IoT services.
 //!
 //! This module provides a unified MQTT interface compatible with:
-//! - `embedded-mqtt` (no_std/embassy) - zero-copy, no allocation
+//! - `mqttrust` (no_std/embassy) - zero-copy, no allocation
 //! - `rumqttc` (std/tokio) - standard library with tokio
 //! - `greengrass-ipc-rust` (std/tokio) - AWS Greengrass IPC
 //!
@@ -15,7 +15,7 @@
 use core::fmt::Debug;
 use core::future::Future;
 
-mod embedded;
+mod mqttrust;
 
 #[cfg(feature = "rumqttc")]
 mod rumqttc;
@@ -26,7 +26,7 @@ mod greengrass;
 #[cfg(test)]
 pub mod mock;
 
-pub use embedded::*;
+pub use self::mqttrust::*;
 
 #[cfg(feature = "rumqttc")]
 pub use self::rumqttc::*;
