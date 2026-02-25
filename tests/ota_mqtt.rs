@@ -316,7 +316,7 @@ async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
 
     static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 20 }>> = StaticCell::new();
     let state = STATE.init(State::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let (mut stack, client) = mqttrust::new(state, config);
 
     // Configure file handler to fail with SignatureCheckFailed
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned())
