@@ -1,5 +1,3 @@
-use core::fmt::Write;
-
 use super::ControlInterface;
 use crate::jobs::data_types::JobStatus;
 use crate::jobs::{JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
@@ -7,6 +5,7 @@ use crate::mqtt::{Mqtt, MqttClient, PublishOptions, QoS};
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
+use crate::ota::status_details::StatusDetailsExt;
 use crate::ota::ProgressState;
 
 impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
@@ -23,80 +22,57 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
     }
 
     /// Update the job status on the service side.
-    async fn update_job_status(
+    async fn update_job_status<E: StatusDetailsExt>(
         &self,
         file_ctx: &FileContext,
-        progress_state: &mut ProgressState,
+        progress_state: &mut ProgressState<E>,
         status: JobStatus,
         reason: JobStatusReason,
     ) -> Result<(), OtaError> {
-        progress_state
-            .status_details
-            .insert(
-                heapless::String::try_from("self_test").unwrap(),
-                heapless::String::try_from(reason.as_str()).unwrap(),
-            )
-            .map_err(|_| OtaError::Overflow)?;
+        // Set the self_test status field
+        progress_state.status_details.set_self_test(reason.as_str());
 
-        if let JobStatus::InProgress | JobStatus::Succeeded = status {
-            let received_blocks = progress_state.total_blocks - progress_state.blocks_remaining;
-
+        // Add progress tracking for in-progress and failed updates
+        if let JobStatus::InProgress | JobStatus::Succeeded | JobStatus::Failed = status {
             // Don't override the progress on succeeded, nor on self-test
             // active. (Cases where progress counter is lost due to device
             // restarts)
             if status != JobStatus::Succeeded && reason != JobStatusReason::SelfTestActive {
-                let mut progress = heapless::String::new();
-                progress
-                    .write_fmt(format_args!(
-                        "{}/{}",
-                        received_blocks, progress_state.total_blocks
-                    ))
-                    .map_err(|_| OtaError::Overflow)?;
-
+                let received_blocks = progress_state.total_blocks - progress_state.blocks_remaining;
                 progress_state
                     .status_details
-                    .insert(heapless::String::try_from("progress").unwrap(), progress)
-                    .map_err(|_| OtaError::Overflow)?;
+                    .set_progress(received_blocks, progress_state.total_blocks);
             }
         }
 
-        // Downgrade progress updates to QOS 0 to avoid overloading MQTT
-        // buffers during active streaming. But make sure to always send and await ack for first update and last update
-        // if status == JobStatus::InProgress
-        //     && progress_state.blocks_remaining != 0
-        //     && received_blocks != 0
-        // {
-        //     qos = QoS::AtMostOnce;
-        // }
+        // Add failure detail if present (for Rejected/Aborted reasons)
+        if let Some(detail) = reason.detail() {
+            progress_state.status_details.set_failure(detail);
+        } else {
+            // Clear any previous failure details for non-failure reasons
+            progress_state.status_details.clear_failure();
+        }
 
-        // let mut sub = self.0
-        //     .subscribe(&[
-        //         (
-        //             JobTopic::UpdateAccepted(file_ctx.job_name.as_str())
-        //                 .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
-        //                     self.0.client_id(),
-        //                 )?
-        //                 .as_str(),
-        //             QoS::AtMostOnce,
-        //         ),
-        //         (
-        //             JobTopic::UpdateRejected(file_ctx.job_name.as_str())
-        //                 .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
-        //                     self.0.client_id(),
-        //                 )?
-        //                 .as_str(),
-        //             QoS::AtMostOnce,
-        //         ),
-        //     ])
-        //     .await
-        //     .map_err(|_| OtaError::Mqtt)?;
+        // Downgrade progress updates to QoS 0 to avoid overloading MQTT
+        // buffers during active streaming. First and last updates remain QoS 1.
+        let qos = if status == JobStatus::InProgress
+            && progress_state.blocks_remaining != 0
+            && progress_state.total_blocks != progress_state.blocks_remaining
+        {
+            QoS::AtMostOnce
+        } else {
+            QoS::AtLeastOnce
+        };
 
         let topic = JobTopic::Update(file_ctx.job_name.as_str())
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
 
+        let combined = progress_state
+            .status_details
+            .with_extra(&progress_state.extra_status);
         let payload = Jobs::update(status)
             .client_token(self.0.client_id())
-            .status_details(&progress_state.status_details);
+            .status_details(&combined);
 
         debug!("Updating job status! {:?}", status);
 

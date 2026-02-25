@@ -117,10 +117,6 @@ jobs:
           aws-region: eu-west-1
           audience: sts.amazonaws.com
 
-      - name: Create OTA Job
-        run: |
-          ./scripts/create_ota.sh
-
       - name: Integration Tests
         uses: actions-rs/cargo@v1
         with:
@@ -130,8 +126,3 @@ jobs:
           IDENTITY_PASSWORD: ${{ secrets.IDENTITY_PASSWORD }}
           AWS_HOSTNAME: a1vq3mi5y3c6j5-ats.iot.eu-west-1.amazonaws.com
           RUST_LOG: debug
-
-      - name: Cleanup OTA Jobs
-        if: ${{ always() }}
-        run: |
-          ./scripts/cleanup_ota.sh

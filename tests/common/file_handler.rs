@@ -3,12 +3,27 @@ use embedded_storage_async::nor_flash::{ErrorType, NorFlash, ReadNorFlash};
 use rustot::ota::{
     encoding::json,
     pal::{OtaPal, OtaPalError, PalImageState},
+    StatusDetailsExt,
 };
+use serde::ser::SerializeMap;
 use sha2::{Digest, Sha256};
 use std::{
     convert::Infallible,
     io::{Cursor, Write},
 };
+
+/// Custom status details to test StatusDetailsExt integration.
+#[derive(Debug, Clone)]
+pub struct TestStatusDetails {
+    pub firmware_version: &'static str,
+}
+
+impl StatusDetailsExt for TestStatusDetails {
+    fn serialize_into_map<S: SerializeMap>(&self, map: &mut S) -> Result<(), S::Error> {
+        map.serialize_entry("firmware_version", self.firmware_version)?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum State {
@@ -56,6 +71,9 @@ pub struct FileHandler {
     filebuf: Option<BlockFile>,
     compare_file_path: String,
     pub plateform_state: State,
+    /// If set, `close_file` will return this error instead of succeeding
+    pub fail_close_with: Option<OtaPalError>,
+    pub extra_status: TestStatusDetails,
 }
 
 impl FileHandler {
@@ -65,12 +83,28 @@ impl FileHandler {
             filebuf: None,
             compare_file_path,
             plateform_state: State::Boot,
+            fail_close_with: None,
+            extra_status: TestStatusDetails {
+                firmware_version: "0.1.0-test",
+            },
         }
+    }
+
+    /// Configure the handler to fail on close_file with the given error
+    #[allow(dead_code)]
+    pub fn with_close_failure(mut self, error: OtaPalError) -> Self {
+        self.fail_close_with = Some(error);
+        self
     }
 }
 
 impl OtaPal for FileHandler {
     type BlockWriter = BlockFile;
+    type StatusDetails = TestStatusDetails;
+
+    fn status_details(&self) -> &Self::StatusDetails {
+        &self.extra_status
+    }
 
     async fn abort(
         &mut self,
@@ -114,6 +148,12 @@ impl OtaPal for FileHandler {
         &mut self,
         file: &rustot::ota::encoding::FileContext,
     ) -> Result<(), OtaPalError> {
+        // Check for configured failure
+        if let Some(error) = self.fail_close_with {
+            log::info!("Simulating close_file failure: {:?}", error);
+            return Err(error);
+        }
+
         if let Some(ref mut buf) = &mut self.filebuf {
             log::debug!(
                 "Closing completed file. Len: {}/{} -> {}",

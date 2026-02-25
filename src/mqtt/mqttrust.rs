@@ -44,7 +44,7 @@ impl<P: ToPayload> mqttrust::ToPayload for PayloadBridge<P> {
 }
 
 /// Convert our [`QoS`] to mqttrust's `QoS`.
-pub fn to_embedded_qos(qos: QoS) -> mqttrust::QoS {
+pub fn to_mqttrust_qos(qos: QoS) -> mqttrust::QoS {
     match qos {
         QoS::AtMostOnce => mqttrust::QoS::AtMostOnce,
         QoS::AtLeastOnce => mqttrust::QoS::AtLeastOnce,
@@ -53,7 +53,7 @@ pub fn to_embedded_qos(qos: QoS) -> mqttrust::QoS {
 }
 
 /// Convert mqttrust's `QoS` to our [`QoS`].
-pub fn from_embedded_qos(qos: mqttrust::QoS) -> QoS {
+pub fn from_mqttrust_qos(qos: mqttrust::QoS) -> QoS {
     match qos {
         mqttrust::QoS::AtMostOnce => QoS::AtMostOnce,
         _ => QoS::AtLeastOnce,
@@ -76,7 +76,7 @@ impl<'a, M: RawMutex, B: BufferProvider> MqttMessage for mqttrust::Message<'a, M
     }
 
     fn qos(&self) -> QoS {
-        from_embedded_qos(self.qos_pid().qos())
+        from_mqttrust_qos(self.qos_pid().qos())
     }
 
     fn dup(&self) -> bool {
@@ -130,7 +130,7 @@ impl<'a, M: RawMutex> crate::mqtt::MqttClient for mqttrust::MqttClient<'a, M> {
         let publish = mqttrust::Publish::builder()
             .topic_name(topic)
             .payload(PayloadBridge(payload))
-            .qos(to_embedded_qos(options.qos))
+            .qos(to_mqttrust_qos(options.qos))
             .retain(options.retain)
             .dup(options.dup)
             .build();
@@ -144,7 +144,7 @@ impl<'a, M: RawMutex> crate::mqtt::MqttClient for mqttrust::MqttClient<'a, M> {
         let subscribe_topics: [mqttrust::SubscribeTopic<'_>; N] = core::array::from_fn(|i| {
             mqttrust::SubscribeTopic::builder()
                 .topic_path(topics[i].0)
-                .maximum_qos(to_embedded_qos(topics[i].1))
+                .maximum_qos(to_mqttrust_qos(topics[i].1))
                 .build()
         });
 

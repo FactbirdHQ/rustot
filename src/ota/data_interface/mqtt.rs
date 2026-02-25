@@ -5,6 +5,7 @@ use core::str::FromStr;
 use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, QoS};
 
 use crate::ota::error::OtaError;
+use crate::ota::status_details::StatusDetailsExt;
 use crate::ota::ProgressState;
 use crate::{
     jobs::{MAX_STREAM_ID_LEN, MAX_THING_NAME_LEN},
@@ -172,13 +173,15 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
     }
 
     /// Request file block by publishing to the get stream topic
-    async fn request_file_blocks(
+    async fn request_file_blocks<E: StatusDetailsExt>(
         &self,
         file_ctx: &FileContext,
-        progress_state: &mut ProgressState,
+        progress_state: &mut ProgressState<E>,
         config: &Config,
     ) -> Result<(), OtaError> {
-        progress_state.request_block_remaining = progress_state.bitmap.len() as u32;
+        let blocks_available = progress_state.bitmap.len() as u32;
+        let blocks_to_request = blocks_available.min(config.max_blocks_per_request);
+        progress_state.request_block_remaining = blocks_to_request;
 
         let topic = OtaTopic::Get(Encoding::Cbor, file_ctx.stream_name.as_str()).format::<{
             MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30
@@ -195,15 +198,15 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
                 block_size: config.block_size,
                 block_offset: Some(progress_state.block_offset),
                 block_bitmap: Some(&progress_state.bitmap),
-                number_of_blocks: Some(progress_state.request_block_remaining),
+                number_of_blocks: Some(blocks_to_request),
             },
             &mut buf,
         )
         .map_err(|_| OtaError::Encoding)?;
 
         debug!(
-            "Requesting more file blocks. Remaining: {}",
-            progress_state.request_block_remaining
+            "Requesting {} file blocks (of {} remaining)",
+            blocks_to_request, blocks_available
         );
 
         self.0

@@ -83,6 +83,15 @@ p256 = "0.13"
 pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 hex = { version = "0.4.3", features = ["alloc"] }
 
+aws-config = "1"
+aws-sdk-sts = "1"
+aws-sdk-s3 = "1"
+aws-sdk-iot = "1"
+aws-credential-types = "1"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+serial_test = "3"
+
 
 [features]
 default = ["ota_mqtt_data", "metric_cbor", "provision_cbor", "shadows_kv_persist"]
