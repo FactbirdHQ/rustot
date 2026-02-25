@@ -1,40 +1,28 @@
 use core::fmt::Write;
 
-use embassy_sync::blocking_mutex::raw::RawMutex;
-use mqttrust::{DeferredPayload, EncodingError, Publish, QoS};
-
 use super::ControlInterface;
 use crate::jobs::data_types::JobStatus;
 use crate::jobs::{JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
+use crate::mqtt::{Mqtt, MqttClient, PublishOptions, QoS};
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
 use crate::ota::ProgressState;
 
-impl<M: RawMutex> ControlInterface for mqttrust::MqttClient<'_, M> {
+impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
     /// Check for next available OTA job from the job service by publishing a
     /// "get next job" message to the job service.
     async fn request_job(&self) -> Result<(), OtaError> {
-        // FIXME: Serialize directly into the publish payload through `DeferredPublish` API
-        let mut buf = [0u8; 512];
-        let (topic, payload_len) = Jobs::describe().topic_payload(self.client_id(), &mut buf)?;
+        let describe = Jobs::describe();
+        let topic = describe.topic(self.0.client_id())?;
 
-        self.publish(
-            Publish::builder()
-                .topic_name(&topic)
-                .payload(&buf[..payload_len])
-                .build(),
-        )
-        .await?;
-
-        Ok(())
+        self.0
+            .publish(&topic, describe)
+            .await
+            .map_err(|_| OtaError::Mqtt)
     }
 
     /// Update the job status on the service side.
-    ///
-    /// Returns a Result indicating success or an error,
-    /// along with an Option containing the updated status details
-    /// if they were modified.
     async fn update_job_status(
         &self,
         file_ctx: &FileContext,
@@ -42,7 +30,6 @@ impl<M: RawMutex> ControlInterface for mqttrust::MqttClient<'_, M> {
         status: JobStatus,
         reason: JobStatusReason,
     ) -> Result<(), OtaError> {
-        // Update the status details within this function.
         progress_state
             .status_details
             .insert(
@@ -50,8 +37,6 @@ impl<M: RawMutex> ControlInterface for mqttrust::MqttClient<'_, M> {
                 heapless::String::try_from(reason.as_str()).unwrap(),
             )
             .map_err(|_| OtaError::Overflow)?;
-
-        let qos = QoS::AtLeastOnce;
 
         if let JobStatus::InProgress | JobStatus::Succeeded = status {
             let received_blocks = progress_state.total_blocks - progress_state.blocks_remaining;
@@ -73,67 +58,52 @@ impl<M: RawMutex> ControlInterface for mqttrust::MqttClient<'_, M> {
                     .insert(heapless::String::try_from("progress").unwrap(), progress)
                     .map_err(|_| OtaError::Overflow)?;
             }
-
-            // Downgrade progress updates to QOS 0 to avoid overloading MQTT
-            // buffers during active streaming. But make sure to always send and await ack for first update and last update
-            // if status == JobStatus::InProgress
-            //     && progress_state.blocks_remaining != 0
-            //     && received_blocks != 0
-            // {
-            //     qos = QoS::AtMostOnce;
-            // }
         }
 
-        // let mut sub = self
-        //     .subscribe::<2>(
-        //         Subscribe::builder()
-        //             .topics(&[
-        //                 SubscribeTopic::builder()
-        //                     .topic_path(
-        //                         JobTopic::UpdateAccepted(file_ctx.job_name.as_str())
-        //                             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
-        //                                 self.client_id(),
-        //                             )?
-        //                             .as_str(),
-        //                     )
-        //                     .build(),
-        //                 SubscribeTopic::builder()
-        //                     .topic_path(
-        //                         JobTopic::UpdateRejected(file_ctx.job_name.as_str())
-        //                             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
-        //                                 self.client_id(),
-        //                             )?
-        //                             .as_str(),
-        //                     )
-        //                     .build(),
-        //             ])
-        //             .build(),
-        //     )
-        //     .await?;
+        // Downgrade progress updates to QOS 0 to avoid overloading MQTT
+        // buffers during active streaming. But make sure to always send and await ack for first update and last update
+        // if status == JobStatus::InProgress
+        //     && progress_state.blocks_remaining != 0
+        //     && received_blocks != 0
+        // {
+        //     qos = QoS::AtMostOnce;
+        // }
+
+        // let mut sub = self.0
+        //     .subscribe(&[
+        //         (
+        //             JobTopic::UpdateAccepted(file_ctx.job_name.as_str())
+        //                 .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
+        //                     self.0.client_id(),
+        //                 )?
+        //                 .as_str(),
+        //             QoS::AtMostOnce,
+        //         ),
+        //         (
+        //             JobTopic::UpdateRejected(file_ctx.job_name.as_str())
+        //                 .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 34 }>(
+        //                     self.0.client_id(),
+        //                 )?
+        //                 .as_str(),
+        //             QoS::AtMostOnce,
+        //         ),
+        //     ])
+        //     .await
+        //     .map_err(|_| OtaError::Mqtt)?;
 
         let topic = JobTopic::Update(file_ctx.job_name.as_str())
-            .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.client_id())?;
-        let payload = DeferredPayload::new(
-            |buf| {
-                Jobs::update(status)
-                    .client_token(self.client_id())
-                    .status_details(&progress_state.status_details)
-                    .payload(buf)
-                    .map_err(|_| EncodingError::BufferSize)
-            },
-            512,
-        );
+            .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
+
+        let payload = Jobs::update(status)
+            .client_token(self.0.client_id())
+            .status_details(&progress_state.status_details);
 
         debug!("Updating job status! {:?}", status);
 
-        self.publish(
-            Publish::builder()
-                .qos(qos)
-                .topic_name(&topic)
-                .payload(payload)
-                .build(),
-        )
-        .await?;
+        self.0
+            .publish_with_options(&topic, payload, PublishOptions::new().qos(QoS::AtLeastOnce))
+            .await
+            .map_err(|_| OtaError::Mqtt)?;
 
         Ok(())
 
@@ -157,11 +127,11 @@ impl<M: RawMutex> ControlInterface for mqttrust::MqttClient<'_, M> {
         //             >(message.payload())
         //             .map_err(|_| JobError::Encoding)?;
 
-        //             if response.client_token != Some(self.client_id()) {
+        //             if response.client_token != Some(self.0.client_id()) {
         //                 error!(
         //                     "Unexpected client token received: {}, expected: {}",
         //                     response.client_token.unwrap_or("None"),
-        //                     self.client_id()
+        //                     self.0.client_id()
         //                 );
         //                 continue;
         //             }
@@ -173,11 +143,11 @@ impl<M: RawMutex> ControlInterface for mqttrust::MqttClient<'_, M> {
         //                 serde_json_core::from_slice::<ErrorResponse>(message.payload())
         //                     .map_err(|_| JobError::Encoding)?;
 
-        //             if error_response.client_token != Some(self.client_id()) {
+        //             if error_response.client_token != Some(self.0.client_id()) {
         //                 error!(
         //                     "Unexpected client token received: {}, expected: {}",
         //                     error_response.client_token.unwrap_or("None"),
-        //                     self.client_id()
+        //                     self.0.client_id()
         //                 );
         //                 continue;
         //             }

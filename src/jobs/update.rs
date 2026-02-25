@@ -1,8 +1,9 @@
 use serde::Serialize;
 
 use crate::jobs::{data_types::JobStatus, MAX_CLIENT_TOKEN_LEN};
+use crate::mqtt::{PayloadError, ToPayload};
 
-use super::{JobError, StatusDetailsOwned};
+use super::StatusDetailsOwned;
 
 /// Updates the status of a job execution. You can optionally create a step
 /// timer by setting a value for the stepTimeoutInMinutes property. If you don't
@@ -141,9 +142,15 @@ impl<'a> Update<'a> {
             ..self
         }
     }
+}
 
-    pub fn payload(self, buf: &mut [u8]) -> Result<usize, JobError> {
-        let payload_len = serde_json_core::to_slice(
+impl ToPayload for Update<'_> {
+    fn max_size(&self) -> usize {
+        512
+    }
+
+    fn encode(&self, buf: &mut [u8]) -> Result<usize, PayloadError> {
+        serde_json_core::to_slice(
             &UpdateJobExecutionRequest {
                 execution_number: self.execution_number,
                 include_job_document: self.include_job_document.then_some(true),
@@ -156,9 +163,7 @@ impl<'a> Update<'a> {
             },
             buf,
         )
-        .map_err(|_| JobError::Encoding)?;
-
-        Ok(payload_len)
+        .map_err(|_| PayloadError::BufferSize)
     }
 }
 
@@ -188,22 +193,23 @@ mod test {
     }
 
     #[test]
-    fn topic_payload() {
-        let mut buf = [0u8; 512];
+    fn topic_and_payload() {
         let topic = JobTopic::Update("test_job_id")
             .format::<64>("test_client")
             .unwrap();
-        let payload_len = Update::new(JobStatus::Failed)
+
+        let update = Update::new(JobStatus::Failed)
             .client_token("test_client:token_update")
             .step_timeout_in_minutes(50)
             .execution_number(5)
             .expected_version(2)
             .include_job_document()
-            .include_job_execution_state()
-            .payload(&mut buf)
-            .unwrap();
+            .include_job_execution_state();
 
-        assert_eq!(&buf[..payload_len], br#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#);
+        let mut buf = [0u8; 512];
+        let len = update.encode(&mut buf).unwrap();
+
+        assert_eq!(&buf[..len], br#"{"executionNumber":5,"expectedVersion":2,"includeJobDocument":true,"includeJobExecutionState":true,"status":"FAILED","stepTimeoutInMinutes":50,"clientToken":"test_client:token_update"}"#);
 
         assert_eq!(
             topic.as_str(),

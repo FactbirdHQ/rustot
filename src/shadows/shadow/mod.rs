@@ -16,10 +16,9 @@ mod tests;
 
 use core::marker::PhantomData;
 
-use embassy_sync::{
-    blocking_mutex::raw::{NoopRawMutex, RawMutex},
-    mutex::Mutex,
-};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+
+use crate::mqtt::MqttClient;
 
 use crate::shadows::{
     commit::CommitStats, error::KvError, migration::LoadResult, store::StateStore, ShadowRoot,
@@ -78,21 +77,21 @@ use crate::shadows::{
 ///     }
 /// }
 /// ```
-pub struct Shadow<'a, 'm, S: ShadowRoot, M: RawMutex, K: StateStore<S>> {
+pub struct Shadow<'a, 'm, S: ShadowRoot, C: MqttClient, K: StateStore<S>> {
     /// Reference to the StateStore (interior mutability).
     pub(crate) store: &'a K,
     /// Reference to the MQTT client for cloud communication.
-    pub(crate) mqtt: &'m mqttrust::MqttClient<'a, M>,
+    pub(crate) mqtt: &'m C,
     /// Cached subscription for delta topic.
-    pub(crate) subscription: Mutex<NoopRawMutex, Option<mqttrust::Subscription<'a, 'm, M, 2>>>,
+    pub(crate) subscription: Mutex<NoopRawMutex, Option<C::Subscription<'m, 1>>>,
     /// Marker for the shadow state type.
     _marker: PhantomData<S>,
 }
 
-impl<'a, 'm, S, M, K> Shadow<'a, 'm, S, M, K>
+impl<'a, 'm, S, C, K> Shadow<'a, 'm, S, C, K>
 where
     S: ShadowRoot,
-    M: RawMutex,
+    C: MqttClient,
     K: StateStore<S>,
 {
     /// Create a shadow backed by a StateStore with MQTT connection.
@@ -114,7 +113,7 @@ where
     /// shadow.load().await?;  // Loads from storage or initializes on first boot
     /// let state = shadow.state().await?;  // Get current state
     /// ```
-    pub fn new(store: &'a K, mqtt: &'m mqttrust::MqttClient<'a, M>) -> Self {
+    pub fn new(store: &'a K, mqtt: &'m C) -> Self {
         Self {
             store,
             mqtt,
@@ -200,66 +199,6 @@ where
     /// ## In-Memory Stores
     ///
     /// For `InMemory<S>`, this is a no-op since there's no persistent storage.
-    pub async fn commit(&self) -> Result<CommitStats, KvError<K::Error>> {
-        self.store.commit(Self::prefix(), S::SCHEMA_HASH).await
-    }
-}
-
-// =============================================================================
-// Test-Only Shadow (no MQTT)
-// =============================================================================
-
-/// Test-only shadow for storage persistence testing without MQTT.
-///
-/// This struct provides storage-only functionality for testing purposes.
-/// It mirrors the storage-related methods of `Shadow` but doesn't require MQTT.
-/// Uses the stateless design - state is stored in the StateStore.
-#[cfg(test)]
-pub struct ShadowTestOnly<'a, S: ShadowRoot, K: StateStore<S>> {
-    /// Reference to the StateStore (interior mutability).
-    store: &'a K,
-    /// Marker for the shadow state type.
-    _marker: PhantomData<S>,
-}
-
-#[cfg(test)]
-impl<'a, S, K> ShadowTestOnly<'a, S, K>
-where
-    S: ShadowRoot,
-    K: StateStore<S>,
-{
-    /// Create a shadow backed by a StateStore.
-    pub fn new(store: &'a K) -> Self {
-        Self {
-            store,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Get the shadow name prefix for storage keys.
-    fn prefix() -> &'static str {
-        S::NAME.unwrap_or("classic")
-    }
-
-    /// Get the current shadow state.
-    pub async fn state(&self) -> Result<S, K::Error> {
-        self.store.get_state(Self::prefix()).await
-    }
-
-    /// Load state from storage, or initialize on first boot.
-    pub async fn load(&self) -> Result<LoadResult<S>, KvError<K::Error>> {
-        self.store.load(Self::prefix(), S::SCHEMA_HASH).await
-    }
-
-    /// Apply a delta and return the updated state.
-    pub async fn apply_and_save(&self, delta: &S::Delta) -> Result<S, KvError<K::Error>> {
-        self.store
-            .apply_delta(Self::prefix(), delta)
-            .await
-            .map_err(KvError::Kv)
-    }
-
-    /// Commit schema changes and clean up orphaned keys.
     pub async fn commit(&self) -> Result<CommitStats, KvError<K::Error>> {
         self.store.commit(Self::prefix(), S::SCHEMA_HASH).await
     }

@@ -12,7 +12,7 @@ pub enum Error {
     DaoWrite,
     InvalidPayload,
     WrongShadowName,
-    MqttError(mqttrust::Error),
+    Mqtt,
     ShadowError(ShadowError),
 }
 

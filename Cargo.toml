@@ -52,6 +52,11 @@ bon = { version = "3.3.2", default-features = false }
 tokio = { version = "1", features = ["fs", "io-util", "sync"], optional = true }
 base64 = { version = "0.22", optional = true }
 
+# MQTT client implementations (optional, feature-gated)
+rumqttc = { version = "0.24", optional = true }
+greengrass-ipc-rust = { git = "https://github.com/FactbirdHQ/greengrass-ipc-rust", rev = "0f0469e", optional = true }
+bytes = { version = "1", optional = true }
+
 [dev-dependencies]
 native-tls = { version = "0.2" }
 embedded-nal-async = "0.9"
@@ -98,6 +103,10 @@ shadows_kv_persist = ["dep:sequential-storage", "rustot-derive/kv_persist", "pos
 
 defmt = ["dep:defmt"]
 log = ["dep:log"]
+
+# MQTT client implementations (std/tokio)
+rumqttc = ["std", "dep:rumqttc", "tokio/time"]
+greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes"]
 
 [patch.crates-io]
 serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core", rev = "a435f78" }

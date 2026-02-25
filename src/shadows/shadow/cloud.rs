@@ -2,9 +2,11 @@
 
 use core::ops::DerefMut;
 
-use embassy_sync::blocking_mutex::raw::RawMutex;
-use mqttrust::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
 use serde::{de::DeserializeOwned, Serialize};
+
+use crate::mqtt::{
+    DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS, ToPayload,
+};
 
 use crate::shadows::{
     data_types::{
@@ -31,12 +33,12 @@ const CLASSIC_SHADOW: &str = "classic";
 // Cloud Communication Methods (MQTT)
 // =============================================================================
 
-impl<'a, 'm, S, M, K> Shadow<'a, 'm, S, M, K>
+impl<'a, 'm, S, C, K> Shadow<'a, 'm, S, C, K>
 where
     S: ShadowRoot + Clone,
     S::Delta: Serialize + DeserializeOwned + Default,
     S::Reported: Serialize + Default,
-    M: RawMutex,
+    C: MqttClient,
     K: StateStore<S>,
 {
     // =========================================================================
@@ -52,42 +54,56 @@ where
         loop {
             let mut sub_ref = self.subscription.lock().await;
 
-            let delta_subscription = match sub_ref.deref_mut() {
-                Some(sub) => sub,
-                None => {
-                    debug!("Subscribing to delta topic");
-                    self.mqtt.wait_connected().await;
+            if sub_ref.is_none() {
+                debug!("Subscribing to delta topic");
+                self.mqtt.wait_connected().await;
 
-                    let sub = self
-                        .mqtt
-                        .subscribe::<2>(
-                            Subscribe::builder()
-                                .topics(&[SubscribeTopic::builder()
-                                    .topic_path(
-                                        Topic::UpdateDelta
-                                            .format::<64>(
-                                                S::PREFIX,
-                                                self.mqtt.client_id(),
-                                                S::NAME,
-                                            )?
-                                            .as_str(),
-                                    )
-                                    .build()])
-                                .build(),
+                let topic =
+                    Topic::UpdateDelta.format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+
+                let sub = self
+                    .mqtt
+                    .subscribe(&[(topic.as_str(), QoS::AtMostOnce)])
+                    .await
+                    .map_err(|_| Error::Mqtt)?;
+
+                let _ = sub_ref.insert(sub);
+
+                let delta_state = self.get_shadow_from_cloud().await?;
+
+                return Ok(delta_state.delta);
+            }
+
+            // Scope the mutable borrow of the subscription so we can call
+            // sub_ref.take() in the clean-session path below.
+            let result = {
+                let sub = sub_ref.deref_mut().as_mut().unwrap();
+                match sub.next_message().await {
+                    Some(delta_message) => {
+                        debug!(
+                            "[{:?}] Received shadow delta event.",
+                            S::NAME.unwrap_or(CLASSIC_SHADOW),
+                        );
+
+                        let mut buf = [0u8; 64];
+                        let parsed = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
+                            delta_message.payload(),
+                            &mut buf,
+                        );
+
+                        Some(
+                            parsed
+                                .map(|(delta, _)| delta.state)
+                                .map_err(|_| Error::InvalidPayload),
                         )
-                        .await
-                        .map_err(Error::MqttError)?;
-
-                    let _ = sub_ref.insert(sub);
-
-                    let delta_state = self.get_shadow_from_cloud().await?;
-
-                    return Ok(delta_state.delta);
+                    }
+                    None => None,
                 }
             };
 
-            let delta_message = match delta_subscription.next_message().await {
-                Some(msg) => msg,
+            match result {
+                Some(Ok(state)) => return Ok(state),
+                Some(Err(e)) => return Err(e),
                 None => {
                     // Clear subscription if we get clean session
                     info!(
@@ -99,26 +115,7 @@ where
                     drop(sub_ref);
                     continue;
                 }
-            };
-
-            // Update the device's state to match the desired state in the
-            // message body.
-            debug!(
-                "[{:?}] Received shadow delta event.",
-                S::NAME.unwrap_or(CLASSIC_SHADOW),
-            );
-
-            // Buffer to temporarily hold escaped characters data
-            let mut buf = [0u8; 64];
-
-            // Use from_slice_escaped to properly handle escaped characters
-            let (delta, _) = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
-                delta_message.payload(),
-                &mut buf,
-            )
-            .map_err(|_| Error::InvalidPayload)?;
-
-            return Ok(delta.state);
+            }
         }
     }
 
@@ -146,8 +143,7 @@ where
 
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
-                serde_json_core::to_slice(&request, buf)
-                    .map_err(|_| mqttrust::EncodingError::BufferSize)
+                serde_json_core::to_slice(&request, buf).map_err(|_| PayloadError::EncodingFailed)
             },
             S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD,
         );
@@ -303,7 +299,7 @@ where
         &self,
         topic: Topic,
         payload: impl ToPayload,
-    ) -> Result<mqttrust::Subscription<'a, 'm, M, 2>, Error> {
+    ) -> Result<C::Subscription<'m, 2>, Error> {
         let (accepted, rejected) = match topic {
             Topic::Get => (Topic::GetAccepted, Topic::GetRejected),
             Topic::Update => (Topic::UpdateAccepted, Topic::UpdateRejected),
@@ -312,43 +308,25 @@ where
         };
 
         //*** SUBSCRIBE ***/
+        let accepted_topic = accepted.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+        let rejected_topic = rejected.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+
         let sub = self
             .mqtt
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                accepted
-                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
-                                    .as_str(),
-                            )
-                            .build(),
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                rejected
-                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
-                                    .as_str(),
-                            )
-                            .build(),
-                    ])
-                    .build(),
-            )
+            .subscribe(&[
+                (accepted_topic.as_str(), QoS::AtMostOnce),
+                (rejected_topic.as_str(), QoS::AtMostOnce),
+            ])
             .await
-            .map_err(Error::MqttError)?;
+            .map_err(|_| Error::Mqtt)?;
 
         //*** PUBLISH REQUEST ***/
         let topic_name =
             topic.format::<MAX_TOPIC_LEN>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
         self.mqtt
-            .publish(
-                Publish::builder()
-                    .topic_name(topic_name.as_str())
-                    .payload(payload)
-                    .build(),
-            )
+            .publish(topic_name.as_str(), payload)
             .await
-            .map_err(Error::MqttError)?;
+            .map_err(|_| Error::Mqtt)?;
 
         Ok(sub)
     }
