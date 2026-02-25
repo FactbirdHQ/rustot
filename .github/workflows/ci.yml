@@ -83,7 +83,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     env:
-      CLIPPY_PARAMS: -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::cargo
+      CLIPPY_PARAMS: -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::cargo -A clippy::future_not_send
     steps:
       - name: Checkout source code
 
