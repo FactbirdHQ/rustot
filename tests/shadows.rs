@@ -1,26 +1,4 @@
-//! ## Integration test of `AWS IoT Shadows`
-//!
-//!
-//! This test simulates updates of the shadow state from both device side &
-//! cloud side. Cloud side updates are done by publishing directly to the shadow
-//! topics, and ignoring the resulting update accepted response. Device side
-//! updates are done through the shadow API provided by this crate.
-//!
-//! The test runs through the following update sequence:
-//! 1. Setup clean starting point (`desired = null, reported = null`)
-//! 2. Do a `GetShadow` request to sync empty state
-//! 3. Update to initial shadow state from the device
-//! 4. Assert on the initial state
-//! 5. Update state from device
-//! 6. Assert on shadow state
-//! 7. Update state from cloud
-//! 8. Assert on shadow state
-//! 9. Update state from device
-//! 10. Assert on shadow state
-//! 11. Update state from cloud
-//! 12. Assert on shadow state
-//!
-
+#![cfg(all(feature = "std", feature = "shadows_kv_persist"))]
 #![allow(async_fn_in_trait)]
 #![feature(type_alias_impl_trait)]
 
@@ -30,106 +8,161 @@ use common::credentials;
 use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use mqttrust::{
-    self, transport::embedded_nal::NalTransport, Config, DomainBroker, MqttClient, Publish, QoS,
-    State, Subscribe, SubscribeTopic,
-};
-use rustot::shadows::{Shadow, ShadowState};
-use rustot_derive::shadow;
+use mqttrust::transport::embedded_nal::NalTransport;
+use mqttrust::{Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic};
+use postcard::experimental::max_size::MaxSize;
+use rustot_derive::shadow_root;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use static_cell::StaticCell;
 
-#[shadow(name = "state")]
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+use rustot::shadows::{FileKVStore, Shadow};
+
+// =============================================================================
+// Test Shadow Type
+// =============================================================================
+
+#[shadow_root(name = "state")]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
 pub struct TestShadow {
     pub foo: u32,
+    pub bar: bool,
+    #[shadow_attr(report_only)]
+    pub version: u32,
 }
 
-/// Helper function to mimic cloud side updates using MQTT client directly
-async fn cloud_update(client: &MqttClient<'static, NoopRawMutex>, payload: &[u8]) {
-    client
-        .publish(
-            Publish::builder()
-                .topic_name(
-                    rustot::shadows::topics::Topic::Update
-                        .format::<128>(TestShadow::PREFIX, client.client_id(), TestShadow::NAME)
-                        .unwrap()
-                        .as_str(),
-                )
-                .payload(payload)
-                .qos(QoS::AtLeastOnce)
-                .build(),
-        )
-        .await
-        .unwrap();
-}
+// =============================================================================
+// Cloud Simulation Helpers
+// =============================================================================
 
-/// Helper function to assert on the current shadow state
-async fn assert_shadow(client: &MqttClient<'static, NoopRawMutex>, expected: serde_json::Value) {
-    let mut get_shadow_sub = client
-        .subscribe::<1>(
-            Subscribe::builder()
-                .topics(&[SubscribeTopic::builder()
-                    .topic_path(
-                        rustot::shadows::topics::Topic::GetAccepted
-                            .format::<128>(TestShadow::PREFIX, client.client_id(), TestShadow::NAME)
-                            .unwrap()
-                            .as_str(),
-                    )
-                    .build()])
-                .build(),
-        )
-        .await
-        .unwrap();
-
-    client
-        .publish(
-            Publish::builder()
-                .topic_name(
-                    rustot::shadows::topics::Topic::Get
-                        .format::<128>(TestShadow::PREFIX, client.client_id(), TestShadow::NAME)
-                        .unwrap()
-                        .as_str(),
-                )
-                .payload(b"")
-                .build(),
-        )
-        .await
-        .unwrap();
-
-    let current_shadow = get_shadow_sub.next_message().await.unwrap();
-
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(current_shadow.payload())
-            .unwrap()
-            .get("state")
-            .unwrap(),
-        &expected,
+/// Publish a desired state update to the cloud and wait for accepted response.
+async fn cloud_update_desired(
+    client: &mqttrust::MqttClient<'_, NoopRawMutex>,
+    thing_name: &str,
+    desired_json: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let update_accepted = format!(
+        "$aws/things/{}/shadow/name/state/update/accepted",
+        thing_name
     );
+    let update_rejected = format!(
+        "$aws/things/{}/shadow/name/state/update/rejected",
+        thing_name
+    );
+    let update_topic = format!("$aws/things/{}/shadow/name/state/update", thing_name);
+
+    let mut sub = client
+        .subscribe::<2>(
+            Subscribe::builder()
+                .topics(&[
+                    SubscribeTopic::builder()
+                        .topic_path(update_accepted.as_str())
+                        .build(),
+                    SubscribeTopic::builder()
+                        .topic_path(update_rejected.as_str())
+                        .build(),
+                ])
+                .build(),
+        )
+        .await
+        .map_err(|e| format!("Subscribe error: {:?}", e))?;
+
+    client
+        .publish(
+            Publish::builder()
+                .topic_name(update_topic.as_str())
+                .payload(desired_json)
+                .build(),
+        )
+        .await
+        .map_err(|e| format!("Publish error: {:?}", e))?;
+
+    let msg = sub.next_message().await.ok_or("No response to update")?;
+
+    if msg.topic_name().contains("rejected") {
+        return Err(format!(
+            "Update rejected: {}",
+            core::str::from_utf8(msg.payload()).unwrap_or("?")
+        )
+        .into());
+    }
+
+    Ok(())
 }
+
+/// Get the full shadow document from the cloud.
+async fn cloud_get_shadow(
+    client: &mqttrust::MqttClient<'_, NoopRawMutex>,
+    thing_name: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let get_accepted = format!("$aws/things/{}/shadow/name/state/get/accepted", thing_name);
+    let get_rejected = format!("$aws/things/{}/shadow/name/state/get/rejected", thing_name);
+    let get_topic = format!("$aws/things/{}/shadow/name/state/get", thing_name);
+
+    let mut sub = client
+        .subscribe::<2>(
+            Subscribe::builder()
+                .topics(&[
+                    SubscribeTopic::builder()
+                        .topic_path(get_accepted.as_str())
+                        .build(),
+                    SubscribeTopic::builder()
+                        .topic_path(get_rejected.as_str())
+                        .build(),
+                ])
+                .build(),
+        )
+        .await
+        .map_err(|e| format!("Subscribe error: {:?}", e))?;
+
+    client
+        .publish(
+            Publish::builder()
+                .topic_name(get_topic.as_str())
+                .payload(&[] as &[u8])
+                .build(),
+        )
+        .await
+        .map_err(|e| format!("Publish error: {:?}", e))?;
+
+    let msg = sub.next_message().await.ok_or("No response to get")?;
+
+    if msg.topic_name().contains("rejected") {
+        return Err(format!(
+            "Get rejected: {}",
+            core::str::from_utf8(msg.payload()).unwrap_or("?")
+        )
+        .into());
+    }
+
+    let doc: serde_json::Value = serde_json::from_slice(msg.payload())?;
+    Ok(doc)
+}
+
+// =============================================================================
+// Integration Test
+// =============================================================================
 
 #[tokio::test(flavor = "current_thread")]
-async fn test_shadow_update_from_device() {
-    env_logger::init();
+async fn test_shadow_end_to_end() {
+    env_logger::try_init().ok();
 
-    const DESIRED_1: &str = r#"{
-            "state": {
-                "desired": {
-                    "foo": 42
-                }
-            }
-        }"#;
+    log::info!("Starting shadow integration test...");
 
     let (thing_name, identity) = credentials::identity();
     let hostname = credentials::HOSTNAME.unwrap();
 
+    // =========================================================================
+    // Step 1: Create temp dir for FileKVStore
+    // =========================================================================
+    let kv = FileKVStore::temp().expect("Failed to create temp FileKVStore");
+
+    // =========================================================================
+    // Setup MQTT client
+    // =========================================================================
     static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
     let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
 
-    // Create the MQTT stack
     let broker = DomainBroker::<_, 128>::new_with_port(hostname, 8883, network).unwrap();
-
     let config = Config::builder()
         .client_id(thing_name.try_into().unwrap())
         .keepalive_interval(embassy_time::Duration::from_secs(50))
@@ -139,90 +172,197 @@ async fn test_shadow_update_from_device() {
     let state = STATE.init(State::new());
     let (mut stack, client) = mqttrust::new(state, config);
 
-    // Create the shadow
-    let mut shadow = Shadow::new(TestShadow::default(), &client);
+    // =========================================================================
+    // Test logic future
+    // =========================================================================
+    let test_fut = async {
+        // Wait for MQTT connection to establish
+        client.wait_connected().await;
+        log::info!("MQTT connected");
 
-    let mqtt_fut = async {
-        // 1. Setup clean starting point (`desired = null, reported = null`)
-        cloud_update(
+        let shadow = Shadow::<TestShadow, NoopRawMutex, FileKVStore>::new(&kv, &client);
+
+        // =====================================================================
+        // Step 2: Load shadow → initializes defaults, persists to file store
+        // =====================================================================
+        let load_result = shadow.load().await.expect("Failed to load shadow");
+        log::info!("Load result: first_boot={}", load_result.first_boot);
+        assert!(load_result.first_boot);
+
+        // =====================================================================
+        // Step 3: Delete shadow from cloud (ignore NotFound)
+        // =====================================================================
+        match shadow.delete_shadow().await {
+            Ok(()) => log::info!("Deleted existing shadow from cloud"),
+            Err(e) => log::info!("Delete shadow (expected if not found): {:?}", e),
+        }
+
+        // =====================================================================
+        // Step 4: Sync shadow → creates shadow with defaults, subscribes to delta
+        // =====================================================================
+        let state_val = shadow.sync_shadow().await.expect("Failed to sync shadow");
+        log::info!("Synced shadow: {:?}", state_val);
+
+        // =====================================================================
+        // Step 5: Assert defaults
+        // =====================================================================
+        assert_eq!(state_val.foo, 0);
+        assert_eq!(state_val.bar, false);
+
+        // =====================================================================
+        // Step 6: Cloud updates desired foo=42
+        // =====================================================================
+        log::info!("Cloud updating desired foo=42...");
+        cloud_update_desired(&client, thing_name, br#"{"state":{"desired":{"foo":42}}}"#)
+            .await
+            .expect("Failed to update desired foo");
+
+        // =====================================================================
+        // Step 7: Wait for delta → receives foo delta, applies, persists, acknowledges
+        // =====================================================================
+        log::info!("Waiting for delta...");
+        let (state_val, delta) = shadow
+            .wait_delta()
+            .await
+            .expect("Failed to wait_delta (foo)");
+        log::info!(
+            "Got foo delta: has_delta={}, state: {:?}",
+            delta.is_some(),
+            state_val
+        );
+
+        // =====================================================================
+        // Step 8: Assert foo updated
+        // =====================================================================
+        assert_eq!(state_val.foo, 42);
+        assert_eq!(state_val.bar, false);
+
+        // =====================================================================
+        // Step 9: Report version=1 to cloud (report_only field)
+        // =====================================================================
+        log::info!("Reporting version=1...");
+        shadow
+            .update(|_, r| {
+                r.version = Some(1);
+            })
+            .await
+            .expect("Failed to update reported version");
+
+        // =====================================================================
+        // Step 10: Cloud get shadow → assert reported.version == 1
+        // =====================================================================
+        log::info!("Getting shadow document from cloud...");
+        let doc = cloud_get_shadow(&client, thing_name)
+            .await
+            .expect("Failed to get shadow");
+        log::info!("Shadow document: {}", doc);
+
+        let reported_version = doc["state"]["reported"]["version"]
+            .as_u64()
+            .expect("version not in reported state");
+        assert_eq!(reported_version, 1);
+
+        // version should NOT generate a delta (it's report_only)
+        assert!(
+            doc["state"]["delta"].is_null()
+                || doc["state"].get("delta").is_none()
+                || !doc["state"]["delta"]
+                    .as_object()
+                    .map(|d| d.contains_key("version"))
+                    .unwrap_or(false),
+            "version should not appear in delta (report_only)"
+        );
+
+        // =====================================================================
+        // Step 11: Cloud updates desired bar=true
+        // =====================================================================
+        log::info!("Cloud updating desired bar=true...");
+        cloud_update_desired(
             &client,
-            r#"{"state": {"desired": null, "reported": null} }"#.as_bytes(),
+            thing_name,
+            br#"{"state":{"desired":{"bar":true}}}"#,
         )
-        .await;
+        .await
+        .expect("Failed to update desired bar");
 
-        // 2. Do a `GetShadow` request to sync empty state
-        let _ = shadow.get_shadow().await.unwrap();
+        // =====================================================================
+        // Step 12: Wait for delta → receives bar delta
+        // =====================================================================
+        log::info!("Waiting for delta (bar)...");
+        let (state_val, delta) = shadow
+            .wait_delta()
+            .await
+            .expect("Failed to wait_delta (bar)");
+        log::info!(
+            "Got bar delta: has_delta={}, state: {:?}",
+            delta.is_some(),
+            state_val
+        );
 
-        // 3. Update to initial shadow state from the device
-        shadow.report().await.unwrap();
+        // =====================================================================
+        // Step 13: Assert both fields updated
+        // =====================================================================
+        assert_eq!(state_val.foo, 42);
+        assert_eq!(state_val.bar, true);
 
-        // 4. Assert on the initial state
-        assert_shadow(
-            &client,
-            json!({
-                "reported": {
-                    "foo": 0
-                }
-            }),
-        )
-        .await;
+        // =====================================================================
+        // Step 14: Assert temp dir contains persisted files
+        // =====================================================================
+        let entries: Vec<_> = std::fs::read_dir(kv.base_path())
+            .expect("Failed to read temp dir")
+            .collect();
+        log::info!("FileKVStore has {} files", entries.len());
+        assert!(
+            !entries.is_empty(),
+            "FileKVStore temp dir should contain persisted files"
+        );
 
-        // 5. Update state from device
-        // 6. Assert on shadow state
-        // 7. Update state from cloud
-        cloud_update(&client, DESIRED_1.as_bytes()).await;
+        // =====================================================================
+        // Step 15: Delete shadow → delete from cloud, reset store to defaults
+        // =====================================================================
+        log::info!("Deleting shadow...");
+        shadow
+            .delete_shadow()
+            .await
+            .expect("Failed to delete shadow");
 
-        // 8. Assert on shadow state
-        // 9. Update state from device
+        // =====================================================================
+        // Step 16: Assert state loaded from store == defaults
+        // =====================================================================
+        let state_val = shadow
+            .state()
+            .await
+            .expect("Failed to get state after delete");
+        assert_eq!(state_val.foo, 0);
+        assert_eq!(state_val.bar, false);
+        assert_eq!(state_val.version, 0);
 
-        // 10. Assert on shadow state
-        assert_shadow(
-            &client,
-            json!({
-                "reported": {
-                    "foo": 0
-                },
-                "desired": {
-                    "foo": 42
-                },
-                "delta": {
-                    "foo": 42
-                }
-            }),
-        )
-        .await;
+        // =====================================================================
+        // Step 17: Remove temp dir, assert removal succeeded
+        // =====================================================================
+        let temp_path = kv.base_path().to_owned();
+        std::fs::remove_dir_all(&temp_path).expect("Failed to remove temp dir");
+        assert!(!temp_path.exists(), "Temp dir should be removed");
 
-        // 11. Update desired state from cloud
-        cloud_update(
-            &client,
-            r#"{"state": {"desired": {"bar": true}}}"#.as_bytes(),
-        )
-        .await;
-
-        // 12. Assert on shadow state
-        assert_shadow(
-            &client,
-            json!({
-                "reported": {
-                    "foo": 0
-                },
-                "desired": {
-                    "foo": 42,
-                    "bar": true
-                },
-                "delta": {
-                    "foo": 42,
-                    "bar": true
-                }
-            }),
-        )
-        .await;
+        log::info!("Shadow integration test passed!");
+        Ok::<_, Box<dyn std::error::Error>>(())
     };
 
+    // =========================================================================
+    // Run MQTT stack + test concurrently with timeout
+    // =========================================================================
     let mut transport = NalTransport::new(network, broker);
-    let _ = embassy_time::with_timeout(
+
+    match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(60),
-        select::select(stack.run(&mut transport), mqtt_fut),
+        select::select(stack.run(&mut transport), test_fut),
     )
-    .await;
+    .await
+    .expect("Test timed out after 60 seconds")
+    {
+        select::Either::First(_) => {
+            unreachable!("MQTT stack should not terminate before test")
+        }
+        select::Either::Second(result) => result.unwrap(),
+    };
 }

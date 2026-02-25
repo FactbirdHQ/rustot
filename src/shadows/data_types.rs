@@ -34,7 +34,7 @@ pub struct RequestState<D, R> {
     pub reported: Option<R>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DeltaState<D, R> {
     pub desired: Option<D>,
 

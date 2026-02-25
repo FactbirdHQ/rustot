@@ -127,7 +127,6 @@ impl FleetProvisioner {
         )
     }
 
-    #[cfg(feature = "provision_cbor")]
     async fn provision_inner<'a, C, M: RawMutex>(
         mqtt: &mqttrust::MqttClient<'a, M>,
         template_name: &str,

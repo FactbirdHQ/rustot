@@ -1,853 +1,440 @@
-pub mod dao;
 pub mod data_types;
 pub mod error;
 pub mod topics;
 
+// Shadow storage modules
+pub mod commit;
+pub mod hash;
+pub mod impls;
+pub mod migration;
+pub mod shadow;
+pub mod store;
+
 pub use rustot_derive;
 
-use core::{future::Future, marker::PhantomData, ops::DerefMut};
+// Re-export StateStore trait and implementations
+pub use store::InMemory;
+pub use store::StateStore;
+
+// Re-export KVStore (feature-gated) - KVPersist is defined in this module
+#[cfg(all(feature = "std", feature = "shadows_kv_persist"))]
+pub use store::FileKVStore;
+#[cfg(feature = "shadows_kv_persist")]
+pub use store::KVStore;
+#[cfg(feature = "shadows_kv_persist")]
+pub use store::SequentialKVStore;
+
+// Re-export Shadow
+pub use shadow::Shadow;
+
+// Re-export migration types
+pub use migration::{LoadResult, MigrationError, MigrationSource};
+
+// Re-export commit types
+pub use commit::CommitStats;
+
+/// Result of loading fields from KV storage.
+///
+/// Returned by `load_from_kv()` to indicate how many fields were loaded,
+/// defaulted, or migrated.
+#[cfg(feature = "shadows_kv_persist")]
+#[derive(Debug, Default, Clone)]
+pub struct LoadFieldResult {
+    /// Number of fields loaded from KV storage.
+    pub loaded: usize,
+    /// Number of fields that used default values (not in KV).
+    pub defaulted: usize,
+    /// Number of fields that were migrated from old keys.
+    pub migrated: usize,
+}
+
+#[cfg(feature = "shadows_kv_persist")]
+impl LoadFieldResult {
+    /// Merge another result into this one.
+    pub fn merge(&mut self, other: LoadFieldResult) {
+        self.loaded += other.loaded;
+        self.defaulted += other.defaulted;
+        self.migrated += other.migrated;
+    }
+}
+
+// Re-export hash functions (for derive macro use)
+pub use hash::{fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64, FNV1A_INIT};
+
+// The impl_opaque! macro is exported at crate root via #[macro_export]
+
+// Re-export new error types
+pub use error::KvError;
 
 pub use data_types::Patch;
-use embassy_sync::{
-    blocking_mutex::raw::{NoopRawMutex, RawMutex},
-    mutex::Mutex,
-};
 pub use error::Error;
-use mqttrust::{DeferredPayload, Publish, Subscribe, SubscribeTopic, ToPayload};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 
-use data_types::{
-    AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
-};
-use topics::Topic;
+// =============================================================================
+// KV-based Shadow Storage Traits
+// =============================================================================
 
-use self::dao::ShadowDAO;
+/// Trait for types that can serialize their fields into an existing map.
+///
+/// Used for flat union serialization of adjacently-tagged enum Reported types.
+/// When reporting an adjacently-tagged enum to AWS IoT Shadow, we need to serialize
+/// all possible variant fields - active variant fields with their values, and
+/// inactive variant fields as `null` to clear them from the shadow.
+///
+/// ## Why Universal Implementation?
+///
+/// All `#[shadow_node]` types generate `ReportedUnionFields` for their Reported type,
+/// even if they're not used inside an adjacently-tagged enum. This is because at
+/// macro expansion time, we don't know if a type will later be used as an inner
+/// type of an adjacently-tagged enum.
+///
+/// ## Supertrait: `Serialize`
+///
+/// `ReportedUnionFields` requires `Serialize` as a supertrait. This means the
+/// `ShadowNode::Reported` bound of `ReportedUnionFields` implies `Serialize`.
+pub trait ReportedUnionFields: Serialize {
+    /// Names of all fields this type contributes to the flat union.
+    ///
+    /// Used to null out inactive variant fields during serialization.
+    const FIELD_NAMES: &'static [&'static str];
 
-const MAX_TOPIC_LEN: usize = 128;
-const PARTIAL_REQUEST_OVERHEAD: usize = 64;
-const CLASSIC_SHADOW: &str = "Classic";
+    /// Serialize this type's fields into an existing map.
+    ///
+    /// Unlike the standard `Serialize` impl which creates a new map, this method
+    /// adds fields to an existing `SerializeMap`. This enables flat union serialization
+    /// where multiple types' fields are combined into a single JSON object.
+    fn serialize_into_map<S: serde::ser::SerializeMap>(&self, map: &mut S) -> Result<(), S::Error>;
+}
 
-pub trait ShadowState: ShadowPatch {
+/// Helper to serialize null values for inactive variant fields.
+///
+/// When serializing an adjacently-tagged enum's Reported type, inactive variants'
+/// fields must be serialized as `null` to clear them from AWS IoT Shadow.
+///
+/// # Example
+///
+/// ```ignore
+/// // When PortMode is Analog, Digital fields are nulled:
+/// serialize_null_fields(ReportedDigitalConfig::FIELD_NAMES, &mut map)?;
+/// ```
+pub fn serialize_null_fields<S: serde::ser::SerializeMap>(
+    field_names: &[&str],
+    map: &mut S,
+) -> Result<(), S::Error> {
+    for name in field_names {
+        map.serialize_entry(*name, &None::<()>)?;
+    }
+    Ok(())
+}
+
+/// Core shadow type trait - clean, no KV awareness.
+///
+/// Implemented by both top-level shadow structs (`#[shadow_root]`) and nested
+/// patchable types (`#[shadow_node]`).
+///
+/// ## Naming Convention
+///
+/// - `ShadowNode`: Any type in the shadow tree (structs, enums, nested types)
+/// - `ShadowRoot`: Top-level shadow with a name (prefix for KV keys)
+///
+/// ## SCHEMA_HASH Composition
+///
+/// Each `ShadowNode` type has a compile-time `SCHEMA_HASH` that captures its
+/// schema structure. For nested types, the hash is composed from child hashes:
+///
+/// ```text
+/// Parent::SCHEMA_HASH = hash(
+///     field1_name + <Field1Type as ShadowNode>::SCHEMA_HASH +
+///     field2_name + hash(primitive_type_name) +
+///     ...
+/// )
+/// ```
+///
+/// This ensures that changes to nested types propagate to parent hashes.
+/// Only the top-level `ShadowRoot::SCHEMA_HASH` is actually stored.
+pub trait ShadowNode: Default + Clone + Sized {
+    /// Delta type for partial updates (fields wrapped in Option).
+    ///
+    /// ## Trait Bounds
+    ///
+    /// - `Default`: Create empty delta for `update_desired()` pattern
+    /// - `Serialize`: Send delta to cloud via MQTT (device→cloud desired updates)
+    /// - `DeserializeOwned`: Receive delta from cloud via MQTT (cloud→device)
+    ///
+    /// ## Delta Type Shapes
+    ///
+    /// For **structs** and **simple enums**, the Delta mirrors the type structure
+    /// with fields/variants wrapped in `Option`:
+    /// ```ignore
+    /// struct Config { timeout: u32 }
+    /// // Delta:
+    /// struct DeltaConfig { timeout: Option<u32> }
+    ///
+    /// enum Mode { Off, On(Config) }
+    /// // Delta:
+    /// enum DeltaMode { Off, On(DeltaConfig) }
+    /// ```
+    ///
+    /// For **adjacently-tagged enums** (`#[serde(tag="...", content="...")]`),
+    /// the Delta is a struct with optional tag and content fields to support
+    /// partial updates:
+    /// ```ignore
+    /// #[serde(tag = "mode", content = "config")]
+    /// enum PortMode { Inactive, Sio(SioConfig) }
+    /// // Delta - struct shape for partial updates:
+    /// struct DeltaPortMode {
+    ///     mode: Option<PortModeVariant>,
+    ///     config: Option<DeltaPortModeConfig>,
+    /// }
+    /// ```
+    type Delta: Default + Serialize + serde::de::DeserializeOwned;
+
+    /// Reported type for serialization to cloud.
+    ///
+    /// Used for device→cloud acknowledgment after applying deltas.
+    /// Fields marked `report_only` are `None` in the Reported type.
+    ///
+    /// ## Trait Bound: `ReportedUnionFields`
+    ///
+    /// All `Reported` types must implement `ReportedUnionFields`, which provides:
+    /// - `Serialize` (as a supertrait)
+    /// - `serialize_into_map()` for flat union serialization
+    type Reported: ReportedUnionFields;
+
+    /// Compile-time hash of this type's schema structure.
+    ///
+    /// For nested `ShadowNode` fields, this includes their `SCHEMA_HASH`.
+    /// For primitive fields, this includes the field name and type name.
+    /// For fields with migrations, this includes the migration source keys.
+    ///
+    /// **Note**: This hash is used for composition. Only the top-level
+    /// `ShadowRoot` hash is stored for change detection.
+    const SCHEMA_HASH: u64;
+
+    // =========================================================================
+    // Core Methods
+    // =========================================================================
+
+    /// Apply delta to state (pure mutation, no storage, no serialization).
+    ///
+    /// This method updates self with delta values. It does NOT persist
+    /// to storage - that's the responsibility of the `StateStore`.
+    ///
+    /// ## Why `&Self::Delta` (by reference)?
+    ///
+    /// Taking delta by reference (not by value) allows callers to retain the
+    /// delta after applying, which is needed for patterns like `wait_delta()`
+    /// that return the delta to the caller.
+    fn apply_delta(&mut self, delta: &Self::Delta);
+
+    /// Convert this state into its reported representation.
+    fn into_reported(self) -> Self::Reported;
+}
+
+// =============================================================================
+// KV Persistence Trait (feature-gated)
+// =============================================================================
+
+/// Field-level persistence operations for KV storage.
+///
+/// This trait is only available with the `shadows_kv_persist` feature and
+/// provides methods for field-level KV persistence with migration support.
+///
+/// Types implementing `KVPersist` can be stored in field-level KV stores
+/// like `SequentialKVStore` and `FileKVStore`.
+#[cfg(feature = "shadows_kv_persist")]
+pub trait KVPersist: ShadowNode {
+    // =========================================================================
+    // KV Storage Constants
+    // =========================================================================
+
+    /// Maximum key length needed for this type's fields (excluding prefix).
+    ///
+    /// Computed at compile time per-field during codegen.
+    /// Includes the longest field path including nested types.
+    const MAX_KEY_LEN: usize;
+
+    /// Maximum serialized value size for any field.
+    ///
+    /// Used by no-std impls to allocate stack buffers for serialization.
+    /// Under std, this constant may be unused since `to_allocvec` / `fetch_to_vec`
+    /// handle allocation dynamically.
+    const MAX_VALUE_LEN: usize;
+
+    // =========================================================================
+    // Migration Support
+    // =========================================================================
+
+    /// Get migration sources for a field path.
+    ///
+    /// Returns empty slice if no migrations defined for this field.
+    fn migration_sources(field_path: &str) -> &'static [MigrationSource];
+
+    /// Get all migration source keys for GC safety.
+    ///
+    /// Returns an iterator over all migration source keys that should be
+    /// preserved during garbage collection. This includes old keys that
+    /// may still contain data from previous schema versions.
+    ///
+    /// Used by `commit()` to build the complete set of valid keys.
+    fn all_migration_keys() -> impl Iterator<Item = &'static str> {
+        core::iter::empty()
+    }
+
+    /// Apply a custom default value to a field if one is defined.
+    ///
+    /// This is used during loading when a field has no stored value and no
+    /// migration source. It allows setting non-trivial defaults for primitive
+    /// types without needing newtype wrappers.
+    ///
+    /// ## Return Value
+    ///
+    /// - `true`: A custom default was applied to the field at `field_path`
+    /// - `false`: No custom default defined; caller should use `Default::default()`
+    fn apply_field_default(&mut self, field_path: &str) -> bool;
+
+    // =========================================================================
+    // KV Persistence Methods
+    // =========================================================================
+
+    /// Load this type's state from KV storage.
+    ///
+    /// Each impl allocates its own buffer internally:
+    /// - no-std: stack buffer of `MAX_VALUE_LEN` bytes
+    /// - std: uses `kv.fetch_to_vec()` for dynamic allocation
+    ///
+    /// KEY_LEN is propagated from root to ensure buffer size matches full key paths.
+    fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
+        &mut self,
+        prefix: &str,
+        kv: &K,
+    ) -> impl core::future::Future<Output = Result<LoadFieldResult, KvError<K::Error>>>;
+
+    /// Load this type's state from KV storage with migration support.
+    ///
+    /// Same as `load_from_kv()` but tries migration sources when primary key is missing.
+    fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
+        &mut self,
+        prefix: &str,
+        kv: &K,
+    ) -> impl core::future::Future<Output = Result<LoadFieldResult, KvError<K::Error>>>;
+
+    /// Persist this type's entire state to KV storage (all fields).
+    ///
+    /// Each impl allocates its own buffer internally:
+    /// - no-std: stack buffer of `MAX_VALUE_LEN` bytes + `postcard::to_slice`
+    /// - std: uses `postcard::to_allocvec()` for dynamic allocation
+    fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
+        &self,
+        prefix: &str,
+        kv: &K,
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>>;
+
+    /// Persist only delta fields to KV storage (efficient partial update).
+    ///
+    /// - Structs: NO LOAD NEEDED - direct write of changed fields
+    /// - Regular enums: NO LOAD NEEDED - unconditionally write `_variant`
+    /// - Adjacently-tagged enums: NO LOAD NEEDED - only write `_variant` if `mode.is_some()`
+    fn persist_delta<K: KVStore, const KEY_LEN: usize>(
+        delta: &Self::Delta,
+        kv: &K,
+        prefix: &str,
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>>;
+
+    /// Collect all valid key paths for this type.
+    ///
+    /// Used by `commit()` for garbage collection. Enums report ALL variant fields
+    /// (not just active), since inactive variant fields are valid keys that should
+    /// not be removed.
+    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str));
+
+    /// Collect valid key prefixes for dynamic collections.
+    ///
+    /// Map types emit their prefix (e.g., `"shadow/map_field/"`) so the GC
+    /// preserves all child keys that start with that prefix. Leaf types and
+    /// static structs have no dynamic children and use the default (empty) impl.
+    ///
+    /// Structs generated by the derive macro delegate to nested fields.
+    fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
+        let _ = (prefix, prefixes);
+    }
+}
+
+/// Trait for types that can serve as map keys in shadow collections.
+///
+/// Map keys must be displayable (for KV key construction), serializable,
+/// and have a known maximum display length for compile-time buffer sizing.
+pub trait MapKey:
+    Clone + Eq + core::fmt::Display + serde::Serialize + serde::de::DeserializeOwned
+{
+    /// Maximum length of `Display` output for this key type.
+    ///
+    /// Used to compute `MAX_KEY_LEN` for map-based `KVPersist` implementations.
+    const MAX_KEY_DISPLAY_LEN: usize;
+}
+
+impl MapKey for u8 {
+    const MAX_KEY_DISPLAY_LEN: usize = 3; // "255"
+}
+
+impl MapKey for u16 {
+    const MAX_KEY_DISPLAY_LEN: usize = 5; // "65535"
+}
+
+impl MapKey for u32 {
+    const MAX_KEY_DISPLAY_LEN: usize = 10; // "4294967295"
+}
+
+impl<const N: usize> MapKey for heapless::String<N> {
+    const MAX_KEY_DISPLAY_LEN: usize = N;
+}
+
+#[cfg(feature = "std")]
+impl MapKey for std::string::String {
+    const MAX_KEY_DISPLAY_LEN: usize = 64;
+}
+
+/// Trait for top-level shadow state types.
+///
+/// This is only implemented by types marked with `#[shadow_root]`, not `#[shadow_node]`.
+/// It provides the shadow name and is the type whose `SCHEMA_HASH` gets stored.
+///
+/// ## Example
+///
+/// ```ignore
+/// // Top-level shadow - implements both ShadowRoot and ShadowNode
+/// #[shadow_root(name = "device")]
+/// struct DeviceShadow {
+///     config: Config,      // nested ShadowNode
+///     version: u32,        // primitive
+/// }
+///
+/// // Nested type - implements only ShadowNode
+/// #[shadow_node]
+/// struct Config {
+///     timeout: u32,
+///     retries: u8,
+/// }
+/// ```
+///
+/// Only `DeviceShadow::SCHEMA_HASH` is stored in KV at `"device/__schema_hash__"`.
+pub trait ShadowRoot: ShadowNode {
+    /// The shadow name used as KV key prefix (e.g., "device").
+    ///
+    /// Returns `None` for classic/unnamed shadows, which use "classic" as prefix.
     const NAME: Option<&'static str>;
+
+    /// The AWS IoT topic prefix (default: "$aws").
+    ///
+    /// This is used for MQTT topic formatting in cloud communication.
     const PREFIX: &'static str = "$aws";
 
+    /// Maximum payload size for shadow updates (default: 512 bytes).
+    ///
+    /// This should be set based on the maximum size of your shadow state
+    /// when serialized to JSON.
     const MAX_PAYLOAD_SIZE: usize = 512;
+
+    // Note: SCHEMA_HASH comes from ShadowNode, but only ShadowRoot's hash
+    // is stored in KV at `{prefix}/__schema_hash__`
 }
-
-pub trait ShadowPatch: Default + Clone + Sized {
-    // Contains all fields from `Self` as optionals
-    type Delta: DeserializeOwned + Serialize + Clone + Default;
-
-    // Contains all fields from `Delta` + additional optional fields
-    type Reported: From<Self> + Serialize + Default;
-
-    fn apply_patch(&mut self, delta: Self::Delta);
-}
-
-struct ShadowHandler<'a, 'm, M: RawMutex, S> {
-    mqtt: &'m mqttrust::MqttClient<'a, M>,
-    subscription: Mutex<NoopRawMutex, Option<mqttrust::Subscription<'a, 'm, M, 2>>>,
-    _shadow: PhantomData<S>,
-}
-
-impl<'a, 'm, M: RawMutex, S: ShadowState> ShadowHandler<'a, 'm, M, S> {
-    async fn handle_delta(&self) -> Result<Option<S::Delta>, Error> {
-        // Loop to automatically retry on clean session
-        loop {
-            let mut sub_ref = self.subscription.lock().await;
-
-            let delta_subscription = match sub_ref.deref_mut() {
-                Some(sub) => sub,
-                None => {
-                    info!("Subscribing to delta topic");
-                    self.mqtt.wait_connected().await;
-
-                    let sub = self
-                        .mqtt
-                        .subscribe::<2>(
-                            Subscribe::builder()
-                                .topics(&[SubscribeTopic::builder()
-                                    .topic_path(
-                                        topics::Topic::UpdateDelta
-                                            .format::<64>(
-                                                S::PREFIX,
-                                                self.mqtt.client_id(),
-                                                S::NAME,
-                                            )?
-                                            .as_str(),
-                                    )
-                                    .build()])
-                                .build(),
-                        )
-                        .await
-                        .map_err(Error::MqttError)?;
-
-                    let _ = sub_ref.insert(sub);
-
-                    let delta_state = self.get_shadow().await?;
-
-                    return Ok(delta_state.delta);
-                }
-            };
-
-            let delta_message = match delta_subscription.next_message().await {
-                Some(msg) => msg,
-                None => {
-                    // Clear subscription if we get clean session
-                    info!(
-                        "[{:?}] Clean session detected, resubscribing to delta topic",
-                        S::NAME.unwrap_or(CLASSIC_SHADOW)
-                    );
-                    sub_ref.take();
-                    // Drop the lock and continue the loop to retry
-                    drop(sub_ref);
-                    continue;
-                }
-            };
-
-            // Update the device's state to match the desired state in the
-            // message body.
-            debug!(
-                "[{:?}] Received shadow delta event.",
-                S::NAME.unwrap_or(CLASSIC_SHADOW),
-            );
-
-            // Buffer to temporarily hold escaped characters data
-            let mut buf = [0u8; 64];
-
-            // Use from_slice_escaped to properly handle escaped characters
-            let (delta, _) = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
-                delta_message.payload(),
-                &mut buf,
-            )
-            .map_err(|_| Error::InvalidPayload)?;
-
-            return Ok(delta.state);
-        }
-    }
-
-    /// Internal helper function for applying a delta state to the actual shadow
-    /// state, and update the cloud shadow.
-    async fn update_shadow(
-        &self,
-        desired: Option<S::Delta>,
-        reported: Option<S::Reported>,
-    ) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
-        debug!(
-            "[{:?}] Updating reported shadow value.",
-            S::NAME.unwrap_or(CLASSIC_SHADOW),
-        );
-
-        if desired.is_some() && reported.is_some() {
-            // Do not edit both reported and desired at the same time
-            return Err(Error::ShadowError(error::ShadowError::Forbidden));
-        }
-
-        let request: Request<'_, S::Delta, S::Reported> = Request {
-            state: RequestState { desired, reported },
-            client_token: Some(self.mqtt.client_id()),
-            version: None,
-        };
-
-        let payload = DeferredPayload::new(
-            |buf: &mut [u8]| {
-                serde_json_core::to_slice(&request, buf)
-                    .map_err(|_| mqttrust::EncodingError::BufferSize)
-            },
-            S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD,
-        );
-
-        // Wait for mqtt to connect
-        self.mqtt.wait_connected().await;
-
-        let mut sub = self.publish_and_subscribe(Topic::Update, payload).await?;
-
-        //*** WAIT RESPONSE ***/
-        debug!("Wait for Accepted or Rejected");
-
-        loop {
-            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
-
-            match Topic::from_str(S::PREFIX, message.topic_name()) {
-                Some((Topic::UpdateAccepted, _, _)) => {
-                    let mut buf = [0u8; 64];
-                    let (response, _) = serde_json_core::from_slice_escaped::<
-                        // FIXME:
-                        AcceptedResponse<S::Delta, S::Delta>,
-                    >(message.payload(), &mut buf)
-                    .map_err(|_| Error::InvalidPayload)?;
-
-                    if response.client_token != Some(self.mqtt.client_id()) {
-                        continue;
-                    }
-
-                    return Ok(response.state);
-                }
-                Some((Topic::UpdateRejected, _, _)) => {
-                    let mut buf = [0u8; 64];
-                    let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
-                        message.payload(),
-                        &mut buf,
-                    )
-                    .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
-
-                    if error_response.client_token != Some(self.mqtt.client_id()) {
-                        continue;
-                    }
-
-                    return Err(Error::ShadowError(
-                        error_response
-                            .try_into()
-                            .unwrap_or(error::ShadowError::NotFound),
-                    ));
-                }
-                _ => {
-                    error!("Expected Topic name GetRejected or GetAccepted but got something else");
-                    return Err(Error::WrongShadowName);
-                }
-            }
-        }
-    }
-
-    /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    async fn get_shadow(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
-        // Wait for mqtt to connect
-        self.mqtt.wait_connected().await;
-
-        let mut sub = self.publish_and_subscribe(Topic::Get, b"").await?;
-
-        let get_message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
-
-        // Check if topic is GetAccepted
-        // Deserialize message
-        // Persist shadow and return new shadow
-        match Topic::from_str(S::PREFIX, get_message.topic_name()) {
-            Some((Topic::GetAccepted, _, _)) => {
-                let mut buf = [0u8; 64];
-                let (response, _) = serde_json_core::from_slice_escaped::<
-                    AcceptedResponse<S::Delta, S::Delta>,
-                >(get_message.payload(), &mut buf)
-                .map_err(|_| Error::InvalidPayload)?;
-
-                Ok(response.state)
-            }
-            Some((Topic::GetRejected, _, _)) => {
-                let mut buf = [0u8; 64];
-                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
-                    get_message.payload(),
-                    &mut buf,
-                )
-                .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
-
-                if error_response.code == 404 {
-                    debug!(
-                        "[{:?}] Thing has no shadow document. Creating with defaults...",
-                        S::NAME.unwrap_or(CLASSIC_SHADOW)
-                    );
-                    self.create_shadow().await?;
-                }
-
-                Err(Error::ShadowError(
-                    error_response
-                        .try_into()
-                        .unwrap_or(error::ShadowError::NotFound),
-                ))
-            }
-            _ => {
-                error!(
-                    "Expected topic name to be GetRejected or GetAccepted but got something else"
-                );
-                Err(Error::WrongShadowName)
-            }
-        }
-    }
-
-    pub async fn delete_shadow(&self) -> Result<(), Error> {
-        // Wait for mqtt to connect
-        self.mqtt.wait_connected().await;
-
-        let mut sub = self
-            .publish_and_subscribe(topics::Topic::Delete, b"")
-            .await?;
-
-        let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
-
-        // Check if topic is DeleteAccepted
-        match Topic::from_str(S::PREFIX, message.topic_name()) {
-            Some((Topic::DeleteAccepted, _, _)) => Ok(()),
-            Some((Topic::DeleteRejected, _, _)) => {
-                let mut buf = [0u8; 64];
-                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
-                    message.payload(),
-                    &mut buf,
-                )
-                .map_err(|_| Error::ShadowError(error::ShadowError::NotFound))?;
-
-                Err(Error::ShadowError(
-                    error_response
-                        .try_into()
-                        .unwrap_or(error::ShadowError::NotFound),
-                ))
-            }
-            _ => {
-                error!("Expected Topic name GetRejected or GetAccepted but got something else");
-                Err(Error::WrongShadowName)
-            }
-        }
-    }
-
-    pub fn create_shadow(
-        &self,
-    ) -> impl Future<Output = Result<DeltaState<S::Delta, S::Delta>, Error>> + '_ + use<'_, 'a, 'm, M, S>
-    {
-        debug!(
-            "[{:?}] Creating initial shadow value.",
-            S::NAME.unwrap_or(CLASSIC_SHADOW),
-        );
-        self.update_shadow(None, Some(S::Reported::default()))
-    }
-
-    /// This function will subscribe to accepted and rejected topics and then do a publish.
-    /// It will only return when something is accepted or rejected
-    /// Topic is the topic you want to publish to
-    /// The function will automatically subscribe to the accepted and rejected topic related to the publish topic
-    async fn publish_and_subscribe(
-        &self,
-        topic: topics::Topic,
-        payload: impl ToPayload,
-    ) -> Result<mqttrust::Subscription<'a, '_, M, 2>, Error> {
-        let (accepted, rejected) = match topic {
-            Topic::Get => (Topic::GetAccepted, Topic::GetRejected),
-            Topic::Update => (Topic::UpdateAccepted, Topic::UpdateRejected),
-            Topic::Delete => (Topic::DeleteAccepted, Topic::DeleteRejected),
-            _ => return Err(Error::ShadowError(error::ShadowError::Forbidden)),
-        };
-
-        //*** SUBSCRIBE ***/
-        let sub = self
-            .mqtt
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                accepted
-                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
-                                    .as_str(),
-                            )
-                            .build(),
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                rejected
-                                    .format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
-                                    .as_str(),
-                            )
-                            .build(),
-                    ])
-                    .build(),
-            )
-            .await
-            .map_err(Error::MqttError)?;
-
-        //*** PUBLISH REQUEST ***/
-        let topic_name =
-            topic.format::<MAX_TOPIC_LEN>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
-        self.mqtt
-            .publish(
-                Publish::builder()
-                    .topic_name(topic_name.as_str())
-                    .payload(payload)
-                    .build(),
-            )
-            .await
-            .map_err(Error::MqttError)?;
-
-        Ok(sub)
-    }
-}
-
-pub struct PersistedShadow<'a, 'm, S, M: RawMutex, D> {
-    handler: ShadowHandler<'a, 'm, M, S>,
-    pub(crate) dao: Mutex<NoopRawMutex, D>,
-}
-
-impl<'a, 'm, S, M, D> PersistedShadow<'a, 'm, S, M, D>
-where
-    S: ShadowState + Serialize + DeserializeOwned,
-    M: RawMutex,
-    D: ShadowDAO<S>,
-{
-    /// Instantiate a new shadow that will be automatically persisted to NVM
-    /// based on the passed `DAO`.
-    pub fn new(mqtt: &'m mqttrust::MqttClient<'a, M>, dao: D) -> Self {
-        let handler = ShadowHandler {
-            mqtt,
-            subscription: Mutex::new(None),
-            _shadow: PhantomData,
-        };
-
-        Self {
-            handler,
-            dao: Mutex::new(dao),
-        }
-    }
-
-    /// Wait delta will subscribe if not already to Updatedelta and wait for changes
-    ///
-    pub async fn wait_delta(&self) -> Result<(S, Option<S::Delta>), Error> {
-        let mut dao = self.dao.lock().await;
-
-        let mut state = match dao.read().await {
-            Ok(state) => state,
-            Err(_) => {
-                error!("Could not read state from flash writing default");
-                let state = S::default();
-                dao.write(&state).await?;
-                state
-            }
-        };
-
-        // Drop the lock to avoid deadlock
-        drop(dao);
-
-        let delta = self.handler.handle_delta().await?;
-
-        // Something has changed as part of handling a message. Persist it
-        // to NVM storage.
-        if let Some(ref delta) = delta {
-            debug!(
-                "[{:?}] Delta reports new desired value. Changing local value...",
-                S::NAME.unwrap_or(CLASSIC_SHADOW),
-            );
-
-            state.apply_patch(delta.clone());
-
-            self.handler
-                .update_shadow(None, Some(state.clone().into()))
-                .await?;
-
-            self.dao.lock().await.write(&state).await?;
-        }
-
-        Ok((state, delta))
-    }
-
-    /// Get an immutable reference to the internal local state.
-    pub async fn try_get(&self) -> Result<S, Error> {
-        self.dao.lock().await.read().await
-    }
-
-    /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub async fn get_shadow(&self) -> Result<S, Error> {
-        let delta_state = self.handler.get_shadow().await?;
-
-        debug!("Persisting new state after get shadow request");
-        let mut state = self.dao.lock().await.read().await.unwrap_or_default();
-        if let Some(delta) = delta_state.delta {
-            state.apply_patch(delta.clone());
-            self.dao.lock().await.write(&state).await?;
-            self.handler
-                .update_shadow(None, Some(state.clone().into()))
-                .await?;
-        }
-
-        Ok(state)
-    }
-
-    /// Report the state of the shadow.
-    pub async fn report(&self) -> Result<(), Error> {
-        let mut dao = self.dao.lock().await;
-
-        let state = match dao.read().await {
-            Ok(state) => state,
-            Err(_) => {
-                error!("Could not read state from flash writing default");
-                let state = S::default();
-                dao.write(&state).await?;
-                state
-            }
-        };
-
-        // Drop the lock to avoid deadlock
-        drop(dao);
-
-        self.handler.update_shadow(None, Some(state.into())).await?;
-        Ok(())
-    }
-
-    /// Update the state of the shadow.
-    ///
-    /// This function will update the desired state of the shadow in the cloud,
-    /// and depending on whether the state update is rejected or accepted, it
-    /// will automatically update the local version after response
-    ///
-    /// The returned `bool` from the update closure will determine whether the
-    /// update is persisted using the `DAO`, or just updated in the cloud. This
-    /// can be handy for activity or status field updates that are not relevant
-    /// to store persistent on the device, but are required to be part of the
-    /// same cloud shadow.
-    pub async fn update<F: FnOnce(&S, &mut S::Reported)>(&self, f: F) -> Result<(), Error> {
-        let mut update = S::Reported::default();
-        let state = self.dao.lock().await.read().await?;
-        f(&state, &mut update);
-        self.update_reported_inner(update, state).await
-    }
-
-    async fn update_reported_inner(&self, update: S::Reported, mut state: S) -> Result<(), Error> {
-        let response = self.handler.update_shadow(None, Some(update)).await?;
-
-        if let Some(delta) = response.delta {
-            state.apply_patch(delta.clone());
-            self.dao.lock().await.write(&state).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Updating desired should only be done on user requests e.g. button press or similar.
-    /// State changes within the device should only change reported state.
-    pub async fn update_desired<F: FnOnce(&mut S::Delta)>(&self, f: F) -> Result<(), Error> {
-        let mut update = S::Delta::default();
-        f(&mut update);
-        self.update_desired_inner(update).await
-    }
-
-    async fn update_desired_inner(&self, update: S::Delta) -> Result<(), Error> {
-        let response = self.handler.update_shadow(Some(update), None).await?;
-
-        if let Some(delta) = response.delta {
-            let mut state = self.dao.lock().await.read().await?;
-            state.apply_patch(delta.clone());
-            self.dao.lock().await.write(&state).await?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn delete_shadow(&self) -> Result<(), Error> {
-        self.handler.delete_shadow().await?;
-        self.dao.lock().await.write(&S::default()).await?;
-        Ok(())
-    }
-}
-
-pub struct Shadow<'a, 'm, S, M: RawMutex> {
-    state: S,
-    handler: ShadowHandler<'a, 'm, M, S>,
-}
-
-impl<'a, 'm, S, M> Shadow<'a, 'm, S, M>
-where
-    S: ShadowState,
-    M: RawMutex,
-{
-    /// Instantiate a new non-persisted shadow
-    pub fn new(state: S, mqtt: &'m mqttrust::MqttClient<'a, M>) -> Self {
-        let handler = ShadowHandler {
-            mqtt,
-            subscription: Mutex::new(None),
-            _shadow: PhantomData,
-        };
-        Self { handler, state }
-    }
-
-    /// Handle incoming publish messages from the cloud on any topics relevant
-    /// for this particular shadow.
-    ///
-    /// This function needs to be fed all relevant incoming MQTT payloads in
-    /// order for the shadow manager to work.
-    pub async fn wait_delta(&mut self) -> Result<(&S, Option<S::Delta>), Error> {
-        let delta = self.handler.handle_delta().await?;
-
-        // Something has changed as part of handling a message. Persist it
-        // to NVM storage.
-        if let Some(ref delta) = delta {
-            debug!(
-                "[{:?}] Delta reports new desired value. Changing local value...",
-                S::NAME.unwrap_or(CLASSIC_SHADOW),
-            );
-
-            self.state.apply_patch(delta.clone());
-
-            self.handler
-                .update_shadow(None, Some(self.state.clone().into()))
-                .await?;
-        }
-
-        Ok((&self.state, delta))
-    }
-
-    /// Get an immutable reference to the internal local state.
-    pub fn get(&self) -> &S {
-        &self.state
-    }
-
-    /// Report the state of the shadow.
-    pub async fn report(&mut self) -> Result<(), Error> {
-        self.handler
-            .update_shadow(None, Some(self.state.clone().into()))
-            .await?;
-        Ok(())
-    }
-
-    /// Update the state of the shadow.
-    ///
-    /// This function will update the desired state of the shadow in the cloud,
-    /// and depending on whether the state update is rejected or accepted, it
-    /// will automatically update the local version after response
-    pub async fn update<F: FnOnce(&S, &mut S::Reported)>(&mut self, f: F) -> Result<(), Error> {
-        let mut update = S::Reported::default();
-        f(&self.state, &mut update);
-        self.update_inner(update).await
-    }
-
-    async fn update_inner(&mut self, update: S::Reported) -> Result<(), Error> {
-        let response = self.handler.update_shadow(None, Some(update)).await?;
-
-        if let Some(delta) = response.delta {
-            self.state.apply_patch(delta.clone());
-        }
-
-        Ok(())
-    }
-
-    /// Initiate a `GetShadow` request, updating the local state from the cloud.
-    pub async fn get_shadow(&mut self) -> Result<&S, Error> {
-        let delta_state = self.handler.get_shadow().await?;
-
-        debug!("Persisting new state after get shadow request");
-        if let Some(delta) = delta_state.delta {
-            self.state.apply_patch(delta.clone());
-            self.handler
-                .update_shadow(None, Some(self.state.clone().into()))
-                .await?;
-        }
-
-        Ok(&self.state)
-    }
-
-    pub fn delete_shadow(
-        &mut self,
-    ) -> impl Future<Output = Result<(), Error>> + '_ + use<'_, 'a, 'm, S, M> {
-        self.handler.delete_shadow()
-    }
-}
-
-impl<S, M> core::fmt::Debug for Shadow<'_, '_, S, M>
-where
-    S: ShadowState + core::fmt::Debug,
-    M: RawMutex,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "[{:?}] = {:?}",
-            S::NAME.unwrap_or(CLASSIC_SHADOW),
-            self.get()
-        )
-    }
-}
-
-#[cfg(feature = "defmt")]
-impl<'a, 'm, S, M> defmt::Format for Shadow<'a, 'm, S, M>
-where
-    S: ShadowState + defmt::Format,
-    M: RawMutex,
-{
-    fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(
-            fmt,
-            "[{:?}] = {:?}",
-            S::NAME.unwrap_or_else(|| CLASSIC_SHADOW),
-            self.get()
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
-    struct TestDelta {
-        field: heapless::String<20>,
-    }
-
-    #[test]
-    fn test_from_slice_escaped() {
-        let delta_message = b"{\"field\":\"\\\\HELLO WORLD\"}"; // FROM 4 backslashes in my string is saved in json as 2 backslashes which will be deserialized to 1 backslash
-        let mut buf = [0u8; 64];
-
-        let (delta, _) = serde_json_core::from_slice_escaped::<TestDelta>(delta_message, &mut buf)
-            .expect("Failed to deserialize");
-
-        println!("{}", delta.field);
-
-        assert_eq!(delta.field.as_str(), "\\HELLO WORLD");
-    }
-
-    #[test]
-    fn test_to_slice_escaping() {
-        // Create a struct with a backslash in the string
-        let mut test_data = TestDelta::default();
-        test_data.field.push_str("\\HELLO WORLD").unwrap();
-
-        let mut output = [0u8; 128];
-        let bytes_written =
-            serde_json_core::to_slice(&test_data, &mut output).expect("Failed to serialize");
-
-        let serialized = &output[..bytes_written];
-        let json_str = core::str::from_utf8(serialized).unwrap();
-        println!("Serialized JSON: {}", json_str);
-
-        // The JSON should contain \\ (escaped backslash)
-        assert!(
-            json_str.contains("\\\\"),
-            "JSON should contain escaped backslash"
-        );
-        assert_eq!(json_str, r#"{"field":"\\HELLO WORLD"}"#);
-
-        // Now test round-trip: deserialize it back
-        let mut buf = [0u8; 64];
-        let (deserialized, _) =
-            serde_json_core::from_slice_escaped::<TestDelta>(serialized, &mut buf)
-                .expect("Failed to deserialize");
-
-        assert_eq!(deserialized.field.as_str(), "\\HELLO WORLD");
-    }
-}
-
-//     use super::*;
-//     use crate as rustot;
-//     use crate::test::MockMqtt;
-//     use dao::StdIODAO;
-//     use derive::ShadowState;
-//     use serde::{Deserialize, Serialize};
-
-//     // #[derive(Debug, Default, Clone, Serialize, ShadowDiff, Deserialize, PartialEq)]
-//     // pub struct Test {}
-
-//     #[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
-//     pub struct SerdeRename {
-//         #[serde(rename = "SomeRenamedField")]
-//         #[unit_shadow_field]
-//         some_renamed_field: u8,
-//     }
-
-//     #[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
-//     #[serde(rename_all = "UPPERCASE")]
-//     pub struct SerdeRenameAll {
-//         test: u8,
-//     }
-
-//     #[derive(Debug, Default, Serialize, Deserialize, ShadowState, PartialEq)]
-//     #[shadow("config")]
-//     pub struct Config {
-//         id: u8,
-//     }
-
-//     #[test]
-//     fn shadow_name() {
-//         assert_eq!(<Config as ShadowState>::NAME, Some("config"))
-//     }
-
-//     #[test]
-//     fn serde_rename() {
-//         const RENAMED_STATE_FIELD: &[u8] = b"{\"SomeRenamedField\":  100}";
-//         const RENAMED_STATE_ALL: &[u8] = b"{\"TEST\":  100}";
-
-//         let (state, _) = serde_json_core::from_slice::<<SerdeRename as ShadowDiff>::PatchState>(
-//             RENAMED_STATE_FIELD,
-//         )
-//         .unwrap();
-
-//         assert!(state.some_renamed_field.is_some());
-
-//         let (state, _) = serde_json_core::from_slice::<<SerdeRenameAll as ShadowDiff>::PatchState>(
-//             RENAMED_STATE_ALL,
-//         )
-//         .unwrap();
-
-//         assert!(state.test.is_some());
-//     }
-
-//     #[test]
-//     fn handles_additional_fields() {
-//         const JSON_PATCH: &[u8] =
-//             b"{\"state\": {\"id\": 100, \"extra_field\": 123}, \"timestamp\": 12345}";
-
-//         let mqtt = &MockMqtt::new();
-
-//         let config = Config::default();
-//         let mut config_shadow = Shadow::new(config, mqtt).unwrap();
-
-//         mqtt.tx.borrow_mut().clear();
-
-//         let (updated, _) = config_shadow
-//             .handle_message(
-//                 &format!(
-//                     "$aws/things/{}/shadow/{}update/delta",
-//                     mqtt.client_id(),
-//                     <Config as ShadowState>::NAME
-//                         .map_or_else(|| "".to_string(), |n| format!("name/{}/", n))
-//                 ),
-//                 JSON_PATCH,
-//             )
-//             .expect("handle additional fields in received delta");
-
-//         assert_eq!(mqtt.tx.borrow_mut().len(), 1);
-
-//         assert_eq!(updated, &Config { id: 100 });
-//     }
-
-//     #[test]
-//     fn initialization_packets() {
-//         let mqtt = &MockMqtt::new();
-
-//         let config = Config::default();
-//         let mut config_shadow = Shadow::new(config, mqtt).unwrap();
-
-//         config_shadow.get_shadow().unwrap();
-
-//         // Check that we have 2 subscribe packets + 1 publish packet (get request)
-//         assert_eq!(mqtt.tx.borrow_mut().len(), 2);
-//         mqtt.tx.borrow_mut().clear();
-
-//         config_shadow
-//             .update(|_current, desired| desired.id = Some(7))
-//             .unwrap();
-
-//         // Check that we have 1 publish packet (update request)
-//         assert_eq!(mqtt.tx.borrow_mut().len(), 1);
-//     }
-
-//     #[test]
-//     fn persists_state() {
-//         let mqtt = &MockMqtt::new();
-//         let config = Config::default();
-
-//         let storage = std::io::Cursor::new(std::vec::Vec::with_capacity(1024));
-//         let shadow_dao = StdIODAO::new(storage);
-//         let mut config_shadow = PersistedShadow::new(config, mqtt, shadow_dao).unwrap();
-
-//         mqtt.tx.borrow_mut().clear();
-
-//         config_shadow
-//             .update(|_, desired| {
-//                 desired.id = Some(100);
-//             })
-//             .unwrap();
-
-//         let updated = config_shadow.get();
-
-//         assert_eq!(mqtt.tx.borrow_mut().len(), 1);
-//         assert_eq!(updated, &Config { id: 100 });
-
-//         let dao = config_shadow.dao;
-//         assert_eq!(dao.0.position(), 10);
-
-//         let dao_storage = dao.0.into_inner();
-//         assert_eq!(dao_storage.len(), 10);
-//         assert_eq!(&dao_storage, b"{\"id\":100}");
-//     }
-// }

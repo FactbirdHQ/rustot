@@ -11,12 +11,17 @@ readme = "../README.md"
 [lib]
 proc-macro = true
 
+[features]
+default = []
+# Enable KVPersist impl generation in derive macros
+kv_persist = []
+
 [dependencies]
-syn = "2"
+syn = { version = "2", features = ["extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
+proc-macro-crate = "3"
 
 [dev-dependencies]
-rustot = { path = ".." }
 serde = "1"
 heapless = "0.8"

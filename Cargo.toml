@@ -29,13 +29,16 @@ serde = { version = "1.0", default-features = false, features = ["derive"] }
 minicbor = { version = "0.25", optional = true }
 minicbor-serde = { version = "0.3.2", optional = true }
 
+# Shadow storage dependencies
+postcard = { version = "1.1", default-features = false, features = ["experimental-derive"] }
+
+# KV-based shadow storage (optional, enabled by shadows_kv_persist feature)
+sequential-storage = { version = "7.0", features = ["heapless-09"], optional = true }
 
 serde-json-core = { version = "0.6" }
 rustot-derive = { path = "rustot_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
-mqttrust = { git = "https://github.com/FactbirdHQ/mqttrust", rev = "6c33c59" }
-
-futures = { version = "0.3.28", default-features = false }
+mqttrust = { git = "https://github.com/FactbirdHQ/mqttrust", rev = "cc55012" }
 
 embassy-time = { version = "0.5.0" }
 embassy-sync = "0.7.2"
@@ -44,6 +47,10 @@ embassy-futures = "0.1.2"
 log = { version = "0.4", default-features = false, optional = true }
 defmt = { version = "0.3", optional = true }
 bon = { version = "3.3.2", default-features = false }
+
+# std feature dependencies (for FileKVStore)
+tokio = { version = "1", features = ["fs", "io-util", "sync"], optional = true }
+base64 = { version = "0.22", optional = true }
 
 [dev-dependencies]
 native-tls = { version = "0.2" }
@@ -73,7 +80,7 @@ hex = { version = "0.4.3", features = ["alloc"] }
 
 
 [features]
-default = ["ota_mqtt_data", "metric_cbor", "provision_cbor"]
+default = ["ota_mqtt_data", "metric_cbor", "provision_cbor", "shadows_kv_persist"]
 
 metric_cbor = ["dep:minicbor", "dep:minicbor-serde"]
 
@@ -83,16 +90,14 @@ ota_mqtt_data = ["dep:minicbor", "dep:minicbor-serde"]
 
 ota_http_data = []
 
-std = ["serde/std", "minicbor-serde?/std"]
+std = ["serde/std", "dep:tokio", "dep:base64", "postcard/alloc"]
 
-defmt = [
-    "dep:defmt",
-    "heapless/defmt",
-    "mqttrust/defmt",
-    "embassy-time/defmt",
-]
-log = ["dep:log", "mqttrust/log"]
+# Field-level KV shadow persistence (SequentialKVStore, FileKVStore)
+# Enables KVStore trait, KVPersist trait, and KV-based StateStore implementations
+shadows_kv_persist = ["dep:sequential-storage", "rustot-derive/kv_persist", "postcard/heapless"]
 
+defmt = ["dep:defmt"]
+log = ["dep:log"]
 
-# [patch."ssh://git@github.com/FactbirdHQ/mqttrust"]
-# mqttrust = { path = "../mqttrust" }
+[patch.crates-io]
+serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core", rev = "a435f78" }

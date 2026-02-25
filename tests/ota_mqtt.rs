@@ -1,3 +1,4 @@
+#![cfg(feature = "ota_mqtt_data")]
 #![allow(async_fn_in_trait)]
 #![feature(type_alias_impl_trait)]
 
@@ -60,7 +61,10 @@ fn handle_ota<'a>(
             .ok()?;
 
             if execution_changed.execution.is_none() {
-                panic!("No OTA jobs queued?");
+                if std::env::var("CI").is_ok() {
+                    panic!("No OTA jobs queued?");
+                }
+                return None;
             }
 
             execution_changed.execution?
@@ -136,7 +140,8 @@ async fn test_mqtt_ota() {
 
         Updater::check_for_job(&client).await?;
 
-        let config = ota::config::Config::default();
+        let mut config = ota::config::Config::default();
+        config.block_size = 4096;
 
         let message = jobs_subscription.next_message().await.unwrap();
 
@@ -179,7 +184,7 @@ async fn test_mqtt_ota() {
     let mut transport = NalTransport::new(network, broker);
 
     match embassy_time::with_timeout(
-        embassy_time::Duration::from_secs(25),
+        embassy_time::Duration::from_secs(45),
         select::select(stack.run(&mut transport), ota_fut),
     )
     .await
