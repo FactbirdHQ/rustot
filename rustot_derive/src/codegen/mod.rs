@@ -9,6 +9,10 @@
 
 mod adjacently_tagged;
 mod enum_codegen;
+#[cfg(feature = "kv_persist")]
+mod helpers;
+#[cfg(feature = "kv_persist")]
+mod kv_codegen;
 mod struct_codegen;
 
 use proc_macro2::{Span, TokenStream};
@@ -16,7 +20,22 @@ use proc_macro_crate::{crate_name, FoundCrate};
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Ident};
 
-use crate::attr::get_serde_tag_content;
+use crate::attr::{get_serde_tag_content, ShadowRootParams};
+
+/// Output of code generation for a struct or enum type.
+///
+/// This struct captures all the generated code fragments that need to be
+/// emitted together with the original type definition.
+pub(crate) struct CodegenOutput {
+    /// The Delta type definition (e.g., `struct DeltaFoo { ... }`)
+    pub delta_type: TokenStream,
+    /// The Reported type definition (e.g., `struct ReportedFoo { ... }`)
+    pub reported_type: TokenStream,
+    /// The `ShadowNode` trait implementation (includes `KVPersist` when feature-enabled)
+    pub shadow_node_impl: TokenStream,
+    /// The `ReportedUnionFields` trait implementation
+    pub reported_union_fields_impl: TokenStream,
+}
 
 /// Get the path to the rustot crate, handling both internal and external usage.
 pub(crate) fn rustot_crate_path() -> TokenStream {
@@ -33,22 +52,16 @@ pub(crate) fn rustot_crate_path() -> TokenStream {
     }
 }
 
-/// Configuration for shadow node code generation
-pub struct ShadowNodeConfig {
-    /// Whether this is a root type (implements ShadowRoot)
-    pub is_root: bool,
-    /// The shadow name (for ShadowRoot types)
-    pub name: Option<String>,
-    /// Topic prefix for MQTT topics (e.g., "$aws" for AWS IoT)
-    pub topic_prefix: Option<String>,
-    /// Maximum payload size for shadow documents
-    pub max_payload_len: Option<usize>,
-}
-
-/// Generate all code for a shadow node type
+/// Generate all code for a shadow node type.
+///
+/// # Arguments
+///
+/// * `input` - The parsed derive input
+/// * `root_params` - If `Some`, this is a root type and will implement `ShadowRoot`.
+///   If `None`, only `ShadowNode` is implemented.
 pub fn generate_shadow_node(
     input: &DeriveInput,
-    config: &ShadowNodeConfig,
+    root_params: Option<&ShadowRootParams>,
 ) -> syn::Result<TokenStream> {
     let name = &input.ident;
     let delta_name = format_ident!("Delta{}", name);
@@ -63,7 +76,7 @@ pub fn generate_shadow_node(
     let is_adjacently_tagged = tag_key.is_some() && content_key.is_some();
 
     // Generate code based on struct vs enum
-    let (delta_type, reported_type, shadow_node_impl, reported_union_fields_impl) = if is_enum {
+    let output = if is_enum {
         enum_codegen::generate_enum_code(
             input,
             &delta_name,
@@ -76,17 +89,17 @@ pub fn generate_shadow_node(
     };
 
     // Generate ShadowRoot impl if this is a root type
-    let shadow_root_impl = if config.is_root {
-        let name_value = match &config.name {
+    let shadow_root_impl = if let Some(params) = root_params {
+        let name_value = match &params.name {
             Some(n) => quote! { Some(#n) },
             None => quote! { None },
         };
 
-        let prefix_const = config.topic_prefix.as_ref().map(|p| {
+        let prefix_const = params.topic_prefix.as_ref().map(|p| {
             quote! { const PREFIX: &'static str = #p; }
         });
 
-        let max_payload_const = config.max_payload_len.map(|s| {
+        let max_payload_const = params.max_payload_len.map(|s| {
             quote! { const MAX_PAYLOAD_SIZE: usize = #s; }
         });
 
@@ -100,6 +113,11 @@ pub fn generate_shadow_node(
     } else {
         TokenStream::new()
     };
+
+    let delta_type = output.delta_type;
+    let reported_type = output.reported_type;
+    let shadow_node_impl = output.shadow_node_impl;
+    let reported_union_fields_impl = output.reported_union_fields_impl;
 
     Ok(quote! {
         #delta_type

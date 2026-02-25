@@ -9,6 +9,26 @@ use crate::jobs::MAX_THING_NAME_LEN;
 
 use super::Error;
 
+/// Compute the maximum topic buffer size for a given shadow type.
+///
+/// Uses the actual prefix and shadow name lengths (known at compile time)
+/// with only `MAX_THING_NAME_LEN` as worst-case.
+///
+/// Longest topic pattern:
+///   `{prefix}/things/{thing_name}/shadow/name/{shadow_name}/update/documents`
+pub const fn max_topic_len(prefix: &str, name: Option<&str>) -> usize {
+    let base = prefix.len()
+        + "/things/".len() // 8
+        + MAX_THING_NAME_LEN // 128
+        + "/shadow".len(); // 7
+    let named = match name {
+        Some(n) => "/name/".len() + n.len(), // 6 + shadow_name.len()
+        None => 0,
+    };
+    // Longest suffix: "/update/documents" = 17
+    base + named + "/update/documents".len()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Direction {
@@ -259,7 +279,7 @@ impl<const N: usize> Subscribe<N> {
         prefix: &str,
         thing_name: &str,
         shadow_name: Option<&str>,
-    ) -> Result<heapless::Vec<(heapless::String<128>, QoS), N>, Error> {
+    ) -> Result<heapless::Vec<(heapless::String<256>, QoS), N>, Error> {
         assert!(thing_name.len() <= MAX_THING_NAME_LEN);
 
         self.topics

@@ -6,11 +6,11 @@
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 
-use super::StateStore;
+use super::{ApplyJsonError, StateStore};
 use crate::shadows::commit::CommitStats;
 use crate::shadows::error::KvError;
 use crate::shadows::migration::LoadResult;
-use crate::shadows::ShadowNode;
+use crate::shadows::{ShadowNode, VariantResolver};
 
 /// An in-memory store that holds the shadow state directly.
 ///
@@ -113,5 +113,36 @@ impl<S: ShadowNode> StateStore<S> for InMemory<S> {
     async fn commit(&self, _prefix: &str, _hash: u64) -> Result<CommitStats, KvError<Self::Error>> {
         // No-op for in-memory - nothing to commit
         Ok(CommitStats::default())
+    }
+
+    fn resolver<'a>(&'a self, _prefix: &'a str) -> impl VariantResolver + 'a {
+        InMemoryResolver { store: self }
+    }
+
+    async fn apply_json_delta(
+        &self,
+        prefix: &str,
+        json: &[u8],
+    ) -> Result<S::Delta, ApplyJsonError<Self::Error>> {
+        let resolver = self.resolver(prefix);
+        let delta = S::parse_delta(json, "", &resolver)
+            .await
+            .map_err(ApplyJsonError::Parse)?;
+        self.apply_delta(prefix, &delta)
+            .await
+            .map_err(ApplyJsonError::Store)?;
+        Ok(delta)
+    }
+}
+
+/// Resolver for InMemory that uses the current in-memory state.
+struct InMemoryResolver<'a, S> {
+    store: &'a InMemory<S>,
+}
+
+impl<S: ShadowNode> VariantResolver for InMemoryResolver<'_, S> {
+    async fn resolve(&self, path: &str) -> Option<heapless::String<32>> {
+        let guard = self.store.state.lock().await;
+        guard.as_ref().and_then(|s| s.variant_at_path(path))
     }
 }

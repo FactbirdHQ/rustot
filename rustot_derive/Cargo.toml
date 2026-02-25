@@ -13,14 +13,18 @@ proc-macro = true
 
 [features]
 default = []
-# Enable KVPersist impl generation in derive macros
+# When enabled, generates KVPersist trait implementations
 kv_persist = []
+# When enabled, generates std-compatible code (uses alloc instead of fixed buffers)
+std = []
 
 [dependencies]
 syn = { version = "2", features = ["extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 proc-macro-crate = "3"
+heck = "0.5"
+darling = "0.20"
 
 [dev-dependencies]
 serde = "1"

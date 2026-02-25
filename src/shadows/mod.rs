@@ -1,5 +1,6 @@
 pub mod data_types;
 pub mod error;
+pub mod tag_scanner;
 pub mod topics;
 
 // Shadow storage modules
@@ -61,14 +62,19 @@ impl LoadFieldResult {
 // Re-export hash functions (for derive macro use)
 pub use hash::{fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64, FNV1A_INIT};
 
+// Re-export tag scanner for adjacently-tagged enum deserialization
+pub use tag_scanner::{FieldScanner, ScanError, TaggedJsonScan};
+
 // The impl_opaque! macro is exported at crate root via #[macro_export]
 
 // Re-export new error types
 pub use error::KvError;
 
 pub use data_types::Patch;
-pub use error::Error;
+pub use error::{Error, ParseError};
 use serde::Serialize;
+
+use core::future::Future;
 
 // =============================================================================
 // KV-based Shadow Storage Traits
@@ -127,6 +133,46 @@ pub fn serialize_null_fields<S: serde::ser::SerializeMap>(
     Ok(())
 }
 
+// =============================================================================
+// Variant Resolution for Delta Parsing
+// =============================================================================
+
+/// Resolves variant names during delta parsing.
+///
+/// When parsing an adjacently-tagged enum delta where the tag field is missing
+/// from the JSON, the resolver provides the current variant name as fallback.
+/// This allows content-only updates to be applied to the existing variant.
+///
+/// ## Implementations
+///
+/// - **InMemory**: Uses `ShadowNode::variant_at_path()` on current state
+/// - **KV Store**: Fetches `/_variant` key from storage
+///
+/// ## Example
+///
+/// ```ignore
+/// // JSON delta without tag: {"config": {"timeout": 30}}
+/// // Resolver provides current variant: "sio"
+/// // Result: Update SIO variant's config.timeout to 30
+/// ```
+pub trait VariantResolver {
+    /// Resolve the current variant name at the given path.
+    ///
+    /// Returns `None` if no variant is stored (first initialization).
+    fn resolve(&self, path: &str) -> impl Future<Output = Option<heapless::String<32>>>;
+}
+
+/// Null resolver that never provides fallback variants.
+///
+/// Used when no fallback is available (e.g., fresh state with no history).
+pub struct NullResolver;
+
+impl VariantResolver for NullResolver {
+    fn resolve(&self, _path: &str) -> impl Future<Output = Option<heapless::String<32>>> {
+        core::future::ready(None)
+    }
+}
+
 /// Core shadow type trait - clean, no KV awareness.
 ///
 /// Implemented by both top-level shadow structs (`#[shadow_root]`) and nested
@@ -159,7 +205,6 @@ pub trait ShadowNode: Default + Clone + Sized {
     ///
     /// - `Default`: Create empty delta for `update_desired()` pattern
     /// - `Serialize`: Send delta to cloud via MQTT (device→cloud desired updates)
-    /// - `DeserializeOwned`: Receive delta from cloud via MQTT (cloud→device)
     ///
     /// ## Delta Type Shapes
     ///
@@ -176,23 +221,23 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// ```
     ///
     /// For **adjacently-tagged enums** (`#[serde(tag="...", content="...")]`),
-    /// the Delta is a struct with optional tag and content fields to support
-    /// partial updates:
+    /// the Delta is a proper enum representing the variant change:
     /// ```ignore
     /// #[serde(tag = "mode", content = "config")]
     /// enum PortMode { Inactive, Sio(SioConfig) }
-    /// // Delta - struct shape for partial updates:
-    /// struct DeltaPortMode {
-    ///     mode: Option<PortModeVariant>,
-    ///     config: Option<DeltaPortModeConfig>,
+    /// // Delta - enum shape:
+    /// enum DeltaPortMode {
+    ///     Inactive,
+    ///     Sio(DeltaSioConfig),
     /// }
     /// ```
-    type Delta: Default + Serialize + serde::de::DeserializeOwned;
+    type Delta: Default + Serialize;
 
     /// Reported type for serialization to cloud.
     ///
     /// Used for device→cloud acknowledgment after applying deltas.
-    /// Fields marked `report_only` are `None` in the Reported type.
+    /// Fields marked `report_only` are excluded from the state struct and only
+    /// appear in this Reported type. They are `None` in partial reported.
     ///
     /// ## Trait Bound: `ReportedUnionFields`
     ///
@@ -215,6 +260,20 @@ pub trait ShadowNode: Default + Clone + Sized {
     // Core Methods
     // =========================================================================
 
+    /// Parse JSON delta using resolver for missing variants.
+    ///
+    /// Uses `FieldScanner` to extract fields and recursively calls `parse_delta`
+    /// on nested types. For adjacently-tagged enums, the resolver provides
+    /// variant fallback when the tag field is missing.
+    ///
+    /// The `path` parameter is the current path in the shadow tree (e.g., "config/port").
+    /// It's used to construct full paths when calling the resolver for nested enums.
+    fn parse_delta<R: VariantResolver>(
+        json: &[u8],
+        path: &str,
+        resolver: &R,
+    ) -> impl Future<Output = Result<Self::Delta, ParseError>>;
+
     /// Apply delta to state (pure mutation, no storage, no serialization).
     ///
     /// This method updates self with delta values. It does NOT persist
@@ -227,8 +286,31 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// that return the delta to the caller.
     fn apply_delta(&mut self, delta: &Self::Delta);
 
-    /// Convert this state into its reported representation.
-    fn into_reported(self) -> Self::Reported;
+    /// Get the variant name at a given path.
+    ///
+    /// Returns `Some(variant_name)` if the path points to an adjacently-tagged enum.
+    /// Returns `None` for other types or if path doesn't match.
+    ///
+    /// This is used by the InMemory resolver to provide variant fallback
+    /// when delta JSON is missing the tag field.
+    fn variant_at_path(&self, _path: &str) -> Option<heapless::String<32>> {
+        None
+    }
+
+    /// Convert to full reported representation (all fields set).
+    ///
+    /// This is used by the generated `From<State> for Reported` impl
+    /// to convert the entire state into a reported type.
+    #[allow(clippy::wrong_self_convention)]
+    fn into_reported(&self) -> Self::Reported;
+
+    /// Convert to reported representation containing only fields present in delta.
+    ///
+    /// Used for efficient acknowledgment - reports only changed fields.
+    /// AWS IoT Shadow merges partial updates, so unchanged fields keep
+    /// their cloud values.
+    #[allow(clippy::wrong_self_convention)]
+    fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported;
 }
 
 // =============================================================================
@@ -254,12 +336,19 @@ pub trait KVPersist: ShadowNode {
     /// Includes the longest field path including nested types.
     const MAX_KEY_LEN: usize;
 
-    /// Maximum serialized value size for any field.
+    /// Buffer type for serializing/deserializing values.
     ///
-    /// Used by no-std impls to allocate stack buffers for serialization.
-    /// Under std, this constant may be unused since `to_allocvec` / `fetch_to_vec`
-    /// handle allocation dynamically.
-    const MAX_VALUE_LEN: usize;
+    /// Each type provides its own buffer sized for its worst-case serialized value.
+    /// This seals `[(); EXPR]:` bounds inside the library — user crates only see
+    /// the associated type, never the const expression.
+    ///
+    /// - no-std leaf types: `[u8; POSTCARD_MAX_SIZE]`
+    /// - std types: `[u8; 0]` (unused — std uses `to_allocvec`/`fetch_to_vec`)
+    /// - structs: `[u8; max(leaf_field_sizes)]` (nested fields bring their own)
+    type ValueBuf: AsMut<[u8]>;
+
+    /// Create a zeroed value buffer for serialization/deserialization.
+    fn zero_value_buf() -> Self::ValueBuf;
 
     // =========================================================================
     // Migration Support
@@ -300,7 +389,7 @@ pub trait KVPersist: ShadowNode {
     /// Load this type's state from KV storage.
     ///
     /// Each impl allocates its own buffer internally:
-    /// - no-std: stack buffer of `MAX_VALUE_LEN` bytes
+    /// - no-std: stack buffer from `ValueBuf::default()`
     /// - std: uses `kv.fetch_to_vec()` for dynamic allocation
     ///
     /// KEY_LEN is propagated from root to ensure buffer size matches full key paths.
@@ -322,7 +411,7 @@ pub trait KVPersist: ShadowNode {
     /// Persist this type's entire state to KV storage (all fields).
     ///
     /// Each impl allocates its own buffer internally:
-    /// - no-std: stack buffer of `MAX_VALUE_LEN` bytes + `postcard::to_slice`
+    /// - no-std: stack buffer from `ValueBuf::default()` + `postcard::to_slice`
     /// - std: uses `postcard::to_allocvec()` for dynamic allocation
     fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
@@ -371,27 +460,65 @@ pub trait MapKey:
     ///
     /// Used to compute `MAX_KEY_LEN` for map-based `KVPersist` implementations.
     const MAX_KEY_DISPLAY_LEN: usize;
+
+    /// Buffer type for serializing a single key via postcard.
+    ///
+    /// Seals `[(); EXPR]:` bounds inside the library — user crates only see
+    /// the associated type. Sized for worst-case postcard serialization:
+    /// - `u8` → `[u8; 2]` (varint)
+    /// - `u16` → `[u8; 3]`
+    /// - `u32` → `[u8; 5]`
+    /// - `heapless::String<N>` → `[u8; N + 5]`
+    /// - `std::String` → `[u8; 0]` (std uses allocating path)
+    type KeyBuf: AsMut<[u8]> + AsRef<[u8]>;
+
+    /// Create a zeroed key buffer for serialization.
+    fn zero_key_buf() -> Self::KeyBuf;
 }
 
 impl MapKey for u8 {
     const MAX_KEY_DISPLAY_LEN: usize = 3; // "255"
+    type KeyBuf = [u8; 2]; // postcard varint max
+    fn zero_key_buf() -> Self::KeyBuf {
+        [0u8; 2]
+    }
 }
 
 impl MapKey for u16 {
     const MAX_KEY_DISPLAY_LEN: usize = 5; // "65535"
+    type KeyBuf = [u8; 3]; // postcard varint max
+    fn zero_key_buf() -> Self::KeyBuf {
+        [0u8; 3]
+    }
 }
 
 impl MapKey for u32 {
     const MAX_KEY_DISPLAY_LEN: usize = 10; // "4294967295"
+    type KeyBuf = [u8; 5]; // postcard varint max
+    fn zero_key_buf() -> Self::KeyBuf {
+        [0u8; 5]
+    }
 }
 
-impl<const N: usize> MapKey for heapless::String<N> {
+#[allow(incomplete_features)]
+impl<const N: usize> MapKey for heapless::String<N>
+where
+    [(); N + 5]:,
+{
     const MAX_KEY_DISPLAY_LEN: usize = N;
+    type KeyBuf = [u8; N + 5]; // postcard string: varint len + bytes
+    fn zero_key_buf() -> Self::KeyBuf {
+        [0u8; N + 5]
+    }
 }
 
 #[cfg(feature = "std")]
 impl MapKey for std::string::String {
     const MAX_KEY_DISPLAY_LEN: usize = 64;
+    type KeyBuf = [u8; 0]; // std uses allocating path
+    fn zero_key_buf() -> Self::KeyBuf {
+        []
+    }
 }
 
 /// Trait for top-level shadow state types.

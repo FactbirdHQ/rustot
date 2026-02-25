@@ -72,6 +72,7 @@ pub struct StreamError<'a> {
     pub client_token: Option<&'a str>,
 }
 
+#[allow(clippy::result_unit_err)]
 pub fn to_slice<T>(value: &T, slice: &mut [u8]) -> Result<usize, ()>
 where
     T: serde::ser::Serialize,

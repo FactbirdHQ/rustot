@@ -7,3 +7,4 @@ target/
 Cargo.lock
 statemachine.svg
 planning/
+rustc-ice-*.txt

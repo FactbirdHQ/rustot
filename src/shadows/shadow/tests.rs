@@ -665,12 +665,34 @@ struct StaticIpCfg {
     gateway: heapless::Vec<u8, 4>,
 }
 
+// Test struct using explicit max_size (doesn't require MaxSize trait on field type)
+#[allow(dead_code)]
+#[shadow_node]
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct ExplicitSizeCfg {
+    // Using opaque with explicit max_size - heapless::Vec still implements MaxSize,
+    // but the explicit size takes precedence and no MaxSize bound is required
+    #[shadow_attr(opaque(max_size = 32))]
+    data: heapless::Vec<u8, 8>,
+}
+
 #[shadow_node]
 #[derive(Clone, Default, Serialize, Deserialize)]
 enum IpSettingsCfg {
     #[default]
     Dhcp,
     Static(StaticIpCfg),
+}
+
+// Test: report_only fields with borrowed types work because they're not persisted to KV.
+// &'static str doesn't implement MaxSize, but report_only fields skip KV codegen entirely.
+#[allow(dead_code)]
+#[shadow_node]
+#[derive(Clone, Default, Serialize)]
+struct ReportOnlyStaticTest {
+    normal_field: u32,
+    #[shadow_attr(report_only, opaque)]
+    status: &'static str,
 }
 
 #[shadow_root(name = "wifi")]
@@ -1057,6 +1079,7 @@ async fn test_apply_and_save_nested_struct_fields() {
 
 mod adjacently_tagged {
     use super::*;
+    use crate::shadows::store::StateStore;
     use rustot_derive::shadow_node;
 
     // Inner config type for Sio variant
@@ -1144,8 +1167,8 @@ mod adjacently_tagged {
         assert_eq!(copied, inactive);
     }
 
-    #[test]
-    fn test_adjacently_tagged_delta_serialization() {
+    #[tokio::test]
+    async fn test_adjacently_tagged_delta_serialization() {
         // Test JSON serialization of delta with mode and config
         let delta = DeltaPortMode {
             mode: Some(PortModeVariant::Sio),
@@ -1161,30 +1184,48 @@ mod adjacently_tagged {
         assert!(json.contains("\"sio\"")); // lowercase due to rename_all
         assert!(json.contains("\"polarity\""));
 
-        // Test deserialization
-        let parsed: DeltaPortMode = serde_json::from_str(&json).unwrap();
+        // Test deserialization using parse_delta
+        use crate::shadows::{NullResolver, ShadowNode};
+        let parsed = PortMode::parse_delta(json.as_bytes(), "", &NullResolver)
+            .await
+            .unwrap();
         assert_eq!(parsed.mode, Some(PortModeVariant::Sio));
     }
 
-    #[test]
-    fn test_adjacently_tagged_mode_only_delta() {
+    #[tokio::test]
+    async fn test_adjacently_tagged_mode_only_delta() {
         // Test mode-only delta (no config)
-        let json = r#"{"mode": "inactive"}"#;
-        let delta: DeltaPortMode = serde_json::from_str(json).unwrap();
+        let json = br#"{"mode": "inactive"}"#;
+        use crate::shadows::{NullResolver, ShadowNode};
+        let delta = PortMode::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
         assert_eq!(delta.mode, Some(PortModeVariant::Inactive));
         assert!(delta.config.is_none());
     }
 
-    #[test]
-    fn test_adjacently_tagged_config_only_delta() {
-        // Test config-only delta (partial update)
-        let json = r#"{"config": {"sio": {"polarity": true}}}"#;
-        let delta: DeltaPortMode = serde_json::from_str(json).unwrap();
-        assert!(delta.mode.is_none());
+    #[tokio::test]
+    async fn test_adjacently_tagged_config_only_delta() {
+        // Test config-only delta (partial update) with fallback mode from existing state
+        // For adjacently-tagged enums, the content field contains the raw config,
+        // not wrapped in a variant tag. The variant is determined by the mode field
+        // (or fallback from resolver).
+
+        // Set up InMemory store with current state set to Sio variant
+        let store = InMemory::<PortMode>::new();
+        store
+            .set_state("/test", &PortMode::Sio(SioConfig { polarity: true }))
+            .await
+            .unwrap();
+        let resolver = store.resolver("/test");
+
+        let json = br#"{"config": {"polarity": false}}"#;
+        let delta = PortMode::parse_delta(json, "", &resolver).await.unwrap();
+        assert!(delta.mode.is_some()); // fallback from resolver
         assert!(delta.config.is_some());
 
         if let Some(DeltaPortModeConfig::Sio(sio_config)) = delta.config {
-            assert_eq!(sio_config.polarity, Some(true));
+            assert_eq!(sio_config.polarity, Some(false));
         } else {
             panic!("Expected Sio config");
         }
@@ -1216,39 +1257,26 @@ mod adjacently_tagged {
     }
 
     #[test]
-    fn test_adjacently_tagged_into_reported() {
-        // Test into_reported() conversion
-        let port_mode = PortMode::Sio(SioConfig { polarity: true });
-        let reported = port_mode.into_reported();
-
-        match reported {
-            ReportedPortMode::Sio(config) => {
-                assert_eq!(config.polarity, Some(true));
-            }
-            _ => panic!("Expected Sio variant"),
-        }
-
-        // Test Inactive variant
-        let inactive = PortMode::Inactive;
-        let reported_inactive = inactive.into_reported();
-        match reported_inactive {
-            ReportedPortMode::Inactive => {}
-            _ => panic!("Expected Inactive variant"),
-        }
-    }
-
-    #[test]
     fn test_adjacently_tagged_reported_serialization() {
-        // Test flat union serialization of Reported type
+        // Test adjacently-tagged serialization with nested config
         let reported = ReportedPortMode::Sio(ReportedSioConfig {
             polarity: Some(true),
         });
 
         let json = serde_json::to_string(&reported).unwrap();
-        // Should serialize as a flat object with mode field
+
+        // Should serialize as adjacently-tagged: {"mode": "sio", "config": {...}}
         assert!(json.contains("\"mode\""));
         assert!(json.contains("\"sio\""));
+        assert!(json.contains("\"config\""), "config key should be present");
         assert!(json.contains("\"polarity\""));
+
+        // Test Inactive variant - should have mode and config with null fields
+        let inactive = ReportedPortMode::Inactive;
+        let json_inactive = serde_json::to_string(&inactive).unwrap();
+        assert!(json_inactive.contains("\"mode\""));
+        assert!(json_inactive.contains("\"inactive\""));
+        assert!(json_inactive.contains("\"config\""));
     }
 
     #[test]
@@ -1340,4 +1368,263 @@ mod adjacently_tagged {
             _ => panic!("Expected IoLink variant"),
         }
     }
+
+    // =========================================================================
+    // into_partial_reported Tests
+    // =========================================================================
+
+    #[test]
+    fn test_adjacently_tagged_into_partial_reported_mode_change() {
+        use crate::shadows::ShadowNode;
+        // When mode changes, full reported should be returned
+        let mut port_mode = PortMode::Inactive;
+        let delta = DeltaPortMode {
+            mode: Some(PortModeVariant::Sio),
+            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                polarity: Some(true),
+            })),
+        };
+        port_mode.apply_delta(&delta);
+
+        let reported = port_mode.into_partial_reported(&delta);
+        let json = serde_json::to_string(&reported).unwrap();
+
+        // Mode changed, so full state should be reported (same as into_reported)
+        assert!(json.contains("\"mode\""));
+        assert!(json.contains("\"sio\""));
+        assert!(json.contains("\"config\""));
+        assert!(json.contains("\"polarity\""));
+    }
+
+    #[test]
+    fn test_adjacently_tagged_into_partial_reported_config_only() {
+        use crate::shadows::ShadowNode;
+        // When only config changes (no mode change), the adjacently-tagged enum
+        // still reports its full state (mode + config) because that's how
+        // AWS expects it. The optimization happens at the parent struct level.
+        let mut port_mode = PortMode::Sio(SioConfig { polarity: false });
+        let delta = DeltaPortMode {
+            mode: None,
+            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                polarity: Some(true),
+            })),
+        };
+        port_mode.apply_delta(&delta);
+
+        let partial = port_mode.into_partial_reported(&delta);
+        let partial_json = serde_json::to_string(&partial).unwrap();
+
+        // Adjacently-tagged enums always report complete state (mode + config)
+        // since that's how AWS expects the serialization format
+        assert!(partial_json.contains("\"mode\""));
+        assert!(partial_json.contains("\"polarity\""));
+    }
+
+    // Test the real optimization: struct-level partial reporting with nested adjacently-tagged enum
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    pub struct ConfigWithAdjacent {
+        pub simple_field: u32,
+        pub adjacent: PortMode,
+    }
+
+    #[test]
+    fn test_struct_with_adjacent_partial_reported() {
+        use crate::shadows::ShadowNode;
+
+        let mut config = ConfigWithAdjacent {
+            simple_field: 100,
+            adjacent: PortMode::Sio(SioConfig { polarity: false }),
+        };
+
+        // Delta only changes the adjacent field (config portion)
+        let delta = DeltaConfigWithAdjacent {
+            simple_field: None,
+            adjacent: Some(DeltaPortMode {
+                mode: None,
+                config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                    polarity: Some(true),
+                })),
+            }),
+        };
+        config.apply_delta(&delta);
+
+        let partial = config.into_partial_reported(&delta);
+        let partial_json = serde_json::to_string(&partial).unwrap();
+
+        // Partial should ONLY have adjacent (the field that was in delta)
+        assert!(
+            !partial_json.contains("\"simple_field\""),
+            "partial should NOT have simple_field"
+        );
+        assert!(
+            partial_json.contains("\"adjacent\""),
+            "partial should have adjacent"
+        );
+        assert!(
+            partial_json.contains("\"mode\""),
+            "adjacent's mode should be present"
+        );
+        assert!(
+            partial_json.contains("\"polarity\""),
+            "adjacent's polarity should be present"
+        );
+    }
+
+    #[test]
+    fn test_struct_into_partial_reported_only_delta_fields() {
+        use crate::shadows::ShadowNode;
+        // Test with IoLinkConfig which has cycle_time field
+        let mut config = IoLinkConfig { cycle_time: 1000 };
+        let delta = DeltaIoLinkConfig {
+            cycle_time: Some(2000),
+        };
+        config.apply_delta(&delta);
+
+        let partial = config.into_partial_reported(&delta);
+        let partial_json = serde_json::to_string(&partial).unwrap();
+
+        // Partial should have cycle_time since it was in delta
+        assert!(partial_json.contains("\"cycle_time\""));
+    }
+
+    // Multi-field struct for testing partial reported
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    pub struct MultiFieldConfig {
+        pub alpha: u32,
+        pub beta: u32,
+        pub gamma: bool,
+    }
+
+    #[test]
+    fn test_struct_into_partial_reported_excludes_unchanged_fields() {
+        use crate::shadows::ShadowNode;
+
+        let mut config = MultiFieldConfig {
+            alpha: 1,
+            beta: 2,
+            gamma: true,
+        };
+
+        // Delta only changes alpha
+        let delta = DeltaMultiFieldConfig {
+            alpha: Some(10),
+            beta: None,
+            gamma: None,
+        };
+        config.apply_delta(&delta);
+
+        let partial = config.into_partial_reported(&delta);
+        let partial_json = serde_json::to_string(&partial).unwrap();
+
+        // Partial should ONLY have alpha (the field that was in delta)
+        assert!(
+            partial_json.contains("\"alpha\""),
+            "partial should have alpha"
+        );
+        assert!(
+            !partial_json.contains("\"beta\""),
+            "partial should NOT have beta"
+        );
+        assert!(
+            !partial_json.contains("\"gamma\""),
+            "partial should NOT have gamma"
+        );
+    }
+
+    // =========================================================================
+    // Commit GC: adjacently-tagged enum variant data preserved
+    // =========================================================================
+
+    #[shadow_root(name = "port")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    pub struct PortShadow {
+        pub mode: PortMode,
+    }
+
+    #[tokio::test]
+    async fn test_commit_preserves_inactive_adjacently_tagged_variant() {
+        // PortMode is Sio but IoLink data exists in KV from a previous variant.
+        // commit() should keep the IoLink data (valid keys) and remove the orphan.
+        let kv = setup_kv(&[
+            (
+                "port/__schema_hash__",
+                &0xDEADBEEFu64.to_le_bytes(), // different hash to allow commit
+            ),
+            ("port/mode/_variant", b"sio"),
+            ("port/mode/sio/polarity", &encode(true)),
+            ("port/mode/iolink/cycle_time", &encode(2000u16)),
+            ("port/stale_field", &encode(99u32)), // orphan
+        ])
+        .await;
+        let mqtt = MockMqttClient::new("test-client");
+
+        let shadow = Shadow::<PortShadow, _, _>::new(&kv, &mqtt);
+        shadow.load().await.unwrap();
+        shadow.commit().await.unwrap();
+
+        // Inactive IoLink variant data preserved
+        assert!(kv_has_key(&kv, "port/mode/iolink/cycle_time").await);
+        // Active Sio variant data preserved
+        assert!(kv_has_key(&kv, "port/mode/sio/polarity").await);
+        assert!(kv_has_key(&kv, "port/mode/_variant").await);
+        // Orphan removed
+        assert!(!kv_has_key(&kv, "port/stale_field").await);
+    }
+}
+
+// =========================================================================
+// Commit GC: map entries preserved, orphaned keys removed
+// =========================================================================
+
+#[shadow_root(name = "dev")]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+struct MapShadow {
+    label: heapless::String<8>,
+    ports: heapless::LinearMap<heapless::String<4>, u32, 4>,
+}
+
+#[tokio::test]
+async fn test_commit_preserves_map_entries_and_removes_orphans() {
+    // Populate a LinearMap with two entries plus an orphaned key from old schema
+    let kv = setup_kv(&[
+        (
+            "dev/__schema_hash__",
+            &0xDEADBEEFu64.to_le_bytes(), // different hash
+        ),
+        (
+            "dev/label",
+            &encode(heapless::String::<8>::try_from("hello").unwrap()),
+        ),
+        ("dev/ports/__n__", &encode(2u16)),
+        (
+            "dev/ports/__k/0",
+            &encode(heapless::String::<4>::try_from("p1").unwrap()),
+        ),
+        (
+            "dev/ports/__k/1",
+            &encode(heapless::String::<4>::try_from("p2").unwrap()),
+        ),
+        ("dev/ports/p1", &encode(100u32)),
+        ("dev/ports/p2", &encode(200u32)),
+        ("dev/old_field", &encode(42u32)), // orphan from previous schema
+    ])
+    .await;
+    let mqtt = MockMqttClient::new("test-client");
+
+    let shadow = Shadow::<MapShadow, _, _>::new(&kv, &mqtt);
+    shadow.load().await.unwrap();
+    shadow.commit().await.unwrap();
+
+    // Map infrastructure preserved
+    assert!(kv_has_key(&kv, "dev/ports/__n__").await);
+    assert!(kv_has_key(&kv, "dev/ports/__k/0").await);
+    assert!(kv_has_key(&kv, "dev/ports/__k/1").await);
+    assert!(kv_has_key(&kv, "dev/ports/p1").await);
+    assert!(kv_has_key(&kv, "dev/ports/p2").await);
+    // Leaf field preserved
+    assert!(kv_has_key(&kv, "dev/label").await);
+    // Orphan removed
+    assert!(!kv_has_key(&kv, "dev/old_field").await);
 }
