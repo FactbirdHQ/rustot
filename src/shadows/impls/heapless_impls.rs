@@ -85,12 +85,12 @@ where
 
     async fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
         let mut result = LoadFieldResult::default();
         let mut buf = [0u8; N + 5];
-        match kv.fetch(prefix, &mut buf).await.map_err(KvError::Kv)? {
+        match kv.fetch(key_buf.as_str(), &mut buf).await.map_err(KvError::Kv)? {
             Some(data) => {
                 *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
                 result.loaded += 1;
@@ -102,34 +102,36 @@ where
 
     async fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv).await
+        self.load_from_kv::<K, KEY_LEN>(key_buf, kv).await
     }
 
     async fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<(), KvError<K::Error>> {
         let mut buf = [0u8; N + 5];
         let bytes = postcard::to_slice(self, &mut buf).map_err(|_| KvError::Serialization)?;
-        kv.store(prefix, bytes).await.map_err(KvError::Kv)
+        kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)
     }
 
     async fn persist_delta<K: KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
     ) -> Result<(), KvError<K::Error>> {
         let mut buf = [0u8; N + 5];
         let bytes = postcard::to_slice(delta, &mut buf).map_err(|_| KvError::Serialization)?;
-        kv.store(prefix, bytes).await.map_err(KvError::Kv)
+        kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)
     }
 
-    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-        keys(prefix);
+    const FIELD_COUNT: usize = 1;
+
+    fn is_valid_key(rel_key: &str) -> bool {
+        rel_key.is_empty()
     }
 }
 
@@ -211,12 +213,12 @@ where
 
     async fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
         let mut result = LoadFieldResult::default();
         let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
-        match kv.fetch(prefix, &mut buf).await.map_err(KvError::Kv)? {
+        match kv.fetch(key_buf.as_str(), &mut buf).await.map_err(KvError::Kv)? {
             Some(data) => {
                 *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
                 result.loaded += 1;
@@ -228,34 +230,36 @@ where
 
     async fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv).await
+        self.load_from_kv::<K, KEY_LEN>(key_buf, kv).await
     }
 
     async fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<(), KvError<K::Error>> {
         let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
         let bytes = postcard::to_slice(self, &mut buf).map_err(|_| KvError::Serialization)?;
-        kv.store(prefix, bytes).await.map_err(KvError::Kv)
+        kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)
     }
 
     async fn persist_delta<K: KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
     ) -> Result<(), KvError<K::Error>> {
         let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
         let bytes = postcard::to_slice(delta, &mut buf).map_err(|_| KvError::Serialization)?;
-        kv.store(prefix, bytes).await.map_err(KvError::Kv)
+        kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)
     }
 
-    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-        keys(prefix);
+    const FIELD_COUNT: usize = 1;
+
+    fn is_valid_key(rel_key: &str) -> bool {
+        rel_key.is_empty()
     }
 }
 
@@ -414,29 +418,6 @@ where
     }
 }
 
-/// Build a KV key: `prefix/display(key)` into a `heapless::String<KEY_LEN>`.
-#[cfg(feature = "shadows_kv_persist")]
-fn build_entry_prefix<const KEY_LEN: usize>(
-    prefix: &str,
-    key: &impl core::fmt::Display,
-) -> heapless::String<KEY_LEN> {
-    use core::fmt::Write;
-    let mut s = heapless::String::<KEY_LEN>::new();
-    let _ = s.push_str(prefix);
-    let _ = s.push_str("/");
-    let _ = write!(s, "{}", key);
-    s
-}
-
-/// Build a KV key: `prefix + suffix` into a `heapless::String<KEY_LEN>`.
-#[cfg(feature = "shadows_kv_persist")]
-fn build_key<const KEY_LEN: usize>(prefix: &str, suffix: &str) -> heapless::String<KEY_LEN> {
-    let mut key = heapless::String::<KEY_LEN>::new();
-    let _ = key.push_str(prefix);
-    let _ = key.push_str(suffix);
-    key
-}
-
 /// LinearMap uses individual key storage to avoid large manifest buffers.
 ///
 /// Storage format:
@@ -477,47 +458,58 @@ where
 
     async fn load_from_kv<K2: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K2,
     ) -> Result<LoadFieldResult, KvError<K2::Error>> {
         let mut result = LoadFieldResult::default();
 
         // Read entry count
-        let count_key = build_key::<KEY_LEN>(prefix, "/__n__");
+        let __saved_len = key_buf.len();
+        let _ = key_buf.push_str("/__n__");
         let mut count_buf = [0u8; 3];
         let count: u16 = match kv
-            .fetch(&count_key, &mut count_buf)
+            .fetch(key_buf.as_str(), &mut count_buf)
             .await
             .map_err(KvError::Kv)?
         {
             Some(data) => postcard::from_bytes(data).map_err(|_| KvError::Serialization)?,
             None => {
+                key_buf.truncate(__saved_len);
                 result.defaulted += 1;
                 return Ok(result);
             }
         };
+        key_buf.truncate(__saved_len);
 
         // Read each key from individual slots
         for i in 0..count {
-            let mut slot_key = heapless::String::<KEY_LEN>::new();
-            let _ = slot_key.push_str(prefix);
-            let _ = slot_key.push_str("/__k/");
-            let _ = core::fmt::Write::write_fmt(&mut slot_key, format_args!("{}", i));
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/__k/");
+            let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", i));
 
-            let mut key_buf = K::zero_key_buf();
+            let mut kb = K::zero_key_buf();
             let key: K = match kv
-                .fetch(&slot_key, key_buf.as_mut())
+                .fetch(key_buf.as_str(), kb.as_mut())
                 .await
                 .map_err(KvError::Kv)?
             {
                 Some(data) => postcard::from_bytes(data).map_err(|_| KvError::Serialization)?,
-                None => continue, // Skip missing key slots
+                None => {
+                    key_buf.truncate(__saved_len);
+                    continue; // Skip missing key slots
+                }
             };
+            key_buf.truncate(__saved_len);
 
-            let entry_prefix = build_entry_prefix::<KEY_LEN>(prefix, &key);
+            // Build entry prefix: key_buf + "/" + display(key)
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/");
+            let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", &key));
+
             let mut value = V::default();
-            let inner = value.load_from_kv::<K2, KEY_LEN>(&entry_prefix, kv).await?;
+            let inner = value.load_from_kv::<K2, KEY_LEN>(key_buf, kv).await?;
             result.merge(inner);
+            key_buf.truncate(__saved_len);
 
             let _ = self.insert(key, value);
         }
@@ -527,46 +519,51 @@ where
 
     async fn load_from_kv_with_migration<K2: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K2,
     ) -> Result<LoadFieldResult, KvError<K2::Error>> {
-        self.load_from_kv::<K2, KEY_LEN>(prefix, kv).await
+        self.load_from_kv::<K2, KEY_LEN>(key_buf, kv).await
     }
 
     async fn persist_to_kv<K2: KVStore, const KEY_LEN: usize>(
         &self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K2,
     ) -> Result<(), KvError<K2::Error>> {
         let mut index: u16 = 0;
 
         for (key, value) in self.iter() {
             // Write key to slot
-            let mut slot_key = heapless::String::<KEY_LEN>::new();
-            let _ = slot_key.push_str(prefix);
-            let _ = slot_key.push_str("/__k/");
-            let _ = core::fmt::Write::write_fmt(&mut slot_key, format_args!("{}", index));
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/__k/");
+            let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", index));
 
-            let mut key_buf = K::zero_key_buf();
+            let mut kb = K::zero_key_buf();
             let bytes =
-                postcard::to_slice(key, key_buf.as_mut()).map_err(|_| KvError::Serialization)?;
-            kv.store(&slot_key, bytes).await.map_err(KvError::Kv)?;
+                postcard::to_slice(key, kb.as_mut()).map_err(|_| KvError::Serialization)?;
+            kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)?;
+            key_buf.truncate(__saved_len);
 
             // Write value
-            let entry_prefix = build_entry_prefix::<KEY_LEN>(prefix, key);
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/");
+            let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", key));
             value
-                .persist_to_kv::<K2, KEY_LEN>(&entry_prefix, kv)
+                .persist_to_kv::<K2, KEY_LEN>(key_buf, kv)
                 .await?;
+            key_buf.truncate(__saved_len);
 
             index += 1;
         }
 
         // Write count
-        let count_key = build_key::<KEY_LEN>(prefix, "/__n__");
+        let __saved_len = key_buf.len();
+        let _ = key_buf.push_str("/__n__");
         let mut count_buf = [0u8; 3];
         let bytes =
             postcard::to_slice(&index, &mut count_buf).map_err(|_| KvError::Serialization)?;
-        kv.store(&count_key, bytes).await.map_err(KvError::Kv)?;
+        kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)?;
+        key_buf.truncate(__saved_len);
 
         Ok(())
     }
@@ -574,31 +571,32 @@ where
     async fn persist_delta<K2: KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K2,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
     ) -> Result<(), KvError<K2::Error>> {
         if let Some(ref patches) = delta.0 {
             // Read current keys from individual slots
-            let count_key = build_key::<KEY_LEN>(prefix, "/__n__");
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/__n__");
             let mut count_buf = [0u8; 3];
             let current_count: u16 = match kv
-                .fetch(&count_key, &mut count_buf)
+                .fetch(key_buf.as_str(), &mut count_buf)
                 .await
                 .map_err(KvError::Kv)?
             {
                 Some(data) => postcard::from_bytes(data).unwrap_or(0),
                 None => 0,
             };
+            key_buf.truncate(__saved_len);
 
             let mut current_keys: heapless::Vec<K, N> = heapless::Vec::new();
             for i in 0..current_count {
-                let mut slot_key = heapless::String::<KEY_LEN>::new();
-                let _ = slot_key.push_str(prefix);
-                let _ = slot_key.push_str("/__k/");
-                let _ = core::fmt::Write::write_fmt(&mut slot_key, format_args!("{}", i));
+                let __saved_len = key_buf.len();
+                let _ = key_buf.push_str("/__k/");
+                let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", i));
 
-                let mut key_buf = K::zero_key_buf();
+                let mut kb = K::zero_key_buf();
                 if let Some(data) = kv
-                    .fetch(&slot_key, key_buf.as_mut())
+                    .fetch(key_buf.as_str(), kb.as_mut())
                     .await
                     .map_err(KvError::Kv)?
                 {
@@ -606,15 +604,18 @@ where
                         let _ = current_keys.push(key);
                     }
                 }
+                key_buf.truncate(__saved_len);
             }
 
             // Apply patches
             for (key, patch) in patches.iter() {
-                let entry_prefix = build_entry_prefix::<KEY_LEN>(prefix, key);
-
                 match patch {
                     Patch::Set(d) => {
-                        V::persist_delta::<K2, KEY_LEN>(d, kv, &entry_prefix).await?;
+                        let __saved_len = key_buf.len();
+                        let _ = key_buf.push_str("/");
+                        let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", key));
+                        V::persist_delta::<K2, KEY_LEN>(d, kv, key_buf).await?;
+                        key_buf.truncate(__saved_len);
 
                         // Add to keys if not present
                         if !current_keys.iter().any(|k| k == key) {
@@ -623,14 +624,17 @@ where
                     }
                     Patch::Unset => {
                         // Remove entry and any sub-keys
-                        kv.remove(&entry_prefix).await.map_err(KvError::Kv)?;
+                        let __saved_len = key_buf.len();
+                        let _ = key_buf.push_str("/");
+                        let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", key));
+                        kv.remove(key_buf.as_str()).await.map_err(KvError::Kv)?;
 
-                        let mut prefix_slash = build_entry_prefix::<KEY_LEN>(prefix, key);
-                        let _ = prefix_slash.push_str("/");
+                        let _ = key_buf.push_str("/");
                         let _ = kv
-                            .remove_if(&prefix_slash, |_| true)
+                            .remove_if(key_buf.as_str(), |_| true)
                             .await
                             .map_err(KvError::Kv)?;
+                        key_buf.truncate(__saved_len);
 
                         // Remove from keys
                         current_keys.retain(|k| k != key);
@@ -641,54 +645,50 @@ where
             // Rewrite all key slots + count
             // First, remove old slots that may be beyond new count
             for i in current_keys.len()..current_count as usize {
-                let mut slot_key = heapless::String::<KEY_LEN>::new();
-                let _ = slot_key.push_str(prefix);
-                let _ = slot_key.push_str("/__k/");
-                let _ = core::fmt::Write::write_fmt(&mut slot_key, format_args!("{}", i));
-                let _ = kv.remove(&slot_key).await;
+                let __saved_len = key_buf.len();
+                let _ = key_buf.push_str("/__k/");
+                let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", i));
+                let _ = kv.remove(key_buf.as_str()).await;
+                key_buf.truncate(__saved_len);
             }
 
             // Write new key slots
             for (i, key) in current_keys.iter().enumerate() {
-                let mut slot_key = heapless::String::<KEY_LEN>::new();
-                let _ = slot_key.push_str(prefix);
-                let _ = slot_key.push_str("/__k/");
-                let _ = core::fmt::Write::write_fmt(&mut slot_key, format_args!("{}", i));
+                let __saved_len = key_buf.len();
+                let _ = key_buf.push_str("/__k/");
+                let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", i));
 
-                let mut key_buf = K::zero_key_buf();
-                let bytes = postcard::to_slice(key, key_buf.as_mut())
+                let mut kb = K::zero_key_buf();
+                let bytes = postcard::to_slice(key, kb.as_mut())
                     .map_err(|_| KvError::Serialization)?;
-                kv.store(&slot_key, bytes).await.map_err(KvError::Kv)?;
+                kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)?;
+                key_buf.truncate(__saved_len);
             }
 
             // Write updated count
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/__n__");
             let new_count = current_keys.len() as u16;
             let mut count_buf = [0u8; 3];
             let bytes = postcard::to_slice(&new_count, &mut count_buf)
                 .map_err(|_| KvError::Serialization)?;
-            kv.store(&count_key, bytes).await.map_err(KvError::Kv)?;
+            kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)?;
+            key_buf.truncate(__saved_len);
         }
 
         Ok(())
     }
 
-    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-        let count_key = build_key::<KEY_LEN>(prefix, "/__n__");
-        keys(&count_key);
+    const FIELD_COUNT: usize = 1; // the __n__ key; map entries are dynamic
+
+    fn is_valid_key(rel_key: &str) -> bool {
+        rel_key == "/__n__"
     }
 
-    fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
-        // Cover key slots: prefix/__k/
-        let mut key_pfx = heapless::String::<KEY_LEN>::new();
-        let _ = key_pfx.push_str(prefix);
-        let _ = key_pfx.push_str("/__k/");
-        prefixes(&key_pfx);
-
-        // Cover entry data: prefix/
-        let mut data_pfx = heapless::String::<KEY_LEN>::new();
-        let _ = data_pfx.push_str(prefix);
-        let _ = data_pfx.push_str("/");
-        prefixes(&data_pfx);
+    fn is_valid_prefix(rel_key: &str) -> bool {
+        // Key slots: /__k/...
+        // Entry data: /...
+        rel_key.starts_with("/__k/") || rel_key.starts_with("/")
     }
 }
 
@@ -779,12 +779,12 @@ macro_rules! impl_array_kv_persist {
 
             async fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
                 &mut self,
-                prefix: &str,
+                key_buf: &mut heapless::String<KEY_LEN>,
                 kv: &K,
             ) -> Result<LoadFieldResult, KvError<K::Error>> {
                 let mut result = LoadFieldResult::default();
                 let mut buf = [0u8; $n * T::POSTCARD_MAX_SIZE];
-                match kv.fetch(prefix, buf.as_mut()).await.map_err(KvError::Kv)? {
+                match kv.fetch(key_buf.as_str(), buf.as_mut()).await.map_err(KvError::Kv)? {
                     Some(data) => {
                         *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
                         result.loaded += 1;
@@ -796,34 +796,36 @@ macro_rules! impl_array_kv_persist {
 
             async fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
                 &mut self,
-                prefix: &str,
+                key_buf: &mut heapless::String<KEY_LEN>,
                 kv: &K,
             ) -> Result<LoadFieldResult, KvError<K::Error>> {
-                self.load_from_kv::<K, KEY_LEN>(prefix, kv).await
+                self.load_from_kv::<K, KEY_LEN>(key_buf, kv).await
             }
 
             async fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
                 &self,
-                prefix: &str,
+                key_buf: &mut heapless::String<KEY_LEN>,
                 kv: &K,
             ) -> Result<(), KvError<K::Error>> {
                 let mut buf = [0u8; $n * T::POSTCARD_MAX_SIZE];
                 let bytes = postcard::to_slice(self, buf.as_mut()).map_err(|_| KvError::Serialization)?;
-                kv.store(prefix, bytes).await.map_err(KvError::Kv)
+                kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)
             }
 
             async fn persist_delta<K: KVStore, const KEY_LEN: usize>(
                 delta: &Self::Delta,
                 kv: &K,
-                prefix: &str,
+                key_buf: &mut heapless::String<KEY_LEN>,
             ) -> Result<(), KvError<K::Error>> {
                 let mut buf = [0u8; $n * T::POSTCARD_MAX_SIZE];
                 let bytes = postcard::to_slice(delta, buf.as_mut()).map_err(|_| KvError::Serialization)?;
-                kv.store(prefix, bytes).await.map_err(KvError::Kv)
+                kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)
             }
 
-            fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-                keys(prefix);
+            const FIELD_COUNT: usize = 1;
+
+            fn is_valid_key(rel_key: &str) -> bool {
+                rel_key.is_empty()
             }
         }
     )+ };
@@ -898,14 +900,18 @@ mod tests {
             let _ = map.insert(heapless::String::try_from("x").unwrap(), 10);
             let _ = map.insert(heapless::String::try_from("y").unwrap(), 20);
 
-            map.persist_to_kv::<FileKVStore, 128>("test", &kv)
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
+            map.persist_to_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
             let mut loaded: heapless::LinearMap<heapless::String<4>, u32, 4> =
                 heapless::LinearMap::new();
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
             let result = loaded
-                .load_from_kv::<FileKVStore, 128>("test", &kv)
+                .load_from_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
@@ -930,7 +936,9 @@ mod tests {
             let mut map: heapless::LinearMap<heapless::String<4>, u32, 4> =
                 heapless::LinearMap::new();
             let _ = map.insert(heapless::String::try_from("a").unwrap(), 1);
-            map.persist_to_kv::<FileKVStore, 128>("test", &kv)
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
+            map.persist_to_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
@@ -942,17 +950,21 @@ mod tests {
             );
             let delta = LinearMapDelta(Some(patches));
 
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
             <heapless::LinearMap<heapless::String<4>, u32, 4> as KVPersist>::persist_delta::<
                 FileKVStore,
                 128,
-            >(&delta, &kv, "test")
+            >(&delta, &kv, &mut key_buf)
             .await
             .unwrap();
 
             let mut loaded: heapless::LinearMap<heapless::String<4>, u32, 4> =
                 heapless::LinearMap::new();
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
             loaded
-                .load_from_kv::<FileKVStore, 128>("test", &kv)
+                .load_from_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
@@ -977,13 +989,17 @@ mod tests {
             kv.init().await.unwrap();
 
             let arr: [u32; 4] = [10, 20, 30, 40];
-            arr.persist_to_kv::<FileKVStore, 128>("arr", &kv)
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("arr");
+            arr.persist_to_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
             let mut loaded = [0u32; 4];
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("arr");
             let result = loaded
-                .load_from_kv::<FileKVStore, 128>("arr", &kv)
+                .load_from_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
@@ -997,19 +1013,25 @@ mod tests {
             kv.init().await.unwrap();
 
             let arr: [u32; 3] = [1, 2, 3];
-            arr.persist_to_kv::<FileKVStore, 128>("arr", &kv)
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("arr");
+            arr.persist_to_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
             // Delta replaces entire array
             let new_arr: [u32; 3] = [4, 5, 6];
-            <[u32; 3] as KVPersist>::persist_delta::<FileKVStore, 128>(&new_arr, &kv, "arr")
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("arr");
+            <[u32; 3] as KVPersist>::persist_delta::<FileKVStore, 128>(&new_arr, &kv, &mut key_buf)
                 .await
                 .unwrap();
 
             let mut loaded = [0u32; 3];
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("arr");
             loaded
-                .load_from_kv::<FileKVStore, 128>("arr", &kv)
+                .load_from_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
@@ -1032,7 +1054,9 @@ mod tests {
             let _ = map.insert(heapless::String::try_from("a").unwrap(), 10);
             let _ = map.insert(heapless::String::try_from("b").unwrap(), 20);
 
-            map.persist_to_kv::<FileKVStore, 128>("m", &kv)
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("m");
+            map.persist_to_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
@@ -1051,13 +1075,12 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_linear_map_collect_valid_keys_format() {
-            let mut keys = std::vec::Vec::new();
-            <heapless::LinearMap<heapless::String<4>, u32, 4> as KVPersist>::collect_valid_keys::<
-                128,
-            >("m", &mut |k| keys.push(k.to_string()));
-
-            assert_eq!(keys, vec!["m/__n__"]);
+        async fn test_linear_map_is_valid_key() {
+            type Map = heapless::LinearMap<heapless::String<4>, u32, 4>;
+            assert!(<Map as KVPersist>::is_valid_key("/__n__"));
+            assert!(!<Map as KVPersist>::is_valid_key("/something"));
+            assert!(<Map as KVPersist>::is_valid_prefix("/__k/0"));
+            assert!(<Map as KVPersist>::is_valid_prefix("/x"));
         }
     }
 }

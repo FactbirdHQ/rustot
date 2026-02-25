@@ -94,13 +94,13 @@ macro_rules! impl_opaque {
 
             fn load_from_kv<K: $crate::shadows::KVStore, const KEY_LEN: usize>(
                 &mut self,
-                prefix: &str,
+                key_buf: &mut heapless::String<KEY_LEN>,
                 kv: &K,
             ) -> impl ::core::future::Future<Output = Result<$crate::shadows::LoadFieldResult, $crate::shadows::KvError<K::Error>>> {
                 async move {
                     let mut result = $crate::shadows::LoadFieldResult::default();
                     let mut buf = Self::zero_value_buf();
-                    match kv.fetch(prefix, buf.as_mut()).await.map_err($crate::shadows::KvError::Kv)? {
+                    match kv.fetch(key_buf.as_str(), buf.as_mut()).await.map_err($crate::shadows::KvError::Kv)? {
                         Some(data) => {
                             *self = ::postcard::from_bytes(data)
                                 .map_err(|_| $crate::shadows::KvError::Serialization)?;
@@ -114,41 +114,43 @@ macro_rules! impl_opaque {
 
             fn load_from_kv_with_migration<K: $crate::shadows::KVStore, const KEY_LEN: usize>(
                 &mut self,
-                prefix: &str,
+                key_buf: &mut heapless::String<KEY_LEN>,
                 kv: &K,
             ) -> impl ::core::future::Future<Output = Result<$crate::shadows::LoadFieldResult, $crate::shadows::KvError<K::Error>>> {
                 // Leaf types have no migration sources, delegate to load_from_kv
-                self.load_from_kv::<K, KEY_LEN>(prefix, kv)
+                self.load_from_kv::<K, KEY_LEN>(key_buf, kv)
             }
 
             fn persist_to_kv<K: $crate::shadows::KVStore, const KEY_LEN: usize>(
                 &self,
-                prefix: &str,
+                key_buf: &mut heapless::String<KEY_LEN>,
                 kv: &K,
             ) -> impl ::core::future::Future<Output = Result<(), $crate::shadows::KvError<K::Error>>> {
                 async move {
                     let mut buf = Self::zero_value_buf();
                     let bytes = ::postcard::to_slice(self, buf.as_mut())
                         .map_err(|_| $crate::shadows::KvError::Serialization)?;
-                    kv.store(prefix, bytes).await.map_err($crate::shadows::KvError::Kv)
+                    kv.store(key_buf.as_str(), bytes).await.map_err($crate::shadows::KvError::Kv)
                 }
             }
 
             fn persist_delta<K: $crate::shadows::KVStore, const KEY_LEN: usize>(
                 delta: &Self::Delta,
                 kv: &K,
-                prefix: &str,
+                key_buf: &mut heapless::String<KEY_LEN>,
             ) -> impl ::core::future::Future<Output = Result<(), $crate::shadows::KvError<K::Error>>> {
                 async move {
                     let mut buf = Self::zero_value_buf();
                     let bytes = ::postcard::to_slice(delta, buf.as_mut())
                         .map_err(|_| $crate::shadows::KvError::Serialization)?;
-                    kv.store(prefix, bytes).await.map_err($crate::shadows::KvError::Kv)
+                    kv.store(key_buf.as_str(), bytes).await.map_err($crate::shadows::KvError::Kv)
                 }
             }
 
-            fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-                keys(prefix);
+            const FIELD_COUNT: usize = 1;
+
+            fn is_valid_key(rel_key: &str) -> bool {
+                rel_key.is_empty()
             }
         }
     )*};
@@ -228,13 +230,13 @@ impl crate::shadows::KVPersist for core::time::Duration {
 
     async fn load_from_kv<K: crate::shadows::KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>> {
         let mut result = crate::shadows::LoadFieldResult::default();
         let mut buf = Self::zero_value_buf();
         match kv
-            .fetch(prefix, buf.as_mut())
+            .fetch(key_buf.as_str(), buf.as_mut())
             .await
             .map_err(crate::shadows::KvError::Kv)?
         {
@@ -250,21 +252,21 @@ impl crate::shadows::KVPersist for core::time::Duration {
 
     async fn load_from_kv_with_migration<K: crate::shadows::KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv).await
+        self.load_from_kv::<K, KEY_LEN>(key_buf, kv).await
     }
 
     async fn persist_to_kv<K: crate::shadows::KVStore, const KEY_LEN: usize>(
         &self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<(), crate::shadows::KvError<K::Error>> {
         let mut buf = Self::zero_value_buf();
         let bytes = ::postcard::to_slice(self, buf.as_mut())
             .map_err(|_| crate::shadows::KvError::Serialization)?;
-        kv.store(prefix, bytes)
+        kv.store(key_buf.as_str(), bytes)
             .await
             .map_err(crate::shadows::KvError::Kv)
     }
@@ -272,18 +274,20 @@ impl crate::shadows::KVPersist for core::time::Duration {
     async fn persist_delta<K: crate::shadows::KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
     ) -> Result<(), crate::shadows::KvError<K::Error>> {
         let mut buf = Self::zero_value_buf();
         let bytes = ::postcard::to_slice(delta, buf.as_mut())
             .map_err(|_| crate::shadows::KvError::Serialization)?;
-        kv.store(prefix, bytes)
+        kv.store(key_buf.as_str(), bytes)
             .await
             .map_err(crate::shadows::KvError::Kv)
     }
 
-    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-        keys(prefix);
+    const FIELD_COUNT: usize = 1;
+
+    fn is_valid_key(rel_key: &str) -> bool {
+        rel_key.is_empty()
     }
 }
 
