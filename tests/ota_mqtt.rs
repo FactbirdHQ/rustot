@@ -140,7 +140,8 @@ async fn test_mqtt_ota() {
 
         Updater::check_for_job(&client).await?;
 
-        let config = ota::config::Config::default();
+        let mut config = ota::config::Config::default();
+        config.block_size = 4096;
 
         let message = jobs_subscription.next_message().await.unwrap();
 
