@@ -80,11 +80,11 @@ impl KVPersist for String {
 
     async fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
         let mut result = LoadFieldResult::default();
-        match kv.fetch_to_vec(prefix).await.map_err(KvError::Kv)? {
+        match kv.fetch_to_vec(key_buf.as_str()).await.map_err(KvError::Kv)? {
             Some(data) => {
                 *self = postcard::from_bytes(&data).map_err(|_| KvError::Serialization)?;
                 result.loaded += 1;
@@ -96,32 +96,34 @@ impl KVPersist for String {
 
     async fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv).await
+        self.load_from_kv::<K, KEY_LEN>(key_buf, kv).await
     }
 
     async fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<(), KvError<K::Error>> {
         let bytes = postcard::to_allocvec(self).map_err(|_| KvError::Serialization)?;
-        kv.store(prefix, &bytes).await.map_err(KvError::Kv)
+        kv.store(key_buf.as_str(), &bytes).await.map_err(KvError::Kv)
     }
 
     async fn persist_delta<K: KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
     ) -> Result<(), KvError<K::Error>> {
         let bytes = postcard::to_allocvec(delta).map_err(|_| KvError::Serialization)?;
-        kv.store(prefix, &bytes).await.map_err(KvError::Kv)
+        kv.store(key_buf.as_str(), &bytes).await.map_err(KvError::Kv)
     }
 
-    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-        keys(prefix);
+    const FIELD_COUNT: usize = 1;
+
+    fn is_valid_key(rel_key: &str) -> bool {
+        rel_key.is_empty()
     }
 }
 
@@ -200,11 +202,11 @@ where
 
     async fn load_from_kv<K: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
         let mut result = LoadFieldResult::default();
-        match kv.fetch_to_vec(prefix).await.map_err(KvError::Kv)? {
+        match kv.fetch_to_vec(key_buf.as_str()).await.map_err(KvError::Kv)? {
             Some(data) => {
                 *self = postcard::from_bytes(&data).map_err(|_| KvError::Serialization)?;
                 result.loaded += 1;
@@ -216,32 +218,34 @@ where
 
     async fn load_from_kv_with_migration<K: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
-        self.load_from_kv::<K, KEY_LEN>(prefix, kv).await
+        self.load_from_kv::<K, KEY_LEN>(key_buf, kv).await
     }
 
     async fn persist_to_kv<K: KVStore, const KEY_LEN: usize>(
         &self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K,
     ) -> Result<(), KvError<K::Error>> {
         let bytes = postcard::to_allocvec(self).map_err(|_| KvError::Serialization)?;
-        kv.store(prefix, &bytes).await.map_err(KvError::Kv)
+        kv.store(key_buf.as_str(), &bytes).await.map_err(KvError::Kv)
     }
 
     async fn persist_delta<K: KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
     ) -> Result<(), KvError<K::Error>> {
         let bytes = postcard::to_allocvec(delta).map_err(|_| KvError::Serialization)?;
-        kv.store(prefix, &bytes).await.map_err(KvError::Kv)
+        kv.store(key_buf.as_str(), &bytes).await.map_err(KvError::Kv)
     }
 
-    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-        keys(prefix);
+    const FIELD_COUNT: usize = 1;
+
+    fn is_valid_key(rel_key: &str) -> bool {
+        rel_key.is_empty()
     }
 }
 
@@ -413,13 +417,16 @@ where
 
     async fn load_from_kv<K2: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K2,
     ) -> Result<LoadFieldResult, KvError<K2::Error>> {
         let mut result = LoadFieldResult::default();
 
         // Read manifest: prefix/__keys__
-        let manifest_key = format!("{}/__keys__", prefix);
+        let __saved_len = key_buf.len();
+        let _ = key_buf.push_str("/__keys__");
+        let manifest_key = key_buf.as_str().to_string();
+        key_buf.truncate(__saved_len);
 
         let key_strings: Vec<String> =
             match kv.fetch_to_vec(&manifest_key).await.map_err(KvError::Kv)? {
@@ -431,15 +438,18 @@ where
             };
 
         for key_str in key_strings.iter() {
-            let entry_prefix = format!("{}/{}", prefix, key_str);
-
             let key: K = serde_json_core::from_str::<K>(&format!("\"{}\"", key_str))
                 .map(|(k, _)| k)
                 .map_err(|_| KvError::Serialization)?;
 
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/");
+            let _ = key_buf.push_str(key_str);
+
             let mut value = V::default();
-            let inner = value.load_from_kv::<K2, KEY_LEN>(&entry_prefix, kv).await?;
+            let inner = value.load_from_kv::<K2, KEY_LEN>(key_buf, kv).await?;
             result.merge(inner);
+            key_buf.truncate(__saved_len);
 
             self.insert(key, value);
         }
@@ -449,15 +459,15 @@ where
 
     async fn load_from_kv_with_migration<K2: KVStore, const KEY_LEN: usize>(
         &mut self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K2,
     ) -> Result<LoadFieldResult, KvError<K2::Error>> {
-        self.load_from_kv::<K2, KEY_LEN>(prefix, kv).await
+        self.load_from_kv::<K2, KEY_LEN>(key_buf, kv).await
     }
 
     async fn persist_to_kv<K2: KVStore, const KEY_LEN: usize>(
         &self,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
         kv: &K2,
     ) -> Result<(), KvError<K2::Error>> {
         let mut key_strings: Vec<String> = Vec::new();
@@ -466,16 +476,21 @@ where
             let key_str = format!("{}", key);
             key_strings.push(key_str.clone());
 
-            let entry_prefix = format!("{}/{}", prefix, key_str);
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/");
+            let _ = key_buf.push_str(&key_str);
             value
-                .persist_to_kv::<K2, KEY_LEN>(&entry_prefix, kv)
+                .persist_to_kv::<K2, KEY_LEN>(key_buf, kv)
                 .await?;
+            key_buf.truncate(__saved_len);
         }
 
         // Write manifest
-        let manifest_key = format!("{}/__keys__", prefix);
+        let __saved_len = key_buf.len();
+        let _ = key_buf.push_str("/__keys__");
         let bytes = postcard::to_allocvec(&key_strings).map_err(|_| KvError::Serialization)?;
-        kv.store(&manifest_key, &bytes).await.map_err(KvError::Kv)?;
+        kv.store(key_buf.as_str(), &bytes).await.map_err(KvError::Kv)?;
+        key_buf.truncate(__saved_len);
 
         Ok(())
     }
@@ -483,37 +498,46 @@ where
     async fn persist_delta<K2: KVStore, const KEY_LEN: usize>(
         delta: &Self::Delta,
         kv: &K2,
-        prefix: &str,
+        key_buf: &mut heapless::String<KEY_LEN>,
     ) -> Result<(), KvError<K2::Error>> {
         if let Some(ref patches) = delta.0 {
-            let manifest_key = format!("{}/__keys__", prefix);
-
+            // Read manifest
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/__keys__");
             let mut key_strings: Vec<String> =
-                match kv.fetch_to_vec(&manifest_key).await.map_err(KvError::Kv)? {
+                match kv.fetch_to_vec(key_buf.as_str()).await.map_err(KvError::Kv)? {
                     Some(data) => postcard::from_bytes(&data).unwrap_or_default(),
                     None => Vec::new(),
                 };
+            key_buf.truncate(__saved_len);
 
             for (key, patch) in patches.iter() {
                 let key_str = format!("{}", key);
-                let entry_prefix = format!("{}/{}", prefix, key_str);
 
                 match patch {
                     Patch::Set(d) => {
-                        V::persist_delta::<K2, KEY_LEN>(d, kv, &entry_prefix).await?;
+                        let __saved_len = key_buf.len();
+                        let _ = key_buf.push_str("/");
+                        let _ = key_buf.push_str(&key_str);
+                        V::persist_delta::<K2, KEY_LEN>(d, kv, key_buf).await?;
+                        key_buf.truncate(__saved_len);
 
                         if !key_strings.iter().any(|k| k == &key_str) {
                             key_strings.push(key_str);
                         }
                     }
                     Patch::Unset => {
-                        kv.remove(&entry_prefix).await.map_err(KvError::Kv)?;
+                        let __saved_len = key_buf.len();
+                        let _ = key_buf.push_str("/");
+                        let _ = key_buf.push_str(&key_str);
+                        kv.remove(key_buf.as_str()).await.map_err(KvError::Kv)?;
 
-                        let entry_prefix_slash = format!("{}/", entry_prefix);
+                        let _ = key_buf.push_str("/");
                         let _ = kv
-                            .remove_if(&entry_prefix_slash, |_| true)
+                            .remove_if(key_buf.as_str(), |_| true)
                             .await
                             .map_err(KvError::Kv)?;
+                        key_buf.truncate(__saved_len);
 
                         key_strings.retain(|k| k != &key_str);
                     }
@@ -521,22 +545,25 @@ where
             }
 
             // Write updated manifest
+            let __saved_len = key_buf.len();
+            let _ = key_buf.push_str("/__keys__");
             let bytes = postcard::to_allocvec(&key_strings).map_err(|_| KvError::Serialization)?;
-            kv.store(&manifest_key, &bytes).await.map_err(KvError::Kv)?;
+            kv.store(key_buf.as_str(), &bytes).await.map_err(KvError::Kv)?;
+            key_buf.truncate(__saved_len);
         }
 
         Ok(())
     }
 
-    fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-        let manifest_key = format!("{}/__keys__", prefix);
-        keys(&manifest_key);
+    const FIELD_COUNT: usize = 1; // the __keys__ manifest; map entries are dynamic
+
+    fn is_valid_key(rel_key: &str) -> bool {
+        rel_key == "/__keys__"
     }
 
-    fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
-        let mut pfx = format!("{}/", prefix);
-        prefixes(&pfx);
-        pfx.clear(); // just to suppress unused warning
+    fn is_valid_prefix(rel_key: &str) -> bool {
+        // Entry data: /...
+        rel_key.starts_with("/")
     }
 }
 
@@ -595,14 +622,18 @@ mod tests {
             map.insert("y".to_string(), 20);
 
             // Persist
-            map.persist_to_kv::<FileKVStore, 128>("test", &kv)
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
+            map.persist_to_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
             // Load
             let mut loaded: HashMap<String, u32> = HashMap::new();
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
             let result = loaded
-                .load_from_kv::<FileKVStore, 128>("test", &kv)
+                .load_from_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
@@ -620,7 +651,9 @@ mod tests {
 
             let mut map: HashMap<String, u32> = HashMap::new();
             map.insert("a".to_string(), 1);
-            map.persist_to_kv::<FileKVStore, 128>("test", &kv)
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
+            map.persist_to_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 
@@ -630,16 +663,20 @@ mod tests {
             patches.insert("a".to_string(), Patch::<u32>::Unset);
             let delta = HashMapDelta(Some(patches));
 
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
             <HashMap<String, u32> as KVPersist>::persist_delta::<FileKVStore, 128>(
-                &delta, &kv, "test",
+                &delta, &kv, &mut key_buf,
             )
             .await
             .unwrap();
 
             // Load and verify
             let mut loaded: HashMap<String, u32> = HashMap::new();
+            let mut key_buf = heapless::String::<128>::new();
+            let _ = key_buf.push_str("test");
             loaded
-                .load_from_kv::<FileKVStore, 128>("test", &kv)
+                .load_from_kv::<FileKVStore, 128>(&mut key_buf, &kv)
                 .await
                 .unwrap();
 

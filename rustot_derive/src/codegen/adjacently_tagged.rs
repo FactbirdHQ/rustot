@@ -644,8 +644,9 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         let mut persist_to_kv_variant_arms = Vec::new();
         let mut persist_delta_mode_arms = Vec::new();
         let mut persist_delta_config_arms = Vec::new();
-        let mut collect_valid_keys_arms = Vec::new();
-        let mut collect_valid_prefixes_arms = Vec::new();
+        let mut is_valid_key_arms = Vec::new();
+        let mut is_valid_prefix_arms = Vec::new();
+        let mut field_count_items: Vec<TokenStream> = Vec::new();
         let mut max_key_len_items = Vec::new();
         let mut variant_name_arms_kv = Vec::new();
 
@@ -674,7 +675,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
                     persist_delta_mode_arms.push(quote! {
                         #variant_enum_name::#variant_ident => {
-                            kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
+                            kv.store(key_buf.as_str(), #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
                         }
                     });
                 }
@@ -706,29 +707,33 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
                     persist_delta_mode_arms.push(quote! {
                         #variant_enum_name::#variant_ident => {
-                            kv.store(&variant_key, #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
+                            kv.store(key_buf.as_str(), #serde_name.as_bytes()).await.map_err(#krate::shadows::KvError::Kv)?;
                         }
                     });
 
-                    let prefix_ident =
-                        syn::Ident::new("inner_prefix", proc_macro2::Span::call_site());
-                    let prefix_code = kv_codegen::build_key(krate, &prefix_ident, &variant_path);
                     persist_delta_config_arms.push(quote! {
                         #delta_config_name::#variant_ident(ref inner_delta) => {
-                            #prefix_code
-                            <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, &#prefix_ident).await?;
+                            let __saved_len = key_buf.len();
+                            let _ = key_buf.push_str(#variant_path);
+                            <#inner_ty as #krate::shadows::KVPersist>::persist_delta::<K, KEY_LEN>(inner_delta, kv, key_buf).await?;
+                            key_buf.truncate(__saved_len);
                         }
                     });
 
-                    collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
+                    is_valid_key_arms.push(kv_codegen::nested_is_valid_key(
                         krate,
                         &variant_path,
                         inner_ty,
                     ));
 
-                    collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(
+                    is_valid_prefix_arms.push(kv_codegen::nested_is_valid_prefix(
                         krate,
                         &variant_path,
+                        inner_ty,
+                    ));
+
+                    field_count_items.push(kv_codegen::nested_field_count(
+                        krate,
                         inner_ty,
                     ));
                 }
@@ -750,8 +755,12 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             &variant_name_arms_kv,
             &persist_to_kv_variant_arms,
         );
-        let collect_valid_keys_body =
-            kv_codegen::enum_collect_valid_keys_body(krate, &collect_valid_keys_arms);
+        let is_valid_key_body =
+            kv_codegen::enum_is_valid_key_body(krate, &is_valid_key_arms);
+        let is_valid_prefix_body =
+            kv_codegen::enum_is_valid_prefix_body(&is_valid_prefix_arms);
+        let field_count_expr =
+            kv_codegen::enum_field_count_expr(&field_count_items);
 
         quote! {
             impl #krate::shadows::KVPersist for #name {
@@ -775,7 +784,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
                 fn load_from_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                     &mut self,
-                    prefix: &str,
+                    key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                     kv: &K,
                 ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
                     #load_from_kv_body
@@ -783,16 +792,16 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
                 fn load_from_kv_with_migration<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                     &mut self,
-                    prefix: &str,
+                    key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                     kv: &K,
                 ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
                     // Adjacently-tagged enums don't have migration support at this level
-                    self.load_from_kv::<K, KEY_LEN>(prefix, kv)
+                    self.load_from_kv::<K, KEY_LEN>(key_buf, kv)
                 }
 
                 fn persist_to_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                     &self,
-                    prefix: &str,
+                    key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                     kv: &K,
                 ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
                     #persist_to_kv_body
@@ -801,19 +810,17 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 fn persist_delta<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                     delta: &Self::Delta,
                     kv: &K,
-                    prefix: &str,
+                    key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                 ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
                     async move {
-                        // Build variant key path
-                        let mut variant_key: #krate::__macro_support::heapless::String<KEY_LEN> = #krate::__macro_support::heapless::String::new();
-                        let _ = variant_key.push_str(prefix);
-                        let _ = variant_key.push_str(#VARIANT_KEY_PATH);
-
                         // Handle mode (variant switch) - only write if mode is Some
                         if let Some(ref new_mode) = delta.mode {
+                            let __saved_len = key_buf.len();
+                            let _ = key_buf.push_str(#VARIANT_KEY_PATH);
                             match new_mode {
                                 #(#persist_delta_mode_arms)*
                             }
+                            key_buf.truncate(__saved_len);
                         }
 
                         // Handle config (variant content)
@@ -827,12 +834,14 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     }
                 }
 
-                fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-                    #collect_valid_keys_body
+                const FIELD_COUNT: usize = #field_count_expr;
+
+                fn is_valid_key(rel_key: &str) -> bool {
+                    #is_valid_key_body
                 }
 
-                fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
-                    #(#collect_valid_prefixes_arms)*
+                fn is_valid_prefix(rel_key: &str) -> bool {
+                    #is_valid_prefix_body
                 }
             }
         }

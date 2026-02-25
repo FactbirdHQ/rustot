@@ -242,8 +242,10 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
 
     async fn get_state(&self, prefix: &str) -> Result<St, Self::Error> {
         let mut state = St::default();
+        let mut key_buf = heapless::String::<128>::new();
+        key_buf.push_str(prefix).map_err(|_| FileKVStoreError::KeyEncoding)?;
         let _ = state
-            .load_from_kv::<Self, 128>(prefix, self)
+            .load_from_kv::<Self, 128>(&mut key_buf, self)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => kv_err,
@@ -253,8 +255,10 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
     }
 
     async fn set_state(&self, prefix: &str, state: &St) -> Result<(), Self::Error> {
+        let mut key_buf = heapless::String::<128>::new();
+        key_buf.push_str(prefix).map_err(|_| FileKVStoreError::KeyEncoding)?;
         state
-            .persist_to_kv::<Self, 128>(prefix, self)
+            .persist_to_kv::<Self, 128>(&mut key_buf, self)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => kv_err,
@@ -263,7 +267,9 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
     }
 
     async fn apply_delta(&self, prefix: &str, delta: &St::Delta) -> Result<St, Self::Error> {
-        St::persist_delta::<Self, 128>(delta, self, prefix)
+        let mut key_buf = heapless::String::<128>::new();
+        key_buf.push_str(prefix).map_err(|_| FileKVStoreError::KeyEncoding)?;
+        St::persist_delta::<Self, 128>(delta, self, &mut key_buf)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => kv_err,
@@ -292,19 +298,13 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
                     .await
                     .map_err(KvError::Kv)?;
 
-                // Count fields
-                let mut total_fields = 0usize;
-                St::collect_valid_keys::<128>(prefix, &mut |_| {
-                    total_fields += 1;
-                });
-
                 Ok(LoadResult {
                     state,
                     first_boot: true,
                     schema_changed: false,
                     fields_loaded: 0,
                     fields_migrated: 0,
-                    fields_defaulted: total_fields,
+                    fields_defaulted: St::FIELD_COUNT,
                 })
             }
             Some(slice) if slice.len() == 8 => {
@@ -312,7 +312,9 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
                 if stored_hash == hash {
                     // Hash matches - normal load
                     let mut state = St::default();
-                    let field_result = state.load_from_kv::<Self, 128>(prefix, self).await?;
+                    let mut key_buf = heapless::String::<128>::new();
+                    key_buf.push_str(prefix).map_err(|_| KvError::KeyTooLong)?;
+                    let field_result = state.load_from_kv::<Self, 128>(&mut key_buf, self).await?;
 
                     Ok(LoadResult {
                         state,
@@ -325,8 +327,10 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
                 } else {
                     // Hash mismatch - migration needed
                     let mut state = St::default();
+                    let mut key_buf = heapless::String::<128>::new();
+                    key_buf.push_str(prefix).map_err(|_| KvError::KeyTooLong)?;
                     let field_result = state
-                        .load_from_kv_with_migration::<Self, 128>(prefix, self)
+                        .load_from_kv_with_migration::<Self, 128>(&mut key_buf, self)
                         .await?;
 
                     Ok(LoadResult {
@@ -348,49 +352,25 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
                     .await
                     .map_err(KvError::Kv)?;
 
-                let mut total_fields = 0usize;
-                St::collect_valid_keys::<128>(prefix, &mut |_| {
-                    total_fields += 1;
-                });
-
                 Ok(LoadResult {
                     state,
                     first_boot: true,
                     schema_changed: false,
                     fields_loaded: 0,
                     fields_migrated: 0,
-                    fields_defaulted: total_fields,
+                    fields_defaulted: St::FIELD_COUNT,
                 })
             }
         }
     }
 
     async fn commit(&self, prefix: &str, hash: u64) -> Result<CommitStats, KvError<Self::Error>> {
-        // Build set of valid keys for O(1) lookup during GC
-        let mut valid: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        // Collect all valid keys using per-field codegen
-        St::collect_valid_keys::<128>(prefix, &mut |key| {
-            // Strip prefix to get relative key for comparison
-            let rel_key = key.strip_prefix(prefix).unwrap_or(key);
-            valid.insert(rel_key.to_string());
-        });
-
-        // Collect valid prefixes for dynamic collections (maps)
-        let mut valid_prefixes: Vec<String> = Vec::new();
-        St::collect_valid_prefixes::<128>(prefix, &mut |pfx| {
-            let rel = pfx.strip_prefix(prefix).unwrap_or(pfx);
-            valid_prefixes.push(rel.to_string());
-        });
-
-        // Remove orphaned keys using KVStore::remove_if
+        // Remove orphaned keys using zero-allocation validation functions
         let orphans_removed = self
             .remove_if(prefix, |key| {
                 let rel_key = key.strip_prefix(prefix).unwrap_or(key);
-                !valid.contains(rel_key)
-                    && !valid_prefixes
-                        .iter()
-                        .any(|pfx| rel_key.starts_with(pfx.as_str()))
+                !St::is_valid_key(rel_key)
+                    && !St::is_valid_prefix(rel_key)
                     && !rel_key.starts_with("/__")
             })
             .await
@@ -424,7 +404,9 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
             .map_err(ApplyJsonError::Parse)?;
 
         // Persist delta directly (avoids method dispatch ambiguity)
-        St::persist_delta::<Self, 128>(&delta, self, prefix)
+        let mut key_buf = heapless::String::<128>::new();
+        key_buf.push_str(prefix).map_err(|_| ApplyJsonError::Store(FileKVStoreError::KeyEncoding))?;
+        St::persist_delta::<Self, 128>(&delta, self, &mut key_buf)
             .await
             .map_err(|e| match e {
                 KvError::Kv(kv_err) => ApplyJsonError::Store(kv_err),

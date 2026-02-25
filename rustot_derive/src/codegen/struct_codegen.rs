@@ -476,8 +476,9 @@ pub(crate) fn generate_struct_code(
         let mut load_from_kv_migration_arms = Vec::new();
         let mut persist_to_kv_arms = Vec::new();
         let mut persist_delta_arms = Vec::new();
-        let mut collect_valid_keys_arms = Vec::new();
-        let mut collect_valid_prefixes_arms = Vec::new();
+        let mut is_valid_key_arms = Vec::new();
+        let mut is_valid_prefix_arms = Vec::new();
+        let mut field_count_items: Vec<TokenStream> = Vec::new();
         let mut all_migration_from_keys = Vec::new();
         let mut opaque_field_types = Vec::new();
 
@@ -573,18 +574,12 @@ pub(crate) fn generate_struct_code(
                 let migrate_from_vec = attrs.migrate_from();
                 let migrate_from_keys: Vec<_> = migrate_from_vec.iter().collect();
                 let migrate_convert = attrs.migrate_convert();
-                let migration_code = kv_codegen::migration_fallback(
+                load_from_kv_migration_arms.push(kv_codegen::leaf_load_with_migration(
                     krate,
                     &field_path,
                     quote! { self.#field_name },
                     &migrate_from_keys,
                     migrate_convert.as_ref(),
-                );
-                load_from_kv_migration_arms.push(kv_codegen::leaf_load_with_migration(
-                    krate,
-                    &field_path,
-                    quote! { self.#field_name },
-                    migration_code,
                 ));
 
                 persist_to_kv_arms.push(kv_codegen::leaf_persist(
@@ -599,7 +594,8 @@ pub(crate) fn generate_struct_code(
                     field_name,
                 ));
 
-                collect_valid_keys_arms.push(kv_codegen::leaf_collect_keys(krate, &field_path));
+                is_valid_key_arms.push(kv_codegen::leaf_is_valid_key(&field_path));
+                field_count_items.push(kv_codegen::leaf_field_count());
             } else {
                 max_key_len_items.push(
                     quote! { #field_path_len + <#field_ty as #krate::shadows::KVPersist>::MAX_KEY_LEN },
@@ -633,14 +629,18 @@ pub(crate) fn generate_struct_code(
                     field_name,
                 ));
 
-                collect_valid_keys_arms.push(kv_codegen::nested_collect_keys(
+                is_valid_key_arms.push(kv_codegen::nested_is_valid_key(
                     krate,
                     &field_path,
                     field_ty,
                 ));
-                collect_valid_prefixes_arms.push(kv_codegen::nested_collect_prefixes(
+                is_valid_prefix_arms.push(kv_codegen::nested_is_valid_prefix(
                     krate,
                     &field_path,
+                    field_ty,
+                ));
+                field_count_items.push(kv_codegen::nested_field_count(
+                    krate,
                     field_ty,
                 ));
             }
@@ -691,7 +691,7 @@ pub(crate) fn generate_struct_code(
 
                 fn load_from_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                     &mut self,
-                    prefix: &str,
+                    key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                     kv: &K,
                 ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
                     async move {
@@ -703,7 +703,7 @@ pub(crate) fn generate_struct_code(
 
                 fn load_from_kv_with_migration<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                     &mut self,
-                    prefix: &str,
+                    key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                     kv: &K,
                 ) -> impl ::core::future::Future<Output = Result<#krate::shadows::LoadFieldResult, #krate::shadows::KvError<K::Error>>> {
                     async move {
@@ -715,7 +715,7 @@ pub(crate) fn generate_struct_code(
 
                 fn persist_to_kv<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                     &self,
-                    prefix: &str,
+                    key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                     kv: &K,
                 ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
                     async move {
@@ -727,7 +727,7 @@ pub(crate) fn generate_struct_code(
                 fn persist_delta<K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                     delta: &Self::Delta,
                     kv: &K,
-                    prefix: &str,
+                    key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                 ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
                     async move {
                         #(#persist_delta_arms)*
@@ -735,12 +735,14 @@ pub(crate) fn generate_struct_code(
                     }
                 }
 
-                fn collect_valid_keys<const KEY_LEN: usize>(prefix: &str, keys: &mut impl FnMut(&str)) {
-                    #(#collect_valid_keys_arms)*
+                const FIELD_COUNT: usize = 0 #(+ #field_count_items)*;
+
+                fn is_valid_key(rel_key: &str) -> bool {
+                    false #(|| #is_valid_key_arms)*
                 }
 
-                fn collect_valid_prefixes<const KEY_LEN: usize>(prefix: &str, prefixes: &mut impl FnMut(&str)) {
-                    #(#collect_valid_prefixes_arms)*
+                fn is_valid_prefix(rel_key: &str) -> bool {
+                    false #(|| #is_valid_prefix_arms)*
                 }
             }
         }
