@@ -249,7 +249,10 @@ mod tests {
         };
 
         let metric = Metric::builder()
-            .header(Header { report_id: 0, version: Default::default() })
+            .header(Header {
+                report_id: 0,
+                version: Default::default(),
+            })
             .custom_metrics(custom_metrics)
             .build();
 
@@ -308,7 +311,10 @@ mod tests {
         };
 
         let metric = Metric::builder()
-            .header(Header { report_id: 0, version: Default::default() })
+            .header(Header {
+                report_id: 0,
+                version: Default::default(),
+            })
             .custom_metrics(custom_metrics)
             .build();
 
@@ -351,7 +357,10 @@ mod tests {
         };
 
         let metric = Metric::builder()
-            .header(Header { report_id: 0, version: Default::default() })
+            .header(Header {
+                report_id: 0,
+                version: Default::default(),
+            })
             .custom_metrics(custom_metrics)
             .build();
 
@@ -370,7 +379,10 @@ mod tests {
             .unwrap();
 
         let metric = Metric::builder()
-            .header(Header { report_id: 0, version: Default::default() })
+            .header(Header {
+                report_id: 0,
+                version: Default::default(),
+            })
             .custom_metrics(custom_metrics)
             .build();
 
@@ -391,7 +403,10 @@ mod tests {
             .unwrap();
 
         let metric = Metric::builder()
-            .header(Header { report_id: 0, version: Default::default() })
+            .header(Header {
+                report_id: 0,
+                version: Default::default(),
+            })
             .custom_metrics(custom_metrics)
             .build();
 
@@ -415,7 +430,10 @@ mod tests {
             .unwrap();
 
         let metric = Metric::builder()
-            .header(Header { report_id: 0, version: Default::default() })
+            .header(Header {
+                report_id: 0,
+                version: Default::default(),
+            })
             .custom_metrics(custom_metrics)
             .build();
 
@@ -455,7 +473,10 @@ mod tests {
             .unwrap();
 
         let metric = Metric::builder()
-            .header(Header { report_id: 0, version: Default::default() })
+            .header(Header {
+                report_id: 0,
+                version: Default::default(),
+            })
             .custom_metrics(custom_metrics)
             .build();
 
