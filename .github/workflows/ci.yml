@@ -10,8 +10,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: read
+  actions: read
+
 env:
   ALL_FEATURES: "ota_mqtt_data,ota_http_data"
+  CARGO_TERM_COLOR: always
 
 jobs:
   build:
