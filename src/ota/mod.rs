@@ -42,7 +42,7 @@ impl Updater {
         control.request_job()
     }
 
-    pub async fn perform_ota<'a, 'b, C: ControlInterface, D: DataInterface, P: pal::OtaPal>(
+    pub async fn perform_ota<C: ControlInterface, D: DataInterface, P: pal::OtaPal>(
         control: &C,
         data: &D,
         file_ctx: FileContext,
@@ -291,7 +291,7 @@ impl Updater {
         }
     }
 
-    async fn ingest_data_block<'a, D: DataInterface, E: StatusDetailsExt>(
+    async fn ingest_data_block<D: DataInterface, E: StatusDetailsExt>(
         data: &D,
         block_writer: &mut impl NorFlash,
         config: &config::Config,

@@ -115,8 +115,8 @@ impl FleetProvisioner {
         )
     }
 
-    async fn provision_inner<'m, Cfg, M: MqttClient>(
-        mqtt: &'m M,
+    async fn provision_inner<Cfg, M: MqttClient>(
+        mqtt: &M,
         template_name: &str,
         parameters: Option<impl Serialize>,
         csr: Option<&str>,

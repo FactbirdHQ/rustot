@@ -60,10 +60,8 @@ impl crate::mqtt::MqttClient for GreengrassClient {
         &self.client_id
     }
 
-    fn wait_connected(&self) -> impl core::future::Future<Output = ()> {
-        async {
-            // Greengrass IPC is already connected when client is created
-        }
+    async fn wait_connected(&self) {
+        // Greengrass IPC is already connected when client is created
     }
 
     fn publish_with_options<P: ToPayload>(
@@ -136,19 +134,15 @@ impl MqttSubscription for GreengrassSubscription {
         Self: 'm;
     type Error = greengrass_ipc_rust::Error;
 
-    fn next_message(&mut self) -> impl core::future::Future<Output = Option<Self::Message<'_>>> {
-        async {
-            self.merged.next().await.map(|iot_msg| GreengrassMessage {
-                inner: iot_msg.message,
-            })
-        }
+    async fn next_message(&mut self) -> Option<Self::Message<'_>> {
+        self.merged.next().await.map(|iot_msg| GreengrassMessage {
+            inner: iot_msg.message,
+        })
     }
 
-    fn unsubscribe(self) -> impl core::future::Future<Output = Result<(), Self::Error>> {
-        async move {
-            drop(self.merged);
-            Ok(())
-        }
+    async fn unsubscribe(self) -> Result<(), Self::Error> {
+        drop(self.merged);
+        Ok(())
     }
 }
 
