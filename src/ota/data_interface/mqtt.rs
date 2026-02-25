@@ -4,6 +4,7 @@ use core::str::FromStr;
 
 use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, QoS};
 
+use crate::jobs::JobTopic;
 use crate::ota::error::OtaError;
 use crate::ota::status_details::StatusDetailsExt;
 use crate::ota::ProgressState;
@@ -144,7 +145,15 @@ pub struct MqttTransfer<S>(S);
 
 impl<S: MqttSubscription> BlockTransfer for MqttTransfer<S> {
     async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError> {
-        Ok(self.0.next_message().await.map(MessagePayload))
+        match self.0.next_message().await {
+            Some(msg) => {
+                if !msg.topic_name().contains("/streams/") {
+                    return Err(OtaError::UserAbort);
+                }
+                Ok(Some(MessagePayload(msg)))
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -152,22 +161,33 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
     const PROTOCOL: Protocol = Protocol::Mqtt;
 
     type ActiveTransfer<'t>
-        = MqttTransfer<C::Subscription<'t, 1>>
+        = MqttTransfer<C::Subscription<'t, 2>>
     where
         Self: 't;
 
     /// Init file transfer by subscribing to the OTA data stream topic
+    /// and the jobs notify-next topic (to detect cancellation).
     async fn init_file_transfer(
         &self,
         file_ctx: &FileContext,
     ) -> Result<Self::ActiveTransfer<'_>, OtaError> {
-        let topic_path = OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
+        let data_topic = OtaTopic::Data(Encoding::Cbor, file_ctx.stream_name.as_str())
             .format::<256>(self.0.client_id())?;
 
-        debug!("Subscribing to: [{:?}]", &topic_path);
+        let notify_topic: heapless::String<256> = JobTopic::NotifyNext
+            .format::<256>(self.0.client_id())
+            .map_err(|_| OtaError::Overflow)?;
+
+        debug!(
+            "Subscribing to: [{:?}] and [{:?}]",
+            &data_topic, &notify_topic
+        );
 
         self.0
-            .subscribe(&[(topic_path.as_str(), QoS::AtMostOnce)])
+            .subscribe(&[
+                (data_topic.as_str(), QoS::AtMostOnce),
+                (notify_topic.as_str(), QoS::AtMostOnce),
+            ])
             .await
             .map(MqttTransfer)
             .map_err(|_| OtaError::Mqtt)
