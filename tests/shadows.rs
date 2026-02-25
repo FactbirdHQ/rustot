@@ -1,5 +1,7 @@
 #![cfg(all(feature = "std", feature = "shadows_kv_persist"))]
 #![allow(async_fn_in_trait)]
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 #![feature(type_alias_impl_trait)]
 
 mod common;
