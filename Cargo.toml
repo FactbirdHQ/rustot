@@ -50,6 +50,7 @@ bon = { version = "3.3.2", default-features = false }
 
 # std feature dependencies (for FileKVStore)
 tokio = { version = "1", features = ["fs", "io-util", "sync"], optional = true }
+serde_json = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 
 # MQTT client implementations (optional, feature-gated)
