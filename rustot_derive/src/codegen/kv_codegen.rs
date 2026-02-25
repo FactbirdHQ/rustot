@@ -491,7 +491,10 @@ pub fn enum_persist_to_kv_body(
 /// Generates the body of `collect_valid_keys` for enum types.
 ///
 /// This is shared between simple enums and adjacently-tagged enums.
-pub fn enum_collect_valid_keys_body(krate: &TokenStream, collect_keys_arms: &[TokenStream]) -> TokenStream {
+pub fn enum_collect_valid_keys_body(
+    krate: &TokenStream,
+    collect_keys_arms: &[TokenStream],
+) -> TokenStream {
     let variant_key_ident = syn::Ident::new("variant_key", proc_macro2::Span::call_site());
     let variant_key_code = build_key(krate, &variant_key_ident, VARIANT_KEY_PATH);
 

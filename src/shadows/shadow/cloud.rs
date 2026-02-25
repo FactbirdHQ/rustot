@@ -56,12 +56,11 @@ where
                 debug!("Subscribing to delta topic");
                 self.mqtt.wait_connected().await;
 
-                let topic = Topic::UpdateDelta
-                    .format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
-                        S::PREFIX,
-                        self.mqtt.client_id(),
-                        S::NAME,
-                    )?;
+                let topic = Topic::UpdateDelta.format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+                    S::PREFIX,
+                    self.mqtt.client_id(),
+                    S::NAME,
+                )?;
 
                 let sub = self
                     .mqtt
@@ -307,18 +306,16 @@ where
         };
 
         //*** SUBSCRIBE ***/
-        let accepted_topic = accepted
-            .format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
-                S::PREFIX,
-                self.mqtt.client_id(),
-                S::NAME,
-            )?;
-        let rejected_topic = rejected
-            .format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
-                S::PREFIX,
-                self.mqtt.client_id(),
-                S::NAME,
-            )?;
+        let accepted_topic = accepted.format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+            S::PREFIX,
+            self.mqtt.client_id(),
+            S::NAME,
+        )?;
+        let rejected_topic = rejected.format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+            S::PREFIX,
+            self.mqtt.client_id(),
+            S::NAME,
+        )?;
 
         let sub = self
             .mqtt
@@ -330,12 +327,11 @@ where
             .map_err(|_| Error::Mqtt)?;
 
         //*** PUBLISH REQUEST ***/
-        let topic_name = topic
-            .format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
-                S::PREFIX,
-                self.mqtt.client_id(),
-                S::NAME,
-            )?;
+        let topic_name = topic.format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+            S::PREFIX,
+            self.mqtt.client_id(),
+            S::NAME,
+        )?;
         self.mqtt
             .publish(topic_name.as_str(), payload)
             .await
