@@ -129,6 +129,7 @@ jobs:
         env:
           IDENTITY_PASSWORD: ${{ secrets.IDENTITY_PASSWORD }}
           AWS_HOSTNAME: a1vq3mi5y3c6j5-ats.iot.eu-west-1.amazonaws.com
+          RUST_LOG: debug
 
       - name: Cleanup OTA Jobs
         if: ${{ always() }}

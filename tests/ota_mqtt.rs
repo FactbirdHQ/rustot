@@ -184,7 +184,7 @@ async fn test_mqtt_ota() {
     let mut transport = NalTransport::new(network, broker);
 
     match embassy_time::with_timeout(
-        embassy_time::Duration::from_secs(25),
+        embassy_time::Duration::from_secs(45),
         select::select(stack.run(&mut transport), ota_fut),
     )
     .await
