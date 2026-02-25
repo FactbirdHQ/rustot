@@ -1,5 +1,7 @@
 #![cfg(all(feature = "std", feature = "shadows_kv_persist"))]
 #![allow(async_fn_in_trait)]
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 #![feature(type_alias_impl_trait)]
 
 mod common;
@@ -11,21 +13,95 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use mqttrust::transport::embedded_nal::NalTransport;
 use mqttrust::{Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic};
 use postcard::experimental::max_size::MaxSize;
-use rustot_derive::shadow_root;
+use rustot_derive::{shadow_node, shadow_root};
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 
 use rustot::shadows::{FileKVStore, Shadow};
 
 // =============================================================================
-// Test Shadow Type
+// Test Shadow Types
 // =============================================================================
 
+/// Nested struct field
+#[shadow_node]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+pub struct Inner {
+    pub value: u32,
+    pub flag: bool,
+}
+
+/// Config for internally-tagged single variant
+#[shadow_node]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+pub struct SingleConfig {
+    pub x: u8,
+}
+
+/// Config for internally-tagged pair variant
+#[shadow_node]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+pub struct PairConfig {
+    pub x: u8,
+    pub y: u8,
+}
+
+/// Regular internally-tagged enum with data variants
+#[shadow_node]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaggedEnum {
+    #[default]
+    None,
+    Single(SingleConfig),
+    Pair(PairConfig),
+}
+
+/// Config for variant A of the adjacently-tagged enum
+#[shadow_node]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+pub struct ConfigA {
+    pub alpha: bool,
+    pub beta: u16,
+}
+
+/// Config for variant B of the adjacently-tagged enum
+#[shadow_node]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+pub struct ConfigB {
+    pub gamma: u32,
+    pub delta: u16,
+}
+
+/// Adjacently-tagged enum - tests variant fallback when tag is missing
+#[shadow_node]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+#[serde(tag = "mode", content = "config", rename_all = "snake_case")]
+pub enum Adjacent {
+    #[default]
+    Off,
+    ModeA(ConfigA),
+    ModeB(ConfigB),
+}
+
+/// Main test shadow covering all field types
 #[shadow_root(name = "state")]
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
 pub struct TestShadow {
-    pub foo: u32,
-    pub bar: bool,
+    /// Primitive fields
+    pub count: u32,
+    pub active: bool,
+
+    /// Nested struct
+    pub inner: Inner,
+
+    /// Regular internally-tagged enum
+    pub tagged: TaggedEnum,
+
+    /// Adjacently-tagged enum (key test: config-only delta uses variant fallback)
+    pub adjacent: Adjacent,
+
+    /// Report-only field
     #[shadow_attr(report_only)]
     pub version: u32,
 }
@@ -183,79 +259,168 @@ async fn test_shadow_end_to_end() {
         let shadow = Shadow::<TestShadow, _, FileKVStore>::new(&kv, &client);
 
         // =====================================================================
-        // Step 2: Load shadow → initializes defaults, persists to file store
+        // Setup: Load and sync shadow
         // =====================================================================
         let load_result = shadow.load().await.expect("Failed to load shadow");
         log::info!("Load result: first_boot={}", load_result.first_boot);
         assert!(load_result.first_boot);
 
-        // =====================================================================
-        // Step 3: Delete shadow from cloud (ignore NotFound)
-        // =====================================================================
+        // Delete any existing shadow from previous test runs
         match shadow.delete_shadow().await {
             Ok(()) => log::info!("Deleted existing shadow from cloud"),
             Err(e) => log::info!("Delete shadow (expected if not found): {:?}", e),
         }
 
-        // =====================================================================
-        // Step 4: Sync shadow → creates shadow with defaults, subscribes to delta
-        // =====================================================================
-        let state_val = shadow.sync_shadow().await.expect("Failed to sync shadow");
-        log::info!("Synced shadow: {:?}", state_val);
+        // Sync creates shadow with defaults
+        let state = shadow.sync_shadow().await.expect("Failed to sync shadow");
+        log::info!("Synced shadow: {:?}", state);
+
+        // Assert defaults
+        assert_eq!(state.count, 0);
+        assert_eq!(state.active, false);
+        assert_eq!(state.inner, Inner::default());
+        assert_eq!(state.tagged, TaggedEnum::None);
+        assert_eq!(state.adjacent, Adjacent::Off);
 
         // =====================================================================
-        // Step 5: Assert defaults
+        // Test 1: Primitive fields (count, active)
         // =====================================================================
-        assert_eq!(state_val.foo, 0);
-        assert_eq!(state_val.bar, false);
+        log::info!("Test 1: Updating primitive fields...");
+        cloud_update_desired(
+            &client,
+            thing_name,
+            br#"{"state":{"desired":{"count":42,"active":true}}}"#,
+        )
+        .await
+        .expect("Failed to update primitives");
+
+        let (state, delta) = shadow.wait_delta().await.expect("Failed to wait_delta");
+        assert!(delta.is_some());
+        assert_eq!(state.count, 42);
+        assert_eq!(state.active, true);
+        log::info!("Test 1 passed: primitives updated");
 
         // =====================================================================
-        // Step 6: Cloud updates desired foo=42
+        // Test 2: Nested struct (inner)
         // =====================================================================
-        log::info!("Cloud updating desired foo=42...");
-        cloud_update_desired(&client, thing_name, br#"{"state":{"desired":{"foo":42}}}"#)
-            .await
-            .expect("Failed to update desired foo");
+        log::info!("Test 2: Updating nested struct...");
+        cloud_update_desired(
+            &client,
+            thing_name,
+            br#"{"state":{"desired":{"inner":{"value":100,"flag":true}}}}"#,
+        )
+        .await
+        .expect("Failed to update nested struct");
+
+        let (state, delta) = shadow.wait_delta().await.expect("Failed to wait_delta");
+        assert!(delta.is_some());
+        assert_eq!(state.inner.value, 100);
+        assert_eq!(state.inner.flag, true);
+        log::info!("Test 2 passed: nested struct updated");
 
         // =====================================================================
-        // Step 7: Wait for delta → receives foo delta, applies, persists, acknowledges
+        // Test 3: Regular internally-tagged enum
         // =====================================================================
-        log::info!("Waiting for delta...");
-        let (state_val, delta) = shadow
-            .wait_delta()
-            .await
-            .expect("Failed to wait_delta (foo)");
-        log::info!(
-            "Got foo delta: has_delta={}, state: {:?}",
-            delta.is_some(),
-            state_val
+        log::info!("Test 3: Updating internally-tagged enum...");
+        cloud_update_desired(
+            &client,
+            thing_name,
+            br#"{"state":{"desired":{"tagged":{"kind":"pair","x":10,"y":20}}}}"#,
+        )
+        .await
+        .expect("Failed to update tagged enum");
+
+        let (state, delta) = shadow.wait_delta().await.expect("Failed to wait_delta");
+        assert!(delta.is_some());
+        assert_eq!(state.tagged, TaggedEnum::Pair(PairConfig { x: 10, y: 20 }));
+        log::info!("Test 3 passed: internally-tagged enum updated");
+
+        // =====================================================================
+        // Test 4: Adjacently-tagged enum - mode + config together
+        // =====================================================================
+        log::info!("Test 4: Updating adjacently-tagged enum (mode + config)...");
+        cloud_update_desired(
+            &client,
+            thing_name,
+            br#"{"state":{"desired":{"adjacent":{"mode":"mode_a","config":{"alpha":true,"beta":500}}}}}"#,
+        )
+        .await
+        .expect("Failed to update adjacent enum");
+
+        let (state, delta) = shadow.wait_delta().await.expect("Failed to wait_delta");
+        assert!(delta.is_some());
+        assert_eq!(
+            state.adjacent,
+            Adjacent::ModeA(ConfigA {
+                alpha: true,
+                beta: 500
+            })
         );
+        log::info!("Test 4 passed: adjacently-tagged enum with mode+config");
 
         // =====================================================================
-        // Step 8: Assert foo updated
+        // Test 5: Adjacently-tagged enum - config only (variant fallback)
+        // This is the key test: cloud sends only config, device uses current mode
         // =====================================================================
-        assert_eq!(state_val.foo, 42);
-        assert_eq!(state_val.bar, false);
+        log::info!("Test 5: Updating adjacently-tagged config only (variant fallback)...");
+        cloud_update_desired(
+            &client,
+            thing_name,
+            // Note: no "mode" field, only "config" - device must use current mode (mode_a)
+            br#"{"state":{"desired":{"adjacent":{"config":{"alpha":false,"beta":999}}}}}"#,
+        )
+        .await
+        .expect("Failed to update adjacent config only");
+
+        let (state, delta) = shadow.wait_delta().await.expect("Failed to wait_delta");
+        assert!(delta.is_some());
+        // Should still be ModeA, with updated config
+        assert_eq!(
+            state.adjacent,
+            Adjacent::ModeA(ConfigA {
+                alpha: false,
+                beta: 999
+            })
+        );
+        log::info!("Test 5 passed: config-only delta used variant fallback");
 
         // =====================================================================
-        // Step 9: Report version=1 to cloud (report_only field)
+        // Test 6: Adjacently-tagged enum - switch to different mode
         // =====================================================================
-        log::info!("Reporting version=1...");
+        log::info!("Test 6: Switching adjacently-tagged to different mode...");
+        cloud_update_desired(
+            &client,
+            thing_name,
+            br#"{"state":{"desired":{"adjacent":{"mode":"mode_b","config":{"gamma":12345,"delta":42}}}}}"#,
+        )
+        .await
+        .expect("Failed to switch adjacent mode");
+
+        let (state, delta) = shadow.wait_delta().await.expect("Failed to wait_delta");
+        assert!(delta.is_some());
+        assert_eq!(
+            state.adjacent,
+            Adjacent::ModeB(ConfigB {
+                gamma: 12345,
+                delta: 42
+            })
+        );
+        log::info!("Test 6 passed: switched to different mode");
+
+        // =====================================================================
+        // Test 7: Report-only field
+        // =====================================================================
+        log::info!("Test 7: Reporting version (report_only)...");
         shadow
             .update(|_, r| {
                 r.version = Some(1);
             })
             .await
-            .expect("Failed to update reported version");
+            .expect("Failed to report version");
 
-        // =====================================================================
-        // Step 10: Cloud get shadow → assert reported.version == 1
-        // =====================================================================
-        log::info!("Getting shadow document from cloud...");
         let doc = cloud_get_shadow(&client, thing_name)
             .await
             .expect("Failed to get shadow");
-        log::info!("Shadow document: {}", doc);
 
         let reported_version = doc["state"]["reported"]["version"]
             .as_u64()
@@ -263,50 +428,15 @@ async fn test_shadow_end_to_end() {
         assert_eq!(reported_version, 1);
 
         // version should NOT generate a delta (it's report_only)
-        assert!(
-            doc["state"]["delta"].is_null()
-                || doc["state"].get("delta").is_none()
-                || !doc["state"]["delta"]
-                    .as_object()
-                    .map(|d| d.contains_key("version"))
-                    .unwrap_or(false),
-            "version should not appear in delta (report_only)"
-        );
+        let has_version_delta = doc["state"]["delta"]
+            .as_object()
+            .map(|d| d.contains_key("version"))
+            .unwrap_or(false);
+        assert!(!has_version_delta, "version should not appear in delta");
+        log::info!("Test 7 passed: report_only field works");
 
         // =====================================================================
-        // Step 11: Cloud updates desired bar=true
-        // =====================================================================
-        log::info!("Cloud updating desired bar=true...");
-        cloud_update_desired(
-            &client,
-            thing_name,
-            br#"{"state":{"desired":{"bar":true}}}"#,
-        )
-        .await
-        .expect("Failed to update desired bar");
-
-        // =====================================================================
-        // Step 12: Wait for delta → receives bar delta
-        // =====================================================================
-        log::info!("Waiting for delta (bar)...");
-        let (state_val, delta) = shadow
-            .wait_delta()
-            .await
-            .expect("Failed to wait_delta (bar)");
-        log::info!(
-            "Got bar delta: has_delta={}, state: {:?}",
-            delta.is_some(),
-            state_val
-        );
-
-        // =====================================================================
-        // Step 13: Assert both fields updated
-        // =====================================================================
-        assert_eq!(state_val.foo, 42);
-        assert_eq!(state_val.bar, true);
-
-        // =====================================================================
-        // Step 14: Assert temp dir contains persisted files
+        // Verify persistence
         // =====================================================================
         let entries: Vec<_> = std::fs::read_dir(kv.base_path())
             .expect("Failed to read temp dir")
@@ -314,37 +444,29 @@ async fn test_shadow_end_to_end() {
         log::info!("FileKVStore has {} files", entries.len());
         assert!(
             !entries.is_empty(),
-            "FileKVStore temp dir should contain persisted files"
+            "FileKVStore should have persisted files"
         );
 
         // =====================================================================
-        // Step 15: Delete shadow → delete from cloud, reset store to defaults
+        // Cleanup
         // =====================================================================
-        log::info!("Deleting shadow...");
+        log::info!("Cleaning up...");
         shadow
             .delete_shadow()
             .await
             .expect("Failed to delete shadow");
 
-        // =====================================================================
-        // Step 16: Assert state loaded from store == defaults
-        // =====================================================================
-        let state_val = shadow
+        let state = shadow
             .state()
             .await
             .expect("Failed to get state after delete");
-        assert_eq!(state_val.foo, 0);
-        assert_eq!(state_val.bar, false);
-        assert_eq!(state_val.version, 0);
+        assert_eq!(state, TestShadow::default());
 
-        // =====================================================================
-        // Step 17: Remove temp dir, assert removal succeeded
-        // =====================================================================
         let temp_path = kv.base_path().to_owned();
         std::fs::remove_dir_all(&temp_path).expect("Failed to remove temp dir");
         assert!(!temp_path.exists(), "Temp dir should be removed");
 
-        log::info!("Shadow integration test passed!");
+        log::info!("All shadow integration tests passed!");
         Ok::<_, Box<dyn std::error::Error>>(())
     };
 

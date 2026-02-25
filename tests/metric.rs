@@ -1,3 +1,5 @@
+#![cfg(feature = "metric_cbor")]
+
 //! ## Integration test of `AWS IoT Device defender metrics`
 //!
 //!

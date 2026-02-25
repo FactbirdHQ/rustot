@@ -6,7 +6,7 @@ use errors::{ErrorResponse, MetricError};
 #[cfg(feature = "metric_cbor")]
 use serde::Deserialize;
 use serde::Serialize;
-use topics::Topic;
+use topics::{Topic, MAX_DEFENDER_TOPIC_LEN};
 
 pub mod aws_types;
 pub mod data_types;
@@ -105,8 +105,8 @@ impl<'m, C: MqttClient> MetricHandler<'m, C> {
         &self,
         payload: impl ToPayload,
     ) -> Result<C::Subscription<'_, 2>, MetricError> {
-        let accepted = Topic::Accepted.format::<64>(self.mqtt.client_id())?;
-        let rejected = Topic::Rejected.format::<64>(self.mqtt.client_id())?;
+        let accepted = Topic::Accepted.format::<MAX_DEFENDER_TOPIC_LEN>(self.mqtt.client_id())?;
+        let rejected = Topic::Rejected.format::<MAX_DEFENDER_TOPIC_LEN>(self.mqtt.client_id())?;
 
         let sub = self
             .mqtt
@@ -117,7 +117,7 @@ impl<'m, C: MqttClient> MetricHandler<'m, C> {
             .await
             .map_err(|_| MetricError::Mqtt)?;
 
-        let topic_name = Topic::Publish.format::<64>(self.mqtt.client_id())?;
+        let topic_name = Topic::Publish.format::<MAX_DEFENDER_TOPIC_LEN>(self.mqtt.client_id())?;
 
         self.mqtt
             .publish(topic_name.as_str(), payload)
@@ -158,6 +158,7 @@ mod tests {
             );
         }
     }
+    #[cfg(feature = "metric_cbor")]
     #[test]
     fn serialize_version_cbor() {
         let test_cases: [(Version, [u8; 8]); 4] = [
@@ -189,6 +190,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "metric_cbor")]
     #[test]
     fn custom_serialization_cbor() {
         #[derive(Debug)]

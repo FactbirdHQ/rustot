@@ -28,7 +28,10 @@ pub use sequential::SequentialKVStore;
 #[cfg(all(feature = "std", feature = "shadows_kv_persist"))]
 pub use file::FileKVStore;
 
-use crate::shadows::{commit::CommitStats, error::KvError, migration::LoadResult, ShadowNode};
+use crate::shadows::{
+    commit::CommitStats, error::KvError, migration::LoadResult, ParseError, ShadowNode,
+    VariantResolver,
+};
 use core::fmt::Debug;
 
 // =============================================================================
@@ -109,6 +112,39 @@ pub trait StateStore<S: ShadowNode> {
     /// If the device reboots before `commit()` (e.g., OTA rollback), the old
     /// firmware will see its original hash and work correctly.
     async fn commit(&self, prefix: &str, hash: u64) -> Result<CommitStats, KvError<Self::Error>>;
+
+    /// Get a resolver for this store.
+    ///
+    /// The resolver is used by `parse_delta` to look up current variant names
+    /// when the JSON delta is missing the tag field.
+    ///
+    /// - `InMemory`: Returns a resolver that queries the current in-memory state
+    /// - KV stores: Returns a resolver that fetches `_variant` keys from storage
+    fn resolver<'a>(&'a self, prefix: &'a str) -> impl VariantResolver + 'a;
+
+    /// Parse JSON delta, resolve variants, apply, and return the typed delta.
+    ///
+    /// This method:
+    /// 1. Gets a resolver for variant fallback
+    /// 2. Parses the JSON using `S::parse_delta()`
+    /// 3. Applies the delta to the store
+    /// 4. Returns the parsed delta
+    ///
+    /// This is the primary method for handling cloud delta messages.
+    async fn apply_json_delta(
+        &self,
+        prefix: &str,
+        json: &[u8],
+    ) -> Result<S::Delta, ApplyJsonError<Self::Error>>;
+}
+
+/// Error type for `apply_json_delta` operations.
+#[derive(Debug)]
+pub enum ApplyJsonError<E> {
+    /// JSON parsing failed
+    Parse(ParseError),
+    /// Storage operation failed
+    Store(E),
 }
 
 // =============================================================================

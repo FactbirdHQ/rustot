@@ -8,11 +8,11 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use super::{KVStore, StateStore};
+use super::{ApplyJsonError, KVStore, StateStore};
 use crate::shadows::commit::CommitStats;
 use crate::shadows::error::KvError;
 use crate::shadows::migration::LoadResult;
-use crate::shadows::KVPersist;
+use crate::shadows::{KVPersist, VariantResolver};
 
 /// Suffix for schema hash keys.
 const SCHEMA_HASH_SUFFIX: &str = "/__schema_hash__";
@@ -407,5 +407,58 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
             orphans_removed,
             schema_hash_updated: true,
         })
+    }
+
+    fn resolver<'a>(&'a self, prefix: &'a str) -> impl VariantResolver + 'a {
+        FileKvResolver { kv: self, prefix }
+    }
+
+    async fn apply_json_delta(
+        &self,
+        prefix: &str,
+        json: &[u8],
+    ) -> Result<St::Delta, ApplyJsonError<Self::Error>> {
+        let resolver = <Self as StateStore<St>>::resolver(self, prefix);
+        let delta = St::parse_delta(json, "", &resolver)
+            .await
+            .map_err(ApplyJsonError::Parse)?;
+
+        // Persist delta directly (avoids method dispatch ambiguity)
+        St::persist_delta::<Self, 128>(&delta, self, prefix)
+            .await
+            .map_err(|e| match e {
+                KvError::Kv(kv_err) => ApplyJsonError::Store(kv_err),
+                _ => ApplyJsonError::Store(FileKVStoreError::KeyEncoding),
+            })?;
+
+        Ok(delta)
+    }
+}
+
+/// Resolver for FileKVStore that fetches `_variant` keys on demand.
+struct FileKvResolver<'a> {
+    kv: &'a FileKVStore,
+    prefix: &'a str,
+}
+
+impl VariantResolver for FileKvResolver<'_> {
+    async fn resolve(&self, path: &str) -> Option<heapless::String<32>> {
+        // Build the variant key: prefix/path/_variant
+        // KV keys always have format {prefix}/{field_path} where field_path starts with /
+        // So the full key is {prefix}/{path}/_variant (slash always present between components)
+        let key = format!("{}/{}/_variant", self.prefix, path);
+
+        // Fetch the variant name from storage
+        let mut buf = [0u8; 64];
+        match self.kv.fetch(&key, &mut buf).await {
+            Ok(Some(bytes)) => {
+                // Try to parse as UTF-8 string
+                std::str::from_utf8(bytes)
+                    .ok()
+                    .and_then(|s| heapless::String::try_from(s).ok())
+            }
+            Ok(None) => None,
+            Err(_) => None,
+        }
     }
 }

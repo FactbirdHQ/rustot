@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::{tag_scanner::FieldScanner, ParseError, ShadowNode, VariantResolver};
+
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Patch<T> {
@@ -34,13 +36,56 @@ pub struct RequestState<D, R> {
     pub reported: Option<R>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct DeltaState<D, R> {
     pub desired: Option<D>,
 
     pub reported: Option<R>,
 
     pub delta: Option<D>,
+}
+
+impl<D> DeltaState<D, D> {
+    /// Parse a delta state using `FieldScanner` and `parse_delta`.
+    ///
+    /// This method handles adjacently-tagged enums properly by using
+    /// the resolver for variant fallback when the tag is missing.
+    ///
+    /// Note: This method is only available when `desired`, `reported`, and `delta`
+    /// all use the same delta type (which is the common case for shadow responses).
+    pub async fn parse<S, Res>(json: &[u8], resolver: &Res) -> Result<Self, ParseError>
+    where
+        S: ShadowNode<Delta = D>,
+        Res: VariantResolver,
+    {
+        let scanner = FieldScanner::scan(json, &["desired", "reported", "delta"])
+            .map_err(ParseError::Scan)?;
+
+        // Parse each field using parse_delta
+        let desired = if let Some(bytes) = scanner.field_bytes("desired") {
+            Some(S::parse_delta(bytes, "", resolver).await?)
+        } else {
+            None
+        };
+
+        let reported = if let Some(bytes) = scanner.field_bytes("reported") {
+            Some(S::parse_delta(bytes, "", resolver).await?)
+        } else {
+            None
+        };
+
+        let delta = if let Some(bytes) = scanner.field_bytes("delta") {
+            Some(S::parse_delta(bytes, "", resolver).await?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            desired,
+            reported,
+            delta,
+        })
+    }
 }
 
 /// A request state document has the following format:
@@ -87,18 +132,65 @@ pub struct Request<'a, D, R> {
 /// - **version** — The current version of the document for the device's shadow
 ///   shared in AWS IoT. It is increased by one over the previous version of the
 ///   document.
-#[derive(Deserialize)]
 pub struct AcceptedResponse<'a, D, R> {
     pub state: DeltaState<D, R>,
     // pub metadata: Metadata<>.
     pub timestamp: u64,
-
-    #[serde(rename = "clientToken")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_token: Option<&'a str>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<i64>,
+}
+
+impl<'a, D> AcceptedResponse<'a, D, D> {
+    /// Parse an accepted response using `FieldScanner` and `parse_delta`.
+    ///
+    /// This method handles adjacently-tagged enums properly by using
+    /// the resolver for variant fallback when the tag is missing.
+    ///
+    /// Note: This method is only available when `desired`, `reported`, and `delta`
+    /// all use the same delta type (which is the common case for shadow responses).
+    pub async fn parse<S, Res>(json: &'a [u8], resolver: &Res) -> Result<Self, ParseError>
+    where
+        S: ShadowNode<Delta = D>,
+        Res: VariantResolver,
+    {
+        let scanner = FieldScanner::scan(json, &["state", "timestamp", "version", "clientToken"])
+            .map_err(ParseError::Scan)?;
+
+        // Parse timestamp (default to 0 if missing)
+        let timestamp = scanner
+            .field_bytes("timestamp")
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Parse version
+        let version = scanner
+            .field_bytes("version")
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .and_then(|s| s.parse().ok());
+
+        // Parse client_token (strips surrounding quotes)
+        let client_token = scanner.field_str("clientToken");
+
+        // Parse state using DeltaState::parse
+        let state = if let Some(state_bytes) = scanner.field_bytes("state") {
+            DeltaState::parse::<S, Res>(state_bytes, resolver).await?
+        } else {
+            // No state field - return empty DeltaState
+            DeltaState {
+                desired: None,
+                reported: None,
+                delta: None,
+            }
+        };
+
+        Ok(Self {
+            state,
+            timestamp,
+            client_token,
+            version,
+        })
+    }
 }
 
 /// Response accepted state documents have the following format:
@@ -113,16 +205,57 @@ pub struct AcceptedResponse<'a, D, R> {
 /// - **version** — The current version of the document for the device's shadow
 ///   shared in AWS IoT. It is increased by one over the previous version of the
 ///   document.
-#[derive(Deserialize)]
 pub struct DeltaResponse<'a, U> {
     pub state: Option<U>,
     // pub metadata: Metadata<>.
     pub timestamp: u64,
-    #[serde(rename = "clientToken")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_token: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<i64>,
+}
+
+impl<'a, U> DeltaResponse<'a, U> {
+    /// Parse a delta response using `FieldScanner` and `parse_delta`.
+    ///
+    /// This method handles adjacently-tagged enums properly by using
+    /// the resolver for variant fallback when the tag is missing.
+    pub async fn parse<S, R>(json: &'a [u8], resolver: &R) -> Result<Self, ParseError>
+    where
+        S: ShadowNode<Delta = U>,
+        R: VariantResolver,
+    {
+        let scanner = FieldScanner::scan(json, &["state", "timestamp", "version", "clientToken"])
+            .map_err(ParseError::Scan)?;
+
+        // Parse timestamp (default to 0 if missing)
+        let timestamp = scanner
+            .field_bytes("timestamp")
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Parse version
+        let version = scanner
+            .field_bytes("version")
+            .and_then(|b| core::str::from_utf8(b).ok())
+            .and_then(|s| s.parse().ok());
+
+        // Parse client_token (strips surrounding quotes)
+        let client_token = scanner.field_str("clientToken");
+
+        // Parse state using parse_delta
+        let state = if let Some(state_bytes) = scanner.field_bytes("state") {
+            Some(S::parse_delta(state_bytes, "", resolver).await?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            state,
+            timestamp,
+            client_token,
+            version,
+        })
+    }
 }
 
 /// An error response document has the following format:

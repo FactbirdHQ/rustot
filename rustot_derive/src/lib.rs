@@ -1,12 +1,13 @@
 mod attr;
 mod codegen;
 
+use darling::FromMeta;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::DeriveInput;
 
-use attr::{ShadowNodeParams, ShadowRootParams};
-use codegen::{generate_shadow_node, ShadowNodeConfig};
+use attr::{FieldAttrs, ShadowNodeParams, ShadowRootParams};
+use codegen::generate_shadow_node;
 
 // =============================================================================
 // KV-based shadow macros (Phase 8)
@@ -103,20 +104,22 @@ pub fn shadow_node(
 
 fn shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenStream> {
     let derive_input = syn::parse2::<DeriveInput>(input)?;
-    let params = syn::parse2::<ShadowRootParams>(attr)?;
+
+    // Parse attributes using Darling
+    let params = if attr.is_empty() {
+        ShadowRootParams::default()
+    } else {
+        let meta_list = darling::ast::NestedMeta::parse_meta_list(attr)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+        ShadowRootParams::from_list(&meta_list)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?
+    };
 
     // Strip shadow_attr from the original definition
     let original = strip_shadow_attrs(&derive_input);
 
-    // Generate shadow node code
-    let config = ShadowNodeConfig {
-        is_root: true,
-        name: params.name.map(|s| s.value()),
-        topic_prefix: params.topic_prefix.map(|s| s.value()),
-        max_payload_len: params.max_payload_len.map(|l| l.base10_parse().unwrap()),
-    };
-
-    let shadow_code = generate_shadow_node(&derive_input, &config)?;
+    // Generate shadow node code (with ShadowRoot impl)
+    let shadow_code = generate_shadow_node(&derive_input, Some(&params))?;
 
     Ok(quote! {
         #original
@@ -126,20 +129,20 @@ fn shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
 
 fn shadow_node_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenStream> {
     let derive_input = syn::parse2::<DeriveInput>(input)?;
-    let _params = syn::parse2::<ShadowNodeParams>(attr)?;
+
+    // Parse attributes using Darling (currently no params, but validates no unknown attrs)
+    if !attr.is_empty() {
+        let meta_list = darling::ast::NestedMeta::parse_meta_list(attr)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+        let _params = ShadowNodeParams::from_list(&meta_list)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+    }
 
     // Strip shadow_attr from the original definition
     let original = strip_shadow_attrs(&derive_input);
 
-    // Generate shadow node code
-    let config = ShadowNodeConfig {
-        is_root: false,
-        name: None,
-        topic_prefix: None,
-        max_payload_len: None,
-    };
-
-    let shadow_code = generate_shadow_node(&derive_input, &config)?;
+    // Generate shadow node code (without ShadowRoot impl)
+    let shadow_code = generate_shadow_node(&derive_input, None)?;
 
     Ok(quote! {
         #original
@@ -147,17 +150,28 @@ fn shadow_node_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
     })
 }
 
-/// Strip shadow_attr from a DeriveInput, returning clean tokens for the original definition
+/// Strip shadow_attr from a DeriveInput, returning clean tokens for the original definition.
+///
+/// Fields marked with `#[shadow_attr(report_only)]` are removed from the original struct
+/// entirely — they only appear in the generated Reported type.
 fn strip_shadow_attrs(input: &DeriveInput) -> TokenStream {
     let mut clean = input.clone();
 
     // Filter shadow_attr from type-level attributes
     clean.attrs.retain(|a| !a.path().is_ident("shadow_attr"));
 
-    // Filter shadow_attr from field/variant attributes
+    // Filter shadow_attr from field/variant attributes, and remove report_only fields
     match &mut clean.data {
         syn::Data::Struct(data) => {
             if let syn::Fields::Named(fields) = &mut data.fields {
+                // Remove report_only fields from the original struct
+                fields.named = fields
+                    .named
+                    .iter()
+                    .filter(|field| !FieldAttrs::from_attrs(&field.attrs).report_only)
+                    .cloned()
+                    .collect();
+                // Strip shadow_attr from remaining fields
                 for field in &mut fields.named {
                     field.attrs.retain(|a| !a.path().is_ident("shadow_attr"));
                 }

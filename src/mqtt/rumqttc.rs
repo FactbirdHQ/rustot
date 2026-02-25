@@ -204,23 +204,21 @@ impl<const N: usize> MqttSubscription for RumqttcSubscription<N> {
         Self: 'm;
     type Error = rumqttc::ClientError;
 
-    fn next_message(&mut self) -> impl core::future::Future<Output = Option<Self::Message<'_>>> {
-        async { self.receiver.recv().await }
+    async fn next_message(&mut self) -> Option<Self::Message<'_>> {
+        self.receiver.recv().await
     }
 
-    fn unsubscribe(self) -> impl core::future::Future<Output = Result<(), Self::Error>> {
-        async move {
-            // Remove from router
-            {
-                let mut router = self.router.lock().await;
-                router.subscriptions.remove(&self.sub_id);
-            }
-            // Unsubscribe from broker
-            for topic in &self.topics {
-                self.client.unsubscribe(topic).await?;
-            }
-            Ok(())
+    async fn unsubscribe(self) -> Result<(), Self::Error> {
+        // Remove from router
+        {
+            let mut router = self.router.lock().await;
+            router.subscriptions.remove(&self.sub_id);
         }
+        // Unsubscribe from broker
+        for topic in &self.topics {
+            self.client.unsubscribe(topic).await?;
+        }
+        Ok(())
     }
 }
 

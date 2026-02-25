@@ -2,7 +2,7 @@
 
 use core::ops::DerefMut;
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 
 use crate::mqtt::{
     DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS, ToPayload,
@@ -14,14 +14,11 @@ use crate::shadows::{
     },
     error::{Error, ShadowError},
     store::StateStore,
-    topics::Topic,
+    topics::{max_topic_len, Topic},
     ShadowRoot,
 };
 
 use super::Shadow;
-
-/// Maximum topic length for MQTT operations.
-const MAX_TOPIC_LEN: usize = 128;
 
 /// Overhead for partial request JSON formatting.
 const PARTIAL_REQUEST_OVERHEAD: usize = 64;
@@ -36,10 +33,11 @@ const CLASSIC_SHADOW: &str = "classic";
 impl<'a, 'm, S, C, K> Shadow<'a, 'm, S, C, K>
 where
     S: ShadowRoot + Clone,
-    S::Delta: Serialize + DeserializeOwned + Default,
+    S::Delta: Serialize + Default,
     S::Reported: Serialize + Default,
     C: MqttClient,
     K: StateStore<S>,
+    [(); max_topic_len(S::PREFIX, S::NAME)]:,
 {
     // =========================================================================
     // Private MQTT Helper Methods (ported from ShadowHandler)
@@ -58,8 +56,11 @@ where
                 debug!("Subscribing to delta topic");
                 self.mqtt.wait_connected().await;
 
-                let topic =
-                    Topic::UpdateDelta.format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+                let topic = Topic::UpdateDelta.format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+                    S::PREFIX,
+                    self.mqtt.client_id(),
+                    S::NAME,
+                )?;
 
                 let sub = self
                     .mqtt
@@ -85,15 +86,13 @@ where
                             S::NAME.unwrap_or(CLASSIC_SHADOW),
                         );
 
-                        let mut buf = [0u8; 64];
-                        let parsed = serde_json_core::from_slice_escaped::<DeltaResponse<S::Delta>>(
-                            delta_message.payload(),
-                            &mut buf,
-                        );
+                        let resolver = self.store.resolver(Self::prefix());
+                        let parsed =
+                            DeltaResponse::parse::<S, _>(delta_message.payload(), &resolver).await;
 
                         Some(
                             parsed
-                                .map(|(delta, _)| delta.state)
+                                .map(|delta| delta.state)
                                 .map_err(|_| Error::InvalidPayload),
                         )
                     }
@@ -111,8 +110,9 @@ where
                         S::NAME.unwrap_or(CLASSIC_SHADOW)
                     );
                     sub_ref.take();
-                    // Drop the lock and continue the loop to retry
+                    // Drop the lock and wait before retrying to avoid tight loop
                     drop(sub_ref);
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
                     continue;
                 }
             }
@@ -161,11 +161,10 @@ where
 
             match Topic::from_str(S::PREFIX, message.topic_name()) {
                 Some((Topic::UpdateAccepted, _, _)) => {
-                    let mut buf = [0u8; 64];
-                    let (response, _) = serde_json_core::from_slice_escaped::<
-                        AcceptedResponse<S::Delta, S::Delta>,
-                    >(message.payload(), &mut buf)
-                    .map_err(|_| Error::InvalidPayload)?;
+                    let resolver = self.store.resolver(Self::prefix());
+                    let response = AcceptedResponse::parse::<S, _>(message.payload(), &resolver)
+                        .await
+                        .map_err(|_| Error::InvalidPayload)?;
 
                     if response.client_token != Some(self.mqtt.client_id()) {
                         continue;
@@ -211,11 +210,10 @@ where
         // Persist shadow and return new shadow
         match Topic::from_str(S::PREFIX, get_message.topic_name()) {
             Some((Topic::GetAccepted, _, _)) => {
-                let mut buf = [0u8; 64];
-                let (response, _) = serde_json_core::from_slice_escaped::<
-                    AcceptedResponse<S::Delta, S::Delta>,
-                >(get_message.payload(), &mut buf)
-                .map_err(|_| Error::InvalidPayload)?;
+                let resolver = self.store.resolver(Self::prefix());
+                let response = AcceptedResponse::parse::<S, _>(get_message.payload(), &resolver)
+                    .await
+                    .map_err(|_| Error::InvalidPayload)?;
 
                 Ok(response.state)
             }
@@ -308,8 +306,16 @@ where
         };
 
         //*** SUBSCRIBE ***/
-        let accepted_topic = accepted.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
-        let rejected_topic = rejected.format::<65>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+        let accepted_topic = accepted.format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+            S::PREFIX,
+            self.mqtt.client_id(),
+            S::NAME,
+        )?;
+        let rejected_topic = rejected.format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+            S::PREFIX,
+            self.mqtt.client_id(),
+            S::NAME,
+        )?;
 
         let sub = self
             .mqtt
@@ -321,8 +327,11 @@ where
             .map_err(|_| Error::Mqtt)?;
 
         //*** PUBLISH REQUEST ***/
-        let topic_name =
-            topic.format::<MAX_TOPIC_LEN>(S::PREFIX, self.mqtt.client_id(), S::NAME)?;
+        let topic_name = topic.format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
+            S::PREFIX,
+            self.mqtt.client_id(),
+            S::NAME,
+        )?;
         self.mqtt
             .publish(topic_name.as_str(), payload)
             .await
@@ -371,8 +380,8 @@ where
                 .await
                 .map_err(|_| Error::DaoWrite)?;
 
-            // Acknowledge to cloud
-            self.update_shadow(None, Some(state.clone().into_reported()))
+            // Acknowledge to cloud with only the changed fields
+            self.update_shadow(None, Some(state.into_partial_reported(delta)))
                 .await?;
 
             state
@@ -483,7 +492,8 @@ where
                 .apply_and_save(&delta)
                 .await
                 .map_err(|_| Error::DaoWrite)?;
-            self.update_shadow(None, Some(state.clone().into_reported()))
+            // Acknowledge with only the changed fields
+            self.update_shadow(None, Some(state.into_partial_reported(&delta)))
                 .await?;
             state
         } else {
