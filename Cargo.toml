@@ -54,7 +54,7 @@ base64 = { version = "0.22", optional = true }
 
 # MQTT client implementations (optional, feature-gated)
 rumqttc = { version = "0.24", optional = true }
-greengrass-ipc-rust = { git = "https://github.com/FactbirdHQ/greengrass-ipc-rust", rev = "d605fe3", optional = true }
+greengrass-ipc-rust = { git = "https://github.com/FactbirdHQ/greengrass-ipc-rust", rev = "0f0469e", optional = true }
 bytes = { version = "1", optional = true }
 
 [dev-dependencies]
