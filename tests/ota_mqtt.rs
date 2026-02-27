@@ -192,18 +192,26 @@ async fn run_ota_happy_path() -> Result<(), ota::error::OtaError> {
         let mqtt = Mqtt(&client);
         Updater::check_for_job(&mqtt).await?;
 
-        let mut config = ota::config::Config::default();
-        config.block_size = 4096;
+        let ota_config = ota::config::Config {
+            block_size: 4096,
+            ..Default::default()
+        };
 
         let message = jobs_subscription.next_message().await.unwrap();
 
-        if let Some(mut file_ctx) = handle_ota(message, &config) {
+        if let Some(mut file_ctx) = handle_ota(message, &ota_config) {
             // Nested subscriptions are a problem for mqttrust, so unsubscribe here
             jobs_subscription.unsubscribe().await.unwrap();
 
             // We have an OTA job, leeeets go!
-            Updater::perform_ota(&mqtt, &mqtt, file_ctx.clone(), &mut file_handler, &config)
-                .await?;
+            Updater::perform_ota(
+                &mqtt,
+                &mqtt,
+                file_ctx.clone(),
+                &mut file_handler,
+                &ota_config,
+            )
+            .await?;
 
             assert_eq!(file_handler.plateform_state, FileHandlerState::Swap);
 
@@ -219,7 +227,7 @@ async fn run_ota_happy_path() -> Result<(), ota::error::OtaError> {
                 )
                 .unwrap();
 
-            Updater::perform_ota(&mqtt, &mqtt, file_ctx, &mut file_handler, &config).await?;
+            Updater::perform_ota(&mqtt, &mqtt, file_ctx, &mut file_handler, &ota_config).await?;
 
             return Ok(());
         }
@@ -553,16 +561,19 @@ async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
         let mqtt = Mqtt(&client);
         Updater::check_for_job(&mqtt).await?;
 
-        let config = ota::config::Config::default();
+        let ota_config = ota::config::Config {
+            block_size: 4096,
+            ..Default::default()
+        };
 
         let message = jobs_subscription.next_message().await.unwrap();
 
-        if let Some(file_ctx) = handle_ota(message, &config) {
+        if let Some(file_ctx) = handle_ota(message, &ota_config) {
             jobs_subscription.unsubscribe().await.unwrap();
 
             // This should fail with SignatureCheckFailed
             let result =
-                Updater::perform_ota(&mqtt, &mqtt, file_ctx, &mut file_handler, &config).await;
+                Updater::perform_ota(&mqtt, &mqtt, file_ctx, &mut file_handler, &ota_config).await;
 
             // Verify the OTA failed as expected
             assert!(

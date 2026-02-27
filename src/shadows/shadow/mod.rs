@@ -30,7 +30,7 @@ use crate::shadows::{
 /// It provides a unified API for:
 /// - Loading/persisting state from storage
 /// - Receiving delta updates from the cloud via `wait_delta()`
-/// - Reporting state changes to the cloud via `update()`
+/// - Reporting state changes to the cloud via `update_reported()`
 /// - Requesting state changes from the cloud via `update_desired()`
 /// - Synchronizing state with the cloud via `sync_shadow()`
 ///

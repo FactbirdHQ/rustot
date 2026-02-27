@@ -33,7 +33,7 @@ const CLASSIC_SHADOW: &str = "classic";
 impl<'a, 'm, S, C, K> Shadow<'a, 'm, S, C, K>
 where
     S: ShadowRoot + Clone,
-    S::Delta: Serialize + Default,
+    S::Delta: Serialize,
     S::Reported: Serialize + Default,
     C: MqttClient,
     K: StateStore<S>,
@@ -129,11 +129,6 @@ where
             "[{:?}] Updating reported shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
-
-        if desired.is_some() && reported.is_some() {
-            // Do not edit both reported and desired at the same time
-            return Err(Error::ShadowError(ShadowError::Forbidden));
-        }
 
         let request: Request<'_, S::Delta, S::Reported> = Request {
             state: RequestState { desired, reported },
@@ -380,9 +375,11 @@ where
                 .await
                 .map_err(|_| Error::DaoWrite)?;
 
-            // Acknowledge to cloud with only the changed fields
-            self.update_shadow(None, Some(state.into_partial_reported(delta)))
-                .await?;
+            // Acknowledge to cloud with only the changed fields,
+            // including desired cleanup to null stale fields after variant switches
+            let reported = state.into_partial_reported(delta);
+            let cleanup = state.desired_cleanup(delta);
+            self.update_shadow(cleanup, Some(reported)).await?;
 
             state
         } else {
@@ -399,8 +396,11 @@ where
     /// Report state changes to the cloud.
     ///
     /// Use this method to update the reported state in the cloud after
-    /// local changes. The closure receives the current state and a mutable
-    /// reference to the reported struct to populate.
+    /// local changes. Pass a `Reported` struct with fields to update.
+    /// Use the `reported()` builder to construct it conveniently.
+    ///
+    /// Accepts anything convertible to `S::Reported` via `Into`, including
+    /// the state type `S` itself (reports all fields).
     ///
     /// If the cloud responds with a delta (because reported differs from
     /// desired), the delta is automatically applied and persisted.
@@ -408,23 +408,16 @@ where
     /// ## Example
     ///
     /// ```ignore
-    /// // Report current timeout value
-    /// shadow.update(|state, reported| {
-    ///     reported.timeout = Some(state.timeout);
-    /// }).await?;
+    /// // Report specific fields using builder
+    /// shadow.update_reported(
+    ///     MyState::reported().timeout(5000u32).build()
+    /// ).await?;
+    ///
+    /// // Report full state (From<S> for Reported is auto-generated)
+    /// shadow.update_reported(state).await?;
     /// ```
-    pub async fn update<F>(&self, f: F) -> Result<(), Error>
-    where
-        F: FnOnce(&S, &mut S::Reported),
-    {
-        let state = self
-            .store
-            .get_state(Self::prefix())
-            .await
-            .map_err(|_| Error::DaoWrite)?;
-
-        let mut reported = S::Reported::default();
-        f(&state, &mut reported);
+    pub async fn update_reported(&self, reported: impl Into<S::Reported>) -> Result<(), Error> {
+        let reported: S::Reported = reported.into();
 
         let response = self.update_shadow(None, Some(reported)).await?;
 
@@ -440,8 +433,12 @@ where
     /// Request state changes from the cloud.
     ///
     /// Use this method to request changes to the desired state (typically
-    /// triggered by user interaction like a button press). The closure
-    /// receives a mutable reference to a delta struct to populate.
+    /// triggered by user interaction like a button press). Pass a `Delta`
+    /// struct with fields to update. Use the `desired()` builder to
+    /// construct it conveniently.
+    ///
+    /// Accepts anything convertible to `S::Delta` via `Into`, including
+    /// `DesiredFoo` types for adjacently-tagged enums.
     ///
     /// If the cloud accepts the change and returns a delta, it is
     /// automatically applied and persisted.
@@ -449,17 +446,13 @@ where
     /// ## Example
     ///
     /// ```ignore
-    /// // User pressed button to change timeout
-    /// shadow.update_desired(|delta| {
-    ///     delta.timeout = Some(5000);
-    /// }).await?;
+    /// // Request timeout change using builder
+    /// shadow.update_desired(
+    ///     MyState::desired().timeout(5000).build()
+    /// ).await?;
     /// ```
-    pub async fn update_desired<F>(&self, f: F) -> Result<(), Error>
-    where
-        F: FnOnce(&mut S::Delta),
-    {
-        let mut desired = S::Delta::default();
-        f(&mut desired);
+    pub async fn update_desired(&self, desired: impl Into<S::Delta>) -> Result<(), Error> {
+        let desired: S::Delta = desired.into();
 
         let response = self.update_shadow(Some(desired), None).await?;
 
@@ -492,9 +485,11 @@ where
                 .apply_and_save(&delta)
                 .await
                 .map_err(|_| Error::DaoWrite)?;
-            // Acknowledge with only the changed fields
-            self.update_shadow(None, Some(state.into_partial_reported(&delta)))
-                .await?;
+            // Acknowledge with only the changed fields,
+            // including desired cleanup to null stale fields after variant switches
+            let reported = state.into_partial_reported(&delta);
+            let cleanup = state.desired_cleanup(&delta);
+            self.update_shadow(cleanup, Some(reported)).await?;
             state
         } else {
             self.store

@@ -35,6 +35,8 @@ pub(crate) struct CodegenOutput {
     pub shadow_node_impl: TokenStream,
     /// The `ReportedUnionFields` trait implementation
     pub reported_union_fields_impl: TokenStream,
+    /// Builder impl block for `desired()` / `reported()` associated functions
+    pub builder_impl: TokenStream,
 }
 
 /// Get the path to the rustot crate, handling both internal and external usage.
@@ -118,6 +120,7 @@ pub fn generate_shadow_node(
     let reported_type = output.reported_type;
     let shadow_node_impl = output.shadow_node_impl;
     let reported_union_fields_impl = output.reported_union_fields_impl;
+    let builder_impl = output.builder_impl;
 
     Ok(quote! {
         #delta_type
@@ -125,5 +128,6 @@ pub fn generate_shadow_node(
         #shadow_node_impl
         #shadow_root_impl
         #reported_union_fields_impl
+        #builder_impl
     })
 }
