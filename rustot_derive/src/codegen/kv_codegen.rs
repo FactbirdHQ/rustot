@@ -51,10 +51,7 @@ fn kv_fetch_and_handle(
 }
 
 /// Generates code for serializing with postcard and storing to KV using key_buf.
-fn kv_serialize_and_store(
-    krate: &TokenStream,
-    value_expr: &TokenStream,
-) -> TokenStream {
+fn kv_serialize_and_store(krate: &TokenStream, value_expr: &TokenStream) -> TokenStream {
     quote! {
         {
             let mut __ser_buf = <Self as #krate::shadows::KVPersist>::zero_value_buf();
@@ -368,10 +365,7 @@ pub fn nested_is_valid_prefix(
 }
 
 /// Generates a FIELD_COUNT expression for a nested field.
-pub fn nested_field_count(
-    krate: &TokenStream,
-    field_ty: &syn::Type,
-) -> TokenStream {
+pub fn nested_field_count(krate: &TokenStream, field_ty: &syn::Type) -> TokenStream {
     quote! { <#field_ty as #krate::shadows::KVPersist>::FIELD_COUNT }
 }
 
@@ -509,9 +503,7 @@ pub fn enum_is_valid_key_body(
 }
 
 /// Generates the body of `is_valid_prefix` for enum types.
-pub fn enum_is_valid_prefix_body(
-    is_valid_prefix_arms: &[TokenStream],
-) -> TokenStream {
+pub fn enum_is_valid_prefix_body(is_valid_prefix_arms: &[TokenStream]) -> TokenStream {
     if is_valid_prefix_arms.is_empty() {
         quote! { false }
     } else {
@@ -522,9 +514,7 @@ pub fn enum_is_valid_prefix_body(
 }
 
 /// Generates the FIELD_COUNT expression for enum types.
-pub fn enum_field_count_expr(
-    field_count_items: &[TokenStream],
-) -> TokenStream {
+pub fn enum_field_count_expr(field_count_items: &[TokenStream]) -> TokenStream {
     if field_count_items.is_empty() {
         quote! { 1 } // just _variant
     } else {

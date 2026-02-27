@@ -77,7 +77,7 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
         debug!("Updating job status! {:?}", status);
 
         self.0
-            .publish_with_options(&topic, payload, PublishOptions::new().qos(QoS::AtLeastOnce))
+            .publish_with_options(&topic, payload, PublishOptions::new().qos(qos))
             .await
             .map_err(|_| OtaError::Mqtt)?;
 

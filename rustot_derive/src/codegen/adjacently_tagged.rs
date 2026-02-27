@@ -102,6 +102,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // Type names for generated types
     let variant_enum_name = format_ident!("{}Variant", name);
     let delta_config_name = format_ident!("{}Config", delta_name);
+    let desired_name = format_ident!("Desired{}", name);
 
     // Collect variant info
     let mut variant_enum_variants = Vec::new(); // For PortModeVariant
@@ -131,6 +132,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // Track which variants have data (for DeltaConfig enum)
     let mut variants_with_data: Vec<(&syn::Variant, String)> = Vec::new();
 
+    // For DesiredFoo enum
+    let mut desired_variants = Vec::new();
+    let mut from_desired_arms = Vec::new();
+
     // For async parse_delta config arms (uses parse_delta instead of serde)
     let mut parse_delta_config_arms: Vec<TokenStream> = Vec::new();
 
@@ -148,6 +153,13 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             Fields::Unit => {
                 // Unit variant - no data
                 reported_variants.push(quote! { #variant_ident, });
+                desired_variants.push(quote! { #variant_ident, });
+                from_desired_arms.push(quote! {
+                    #desired_name::#variant_ident => #delta_name {
+                        mode: Some(#variant_enum_name::#variant_ident),
+                        config: #krate::shadows::DeltaContent::Absent,
+                    },
+                });
 
                 // Only switch to this variant if not already in it
                 mode_switch_arms.push(quote! {
@@ -187,6 +199,13 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
                 delta_config_variants.push(quote! { #variant_ident(#delta_inner_ty), });
                 reported_variants.push(quote! { #variant_ident(#reported_inner_ty), });
+                desired_variants.push(quote! { #variant_ident(#delta_inner_ty), });
+                from_desired_arms.push(quote! {
+                    #desired_name::#variant_ident(config) => #delta_name {
+                        mode: Some(#variant_enum_name::#variant_ident),
+                        config: #krate::shadows::DeltaContent::Value(#delta_config_name::#variant_ident(config)),
+                    },
+                });
 
                 // Only switch to this variant if not already in it
                 mode_switch_arms.push(quote! {
@@ -214,7 +233,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 into_partial_reported_arms.push(quote! {
                     Self::#variant_ident(ref inner) => {
                         let inner_delta = match &delta.config {
-                            Some(#delta_config_name::#variant_ident(d)) => d.clone(),
+                            #krate::shadows::DeltaContent::Value(#delta_config_name::#variant_ident(d)) => d.clone(),
                             _ => Default::default(),
                         };
                         Self::Reported::#variant_ident(inner.into_partial_reported(&inner_delta))
@@ -344,14 +363,45 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     let config_field_for_struct = if delta_config_variants.is_empty() {
         TokenStream::new()
     } else {
+        let delta_content_absent_fn = format!("{}::shadows::delta_content_is_absent", krate);
         quote! {
-            #[serde(rename = #content_key, skip_serializing_if = "Option::is_none")]
-            pub config: Option<#delta_config_name>,
+            #[serde(rename = #content_key, skip_serializing_if = #delta_content_absent_fn)]
+            pub config: #krate::shadows::DeltaContent<#delta_config_name>,
         }
     };
 
     // NOTE: from_json method removed - parsing is now done directly in parse_delta
     // which allows async calls to nested parse_delta methods
+
+    // Generate Desired enum — user-facing type for update_desired()
+    let desired_default_impl = if let Some(default_var) = default_variant {
+        let default_var_ident = &default_var.ident;
+        quote! {
+            impl Default for #desired_name {
+                fn default() -> Self {
+                    Self::#default_var_ident
+                }
+            }
+        }
+    } else {
+        TokenStream::new()
+    };
+
+    let desired_type = quote! {
+        #vis enum #desired_name {
+            #(#desired_variants)*
+        }
+
+        #desired_default_impl
+
+        impl From<#desired_name> for #delta_name {
+            fn from(d: #desired_name) -> Self {
+                match d {
+                    #(#from_desired_arms)*
+                }
+            }
+        }
+    };
 
     // Generate Delta type (no Deserialize - uses parse_delta instead)
     let delta_type = quote! {
@@ -365,6 +415,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             pub mode: Option<#variant_enum_name>,
             #config_field_for_struct
         }
+
+        #desired_type
     };
 
     // =========================================================================
@@ -522,7 +574,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         TokenStream::new()
     } else {
         quote! {
-            if let Some(ref config) = delta.config {
+            if let #krate::shadows::DeltaContent::Value(ref config) = delta.config {
                 match (self, config) {
                     #(#config_apply_arms)*
                     _ => { /* Variant mismatch - ignore config if variant doesn't match */ }
@@ -556,6 +608,84 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             }
         })
         .collect();
+
+    // Build desired_cleanup match arms for each variant
+    let desired_cleanup_code = if inactive_variant_field_nulls.is_empty() {
+        // No data variants — no fields to clean up, use default impl
+        TokenStream::new()
+    } else {
+        // For each variant, compute which other data variants' fields to null
+        let cleanup_arms: Vec<TokenStream> = variant_idents
+            .iter()
+            .map(|variant_ident| {
+                let has_data = variants_with_data
+                    .iter()
+                    .any(|(v, _)| v.ident == *variant_ident);
+
+                // Collect FIELD_NAMES references for all OTHER data variants
+                let null_field_refs: Vec<TokenStream> = inactive_variant_field_nulls
+                    .iter()
+                    .filter(|(other_ident, _)| other_ident != variant_ident)
+                    .map(|(_, inner_ty)| {
+                        quote! {
+                            <<#inner_ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedUnionFields>::FIELD_NAMES
+                        }
+                    })
+                    .collect();
+
+                if null_field_refs.is_empty() {
+                    // This variant is the only data variant — nothing to null
+                    if has_data {
+                        quote! {
+                            Self::#variant_ident(_) => {
+                                return None;
+                            }
+                        }
+                    } else {
+                        quote! {
+                            Self::#variant_ident => {
+                                return None;
+                            }
+                        }
+                    }
+                } else if has_data {
+                    quote! {
+                        Self::#variant_ident(_) => {
+                            const F: &[&[&str]] = &[
+                                #(#null_field_refs),*
+                            ];
+                            F
+                        }
+                    }
+                } else {
+                    quote! {
+                        Self::#variant_ident => {
+                            const F: &[&[&str]] = &[
+                                #(#null_field_refs),*
+                            ];
+                            F
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        quote! {
+            fn desired_cleanup(&self, delta: &Self::Delta) -> Option<Self::Delta> {
+                if delta.mode.is_some() {
+                    let null_fields = match self {
+                        #(#cleanup_arms)*
+                    };
+                    Some(Self::Delta {
+                        mode: None,
+                        config: #krate::shadows::DeltaContent::NullFields(null_fields),
+                    })
+                } else {
+                    None
+                }
+            }
+        }
+    };
 
     let shadow_node_impl = quote! {
         impl #krate::shadows::ShadowNode for #name {
@@ -592,7 +722,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         _ => None,
                     };
 
-                    Ok(#delta_name { mode, config })
+                    Ok(#delta_name { mode, config: config.into() })
                 }
             }
 
@@ -633,6 +763,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     #(#into_partial_reported_arms)*
                 }
             }
+
+            #desired_cleanup_code
         }
     };
 
@@ -732,10 +864,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         inner_ty,
                     ));
 
-                    field_count_items.push(kv_codegen::nested_field_count(
-                        krate,
-                        inner_ty,
-                    ));
+                    field_count_items.push(kv_codegen::nested_field_count(krate, inner_ty));
                 }
                 _ => {}
             }
@@ -755,12 +884,9 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             &variant_name_arms_kv,
             &persist_to_kv_variant_arms,
         );
-        let is_valid_key_body =
-            kv_codegen::enum_is_valid_key_body(krate, &is_valid_key_arms);
-        let is_valid_prefix_body =
-            kv_codegen::enum_is_valid_prefix_body(&is_valid_prefix_arms);
-        let field_count_expr =
-            kv_codegen::enum_field_count_expr(&field_count_items);
+        let is_valid_key_body = kv_codegen::enum_is_valid_key_body(krate, &is_valid_key_arms);
+        let is_valid_prefix_body = kv_codegen::enum_is_valid_prefix_body(&is_valid_prefix_arms);
+        let field_count_expr = kv_codegen::enum_field_count_expr(&field_count_items);
 
         quote! {
             impl #krate::shadows::KVPersist for #name {
@@ -824,7 +950,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         }
 
                         // Handle config (variant content)
-                        if let Some(ref config) = delta.config {
+                        if let #krate::shadows::DeltaContent::Value(ref config) = delta.config {
                             match config {
                                 #(#persist_delta_config_arms)*
                             }
@@ -878,5 +1004,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         reported_type,
         shadow_node_impl,
         reported_union_fields_impl,
+        builder_impl: TokenStream::new(),
     })
 }

@@ -3,6 +3,7 @@
 use super::Shadow;
 use crate::mqtt::mock::MockMqttClient;
 use crate::shadows::store::{FileKVStore, InMemory, KVStore};
+use crate::shadows::DeltaContent;
 
 // =========================================================================
 // Phase 8 Tests - Test fixtures using proc macros
@@ -1113,7 +1114,7 @@ mod adjacently_tagged {
         // Verify DeltaPortMode is a struct with mode and config fields
         let delta = DeltaPortMode {
             mode: Some(PortModeVariant::Sio),
-            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+            config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
         };
@@ -1121,19 +1122,19 @@ mod adjacently_tagged {
         // Test Default
         let default_delta = DeltaPortMode::default();
         assert!(default_delta.mode.is_none());
-        assert!(default_delta.config.is_none());
+        assert!(matches!(default_delta.config, DeltaContent::Absent));
 
         // Test mode-only
         let mode_only = DeltaPortMode {
             mode: Some(PortModeVariant::Inactive),
-            config: None,
+            config: DeltaContent::Absent,
         };
         assert_eq!(mode_only.mode, Some(PortModeVariant::Inactive));
 
         // Test config-only
         let config_only = DeltaPortMode {
             mode: None,
-            config: Some(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
+            config: DeltaContent::Value(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
                 cycle_time: Some(1000),
             })),
         };
@@ -1172,7 +1173,7 @@ mod adjacently_tagged {
         // Test JSON serialization of delta with mode and config
         let delta = DeltaPortMode {
             mode: Some(PortModeVariant::Sio),
-            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+            config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
         };
@@ -1201,7 +1202,7 @@ mod adjacently_tagged {
             .await
             .unwrap();
         assert_eq!(delta.mode, Some(PortModeVariant::Inactive));
-        assert!(delta.config.is_none());
+        assert!(matches!(delta.config, DeltaContent::Absent));
     }
 
     #[tokio::test]
@@ -1222,9 +1223,9 @@ mod adjacently_tagged {
         let json = br#"{"config": {"polarity": false}}"#;
         let delta = PortMode::parse_delta(json, "", &resolver).await.unwrap();
         assert!(delta.mode.is_some()); // fallback from resolver
-        assert!(delta.config.is_some());
+        assert!(matches!(delta.config, DeltaContent::Value(_)));
 
-        if let Some(DeltaPortModeConfig::Sio(sio_config)) = delta.config {
+        if let DeltaContent::Value(DeltaPortModeConfig::Sio(sio_config)) = delta.config {
             assert_eq!(sio_config.polarity, Some(false));
         } else {
             panic!("Expected Sio config");
@@ -1287,7 +1288,7 @@ mod adjacently_tagged {
 
         let delta = DeltaPortMode {
             mode: Some(PortModeVariant::Sio),
-            config: None,
+            config: DeltaContent::Absent,
         };
 
         port_mode.apply_delta(&delta);
@@ -1309,7 +1310,7 @@ mod adjacently_tagged {
 
         let delta = DeltaPortMode {
             mode: None,
-            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+            config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
         };
@@ -1333,7 +1334,7 @@ mod adjacently_tagged {
 
         let delta = DeltaPortMode {
             mode: None,
-            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+            config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
         };
@@ -1353,7 +1354,7 @@ mod adjacently_tagged {
 
         let delta = DeltaPortMode {
             mode: Some(PortModeVariant::IoLink),
-            config: Some(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
+            config: DeltaContent::Value(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
                 cycle_time: Some(5000),
             })),
         };
@@ -1380,7 +1381,7 @@ mod adjacently_tagged {
         let mut port_mode = PortMode::Inactive;
         let delta = DeltaPortMode {
             mode: Some(PortModeVariant::Sio),
-            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+            config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
         };
@@ -1405,7 +1406,7 @@ mod adjacently_tagged {
         let mut port_mode = PortMode::Sio(SioConfig { polarity: false });
         let delta = DeltaPortMode {
             mode: None,
-            config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+            config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
         };
@@ -1442,7 +1443,7 @@ mod adjacently_tagged {
             simple_field: None,
             adjacent: Some(DeltaPortMode {
                 mode: None,
-                config: Some(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                     polarity: Some(true),
                 })),
             }),

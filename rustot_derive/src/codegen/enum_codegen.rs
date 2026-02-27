@@ -622,10 +622,7 @@ pub(crate) fn generate_simple_enum_code(
                         inner_ty,
                     ));
 
-                    field_count_items.push(kv_codegen::nested_field_count(
-                        krate,
-                        inner_ty,
-                    ));
+                    field_count_items.push(kv_codegen::nested_field_count(krate, inner_ty));
                 }
                 _ => {}
             }
@@ -645,12 +642,9 @@ pub(crate) fn generate_simple_enum_code(
             &variant_name_arms,
             &persist_to_kv_variant_arms,
         );
-        let is_valid_key_body =
-            kv_codegen::enum_is_valid_key_body(krate, &is_valid_key_arms);
-        let is_valid_prefix_body =
-            kv_codegen::enum_is_valid_prefix_body(&is_valid_prefix_arms);
-        let field_count_expr =
-            kv_codegen::enum_field_count_expr(&field_count_items);
+        let is_valid_key_body = kv_codegen::enum_is_valid_key_body(krate, &is_valid_key_arms);
+        let is_valid_prefix_body = kv_codegen::enum_is_valid_prefix_body(&is_valid_prefix_arms);
+        let field_count_expr = kv_codegen::enum_field_count_expr(&field_count_items);
 
         quote! {
             impl #krate::shadows::KVPersist for #name {
@@ -753,5 +747,6 @@ pub(crate) fn generate_simple_enum_code(
         reported_type,
         shadow_node_impl,
         reported_union_fields_impl,
+        builder_impl: TokenStream::new(),
     })
 }

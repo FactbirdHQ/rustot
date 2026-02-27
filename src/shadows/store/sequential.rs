@@ -138,29 +138,60 @@ impl<
         buf: &'a mut [u8],
     ) -> Result<Option<&'a [u8]>, Self::Error> {
         let mut inner = self.inner.lock().await;
-        let Inner { map, key_tmp, .. } = &mut *inner;
+        let Inner {
+            map,
+            scratch,
+            key_tmp,
+        } = &mut *inner;
         key_tmp.clear();
-        key_tmp.push_str(key).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
-        match map.fetch_item::<&[u8]>(buf, key_tmp).await {
-            Ok(value) => Ok(value),
+        key_tmp
+            .push_str(key)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        // Use scratch as data_buffer (must hold longest key+value in store),
+        // then copy value into caller's buf.
+        match map.fetch_item::<&[u8]>(scratch, key_tmp).await {
+            Ok(Some(value)) => {
+                let len = value.len();
+                debug!("KV fetch: key={} hit=true len={}", key, len);
+                buf[..len].copy_from_slice(value);
+                Ok(Some(&buf[..len]))
+            }
+            Ok(None) => {
+                debug!("KV fetch: key={} hit=false len=0", key);
+                Ok(None)
+            }
             Err(e) => Err(e.into()),
         }
     }
 
     async fn store(&self, key: &str, value: &[u8]) -> Result<(), Self::Error> {
+        debug!("KV store: key={} len={}", key, value.len());
         let mut inner = self.inner.lock().await;
-        let Inner { map, scratch, key_tmp } = &mut *inner;
+        let Inner {
+            map,
+            scratch,
+            key_tmp,
+        } = &mut *inner;
         key_tmp.clear();
-        key_tmp.push_str(key).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_tmp
+            .push_str(key)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         map.store_item(scratch, key_tmp, &value).await?;
         Ok(())
     }
 
     async fn remove(&self, key: &str) -> Result<(), Self::Error> {
+        debug!("KV remove: key={}", key);
         let mut inner = self.inner.lock().await;
-        let Inner { map, scratch, key_tmp } = &mut *inner;
+        let Inner {
+            map,
+            scratch,
+            key_tmp,
+        } = &mut *inner;
         key_tmp.clear();
-        key_tmp.push_str(key).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_tmp
+            .push_str(key)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         map.remove_item(scratch, key_tmp).await?;
         Ok(())
     }
@@ -214,6 +245,7 @@ impl<
             }
         }
 
+        debug!("KV remove_if: prefix={} removed={}", prefix, removed);
         Ok(removed)
     }
 }
@@ -235,7 +267,9 @@ impl<
     async fn get_state(&self, prefix: &str) -> Result<St, Self::Error> {
         let mut state = St::default();
         let mut key_buf: String<MAX_KEY_LEN> = String::new();
-        key_buf.push_str(prefix).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         let _ = state
             .load_from_kv::<Self, MAX_KEY_LEN>(&mut key_buf, self)
             .await
@@ -248,7 +282,9 @@ impl<
 
     async fn set_state(&self, prefix: &str, state: &St) -> Result<(), Self::Error> {
         let mut key_buf: String<MAX_KEY_LEN> = String::new();
-        key_buf.push_str(prefix).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         state
             .persist_to_kv::<Self, MAX_KEY_LEN>(&mut key_buf, self)
             .await
@@ -259,8 +295,11 @@ impl<
     }
 
     async fn apply_delta(&self, prefix: &str, delta: &St::Delta) -> Result<St, Self::Error> {
+        info!("KV apply_delta: prefix={}", prefix);
         let mut key_buf: String<MAX_KEY_LEN> = String::new();
-        key_buf.push_str(prefix).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         St::persist_delta::<Self, MAX_KEY_LEN>(delta, self, &mut key_buf)
             .await
             .map_err(|e| match e {
@@ -286,6 +325,7 @@ impl<
         {
             None => {
                 // First boot - no hash exists
+                info!("KV load: prefix={} first_boot (no hash found)", prefix);
                 let state = St::default();
                 self.set_state(prefix, &state).await.map_err(KvError::Kv)?;
 
@@ -307,6 +347,7 @@ impl<
                 let stored_hash = u64::from_le_bytes(slice.try_into().unwrap());
                 if stored_hash == hash {
                     // Hash matches - normal load
+                    info!("KV load: prefix={} hash_match", prefix);
                     let mut state = St::default();
                     let mut key_buf: String<MAX_KEY_LEN> = String::new();
                     key_buf.push_str(prefix).map_err(|_| KvError::KeyTooLong)?;
@@ -314,6 +355,10 @@ impl<
                         .load_from_kv::<Self, MAX_KEY_LEN>(&mut key_buf, self)
                         .await?;
 
+                    info!(
+                        "KV load: prefix={} loaded={} defaulted={}",
+                        prefix, field_result.loaded, field_result.defaulted
+                    );
                     Ok(LoadResult {
                         state,
                         first_boot: false,
@@ -324,6 +369,10 @@ impl<
                     })
                 } else {
                     // Hash mismatch - migration needed
+                    info!(
+                        "KV load: prefix={} schema_changed (stored={:x} current={:x})",
+                        prefix, stored_hash, hash
+                    );
                     let mut state = St::default();
                     let mut key_buf: String<MAX_KEY_LEN> = String::new();
                     key_buf.push_str(prefix).map_err(|_| KvError::KeyTooLong)?;
@@ -331,6 +380,10 @@ impl<
                         .load_from_kv_with_migration::<Self, MAX_KEY_LEN>(&mut key_buf, self)
                         .await?;
 
+                    info!(
+                        "KV load: prefix={} migrated={} loaded={} defaulted={}",
+                        prefix, field_result.migrated, field_result.loaded, field_result.defaulted
+                    );
                     Ok(LoadResult {
                         state,
                         first_boot: false,
@@ -363,6 +416,7 @@ impl<
     }
 
     async fn commit(&self, prefix: &str, hash: u64) -> Result<CommitStats, KvError<Self::Error>> {
+        info!("KV commit: prefix={}", prefix);
         // Remove orphaned keys using zero-allocation validation functions
         let orphans_removed = self
             .remove_if(prefix, |key| {
@@ -385,6 +439,10 @@ impl<
             .await
             .map_err(KvError::Kv)?;
 
+        info!(
+            "KV commit: prefix={} orphans_removed={}",
+            prefix, orphans_removed
+        );
         Ok(CommitStats {
             orphans_removed,
             schema_hash_updated: true,
@@ -407,7 +465,9 @@ impl<
 
         // Persist delta directly (avoids method dispatch ambiguity)
         let mut key_buf: String<MAX_KEY_LEN> = String::new();
-        key_buf.push_str(prefix).map_err(|_| ApplyJsonError::Store(SequentialKVStoreError::KeyTooLong))?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| ApplyJsonError::Store(SequentialKVStoreError::KeyTooLong))?;
         St::persist_delta::<Self, MAX_KEY_LEN>(&delta, self, &mut key_buf)
             .await
             .map_err(|e| match e {

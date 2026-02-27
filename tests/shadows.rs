@@ -412,9 +412,7 @@ async fn test_shadow_end_to_end() {
         // =====================================================================
         log::info!("Test 7: Reporting version (report_only)...");
         shadow
-            .update(|_, r| {
-                r.version = Some(1);
-            })
+            .update_reported(TestShadow::reported().version(1u32).build())
             .await
             .expect("Failed to report version");
 
