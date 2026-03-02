@@ -18,6 +18,7 @@ pub mod shadows;
 /// Re-exports for derive macro generated code. Not part of the public API.
 #[doc(hidden)]
 pub mod __macro_support {
+    #[cfg(feature = "shadows_builders")]
     pub use bon;
     pub use heapless;
     pub use postcard;

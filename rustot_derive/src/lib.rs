@@ -21,6 +21,19 @@ use codegen::generate_shadow_node;
 /// - `Delta{Name}` struct for applying partial updates
 /// - `Reported{Name}` struct with serde skip_serializing_if
 /// - `ReportedUnionFields` implementation
+/// - `desired()` / `reported()` builder methods (requires `shadows_builders` feature)
+///
+/// # Builder Methods
+///
+/// With the `shadows_builders` feature enabled, `desired()` and `reported()` builder
+/// methods are generated using [`bon`]. Downstream crates must add `bon` as a direct
+/// dependency in their `Cargo.toml`:
+///
+/// ```toml
+/// [dependencies]
+/// rustot = { version = "...", features = ["shadows_builders"] }
+/// bon = "3"
+/// ```
 ///
 /// # Attributes
 ///

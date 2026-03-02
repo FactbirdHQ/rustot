@@ -1573,6 +1573,84 @@ mod adjacently_tagged {
         // Orphan removed
         assert!(!kv_has_key(&kv, "port/stale_field").await);
     }
+
+    // =========================================================================
+    // Migration: _variant key persisted after migration load
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_migration_persists_variant_keys() {
+        use crate::shadows::store::StateStore;
+
+        // 1. First boot: load + commit writes hash and _variant
+        let kv = empty_kv();
+        let mqtt = MockMqttClient::new("test-client");
+        let shadow = Shadow::<PortShadow, _, _>::new(&kv, &mqtt);
+
+        let result = shadow.load().await.unwrap();
+        assert!(result.first_boot);
+        shadow.commit().await.unwrap();
+
+        // _variant should exist after first boot
+        assert!(kv_has_key(&kv, "port/mode/_variant").await);
+
+        // 2. Simulate schema migration: overwrite hash with a different value
+        kv.store("port/__schema_hash__", &0xDEAD_BEEFu64.to_le_bytes())
+            .await
+            .unwrap();
+
+        // 3. load() again → triggers migration path
+        let result = shadow.load().await.unwrap();
+        assert!(result.schema_changed);
+
+        // 4. _variant key must exist after migration load (the fix)
+        assert!(
+            kv_has_key(&kv, "port/mode/_variant").await,
+            "_variant must be persisted after migration load"
+        );
+
+        // 5. Set state to Sio via apply_json_delta (includes parse + persist)
+        let json_set_sio = br#"{"mode": {"mode": "sio", "config": {"polarity": false}}}"#;
+        <FileKVStore as StateStore<PortShadow>>::apply_json_delta(&kv, "port", json_set_sio)
+            .await
+            .unwrap();
+
+        // Verify _variant is now "sio"
+        let mut buf = [0u8; 256];
+        let val = kv
+            .fetch("port/mode/_variant", &mut buf)
+            .await
+            .unwrap()
+            .expect("_variant should exist");
+        assert_eq!(core::str::from_utf8(val).unwrap(), "sio");
+
+        // 6. Config-only delta (no tag) — resolver must find "sio" from KV
+        let json_config_only = br#"{"mode": {"config": {"polarity": true}}}"#;
+        let delta = <FileKVStore as StateStore<PortShadow>>::apply_json_delta(
+            &kv,
+            "port",
+            json_config_only,
+        )
+        .await
+        .unwrap();
+
+        // The resolver should have filled in Sio from KV
+        let mode_delta = delta.mode.as_ref().expect("mode delta should be present");
+        assert_eq!(
+            mode_delta.mode,
+            Some(PortModeVariant::Sio),
+            "resolver should resolve Sio from KV"
+        );
+
+        // Verify the polarity was updated in KV
+        let val = kv
+            .fetch("port/mode/sio/polarity", &mut buf)
+            .await
+            .unwrap()
+            .expect("polarity should be persisted");
+        let polarity: bool = postcard::from_bytes(val).unwrap();
+        assert!(polarity, "polarity should be true after config-only delta");
+    }
 }
 
 // =========================================================================
