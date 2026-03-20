@@ -97,6 +97,9 @@ impl Updater {
                 }
             };
 
+            // Enable momentum tracking now that flash is ready
+            progress_state.lock().await.request_momentum = Some(0);
+
             info!("Initialized file handler! Requesting file blocks");
 
             // Outer loop to handle resubscription on clean session
