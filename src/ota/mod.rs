@@ -97,27 +97,43 @@ impl Updater {
                 }
             };
 
-            // Enable momentum tracking now that flash is ready
-            progress_state.lock().await.request_momentum = Some(0);
-
             info!("Initialized file handler! Requesting file blocks");
 
-            // Outer loop to handle resubscription on clean session
+            // Outer loop to handle resubscription after network
+            // disruptions or clean session events
             loop {
-                // Prepare the storage layer on receiving a new file
-                let mut subscription = data.init_file_transfer(&file_ctx).await?;
+                let mut subscription = match data.init_file_transfer(&file_ctx).await {
+                    Ok(sub) => sub,
+                    Err(error::OtaError::Mqtt(_)) => {
+                        warn!("[OTA] Subscribe failed (network), retrying...");
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
 
                 {
                     let mut progress = progress_state.lock().await;
-                    data.request_file_blocks(&file_ctx, &mut progress, config)
-                        .await?;
+                    match data
+                        .request_file_blocks(&file_ctx, &mut progress, config)
+                        .await
+                    {
+                        Ok(()) => {
+                            // Enable momentum tracking only after the first
+                            // block request has been sent successfully.
+                            progress.request_momentum = Some(0);
+                        }
+                        Err(error::OtaError::Mqtt(_)) => {
+                            warn!("[OTA] Block request failed (network), retrying...");
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
 
                 info!("Awaiting file blocks!");
 
                 // Inner loop to process blocks
                 loop {
-                    // Select over the futures
                     match subscription.next_block().await {
                     Ok(Some(mut payload)) => {
                         // Decode the file block received
@@ -133,15 +149,8 @@ impl Updater {
                         .await
                         {
                             Ok(true) => {
-                                // ... (Handle end of file) ...
                                 match pal.close_file(&file_ctx).await {
                                     Err(e) => {
-                                        // FIXME: This seems like duplicate status update, as it will also report during cleanup
-                                        // job_updater.signal_update(
-                                        //     JobStatus::Failed,
-                                        //     JobStatusReason::Pal(0),
-                                        // );
-
                                         return Err(e.into());
                                     }
                                     Ok(_) if file_ctx.file_type == Some(0) => {
@@ -161,10 +170,8 @@ impl Updater {
                                 }
                             }
                             Ok(false) => {
-                                // ... (Handle successful block processing) ...
                                 progress.request_momentum = Some(0);
 
-                                // Update the job status to reflect the download progress
                                 if progress.blocks_remaining
                                     % config.status_update_frequency as usize
                                     == 0
@@ -178,16 +185,25 @@ impl Updater {
                                 if progress.request_block_remaining > 1 {
                                     progress.request_block_remaining -= 1;
                                 } else {
-                                    data.request_file_blocks(&file_ctx, &mut progress, config)
-                                        .await?;
+                                    match data
+                                        .request_file_blocks(
+                                            &file_ctx, &mut progress, config,
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => {}
+                                        Err(error::OtaError::Mqtt(_)) => {
+                                            warn!("[OTA] Block request failed (network), resubscribing...");
+                                            break;
+                                        }
+                                        Err(e) => return Err(e),
+                                    }
                                 }
                             }
                             Err(e) if e.is_retryable() => {
-                                // ... (Handle retryable errors) ...
                                 error!("Failed block validation: {:?}! Retrying", e);
                             }
                             Err(e) => {
-                                // ... (Handle fatal errors) ...
                                 return Err(e);
                             }
                         }
@@ -202,13 +218,10 @@ impl Updater {
 
                         info!("[OTA] Resuming OTA: {} blocks remaining", blocks_remaining);
 
-                        // Break inner loop to trigger resubscription in outer loop
                         break;
                     }
-
-                    // Handle status update future results
                     Err(e) => {
-                        error!("Status update error: {:?}", e);
+                        error!("Block receive error: {:?}", e);
                         return Err(e);
                     }
                 }
@@ -357,26 +370,36 @@ impl Updater {
                 break;
             }
 
-            let Some(request_momentum) = &mut progress.request_momentum else {
+            let Some(momentum) = &mut progress.request_momentum else {
                 continue;
             };
 
-            // Increment momentum
-            *request_momentum += 1;
+            *momentum += 1;
+            let momentum_val = *momentum;
 
-            if *request_momentum == 1 {
+            if momentum_val == 1 {
                 continue;
             }
 
-            if *request_momentum <= config.max_request_momentum {
-                warn!("Momentum requesting more blocks!");
-
-                // Request data blocks
-                data.request_file_blocks(file_ctx, &mut progress, config)
-                    .await?;
-            } else {
-                // Too much momentum, abort
+            if momentum_val > config.max_request_momentum {
                 return Err(error::OtaError::MomentumAbort);
+            }
+
+            warn!("Momentum requesting more blocks!");
+
+            // Request data blocks. On network errors, reset momentum
+            // instead of aborting — the OTA should survive transient
+            // connectivity issues and retry once the link is back.
+            match data
+                .request_file_blocks(file_ctx, &mut progress, config)
+                .await
+            {
+                Ok(()) => {}
+                Err(error::OtaError::Mqtt(_)) => {
+                    warn!("[OTA] Momentum: network error requesting blocks, resetting");
+                    progress.request_momentum = Some(0);
+                }
+                Err(e) => return Err(e),
             }
         }
 
