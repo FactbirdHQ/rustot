@@ -216,11 +216,16 @@ impl Updater {
             } // End of outer resubscribe loop
         };
 
-        let (data_res, _) = embassy_futures::join::join(
-            data_fut,
-            embassy_futures::select::select(status_update_fut, momentum_fut),
+        // Use select with momentum so that a momentum abort cancels data_fut.
+        let data_res = match embassy_futures::select::select(
+            embassy_futures::join::join(data_fut, status_update_fut),
+            momentum_fut,
         )
-        .await;
+        .await
+        {
+            embassy_futures::select::Either::First((data_res, _)) => data_res,
+            embassy_futures::select::Either::Second(res) => res,
+        };
 
         // Cleanup and update the job status accordingly
         match data_res {
