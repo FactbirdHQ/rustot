@@ -35,18 +35,18 @@ postcard = { git = "https://github.com/jamesmunns/postcard", rev = "f8a4064", de
 # KV-based shadow storage (optional, enabled by shadows_kv_persist feature)
 sequential-storage = { version = "7.0", features = ["heapless-09"], optional = true }
 
-serde-json-core = { version = "0.6" }
+serde-json-core = "0.6"
 rustot-derive = { path = "rustot_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
 mqttrust = { git = "https://github.com/FactbirdHQ/mqttrust", rev = "cc55012" }
 
-embassy-time = { version = "0.5.0" }
-embassy-sync = "0.7.2"
+embassy-time = "0.5"
+embassy-sync = "0.8"
 embassy-futures = "0.1.2"
 
 log = { version = "0.4", default-features = false, optional = true }
-defmt = { version = "0.3", optional = true }
-bon = { version = "3.3.2", default-features = false }
+defmt = { version = "1", optional = true }
+bon = { version = "3.3", default-features = false }
 
 # std feature dependencies (for FileKVStore)
 tokio = { version = "1", features = ["fs", "io-util", "sync"], optional = true }
@@ -60,12 +60,12 @@ bytes = { version = "1", optional = true }
 futures = { version = "0.3", optional = true }
 
 [dev-dependencies]
-native-tls = { version = "0.2" }
+native-tls = "0.2"
 embedded-nal-async = "0.9"
 env_logger = "0.11"
 sha2 = "0.10.1"
 static_cell = { version = "2", features = ["nightly"] }
-log = { version = "0.4" }
+log = "0.4"
 serde_json = "1"
 
 tokio = { version = "1.33", default-features = false, features = [
@@ -121,3 +121,7 @@ greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes", "dep:futures"]
 
 [patch.crates-io]
 serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core", rev = "a435f78" }
+
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "5565326" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "5565326" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "5565326" }
