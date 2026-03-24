@@ -152,12 +152,12 @@ impl<
         match map.fetch_item::<&[u8]>(scratch, key_tmp).await {
             Ok(Some(value)) => {
                 let len = value.len();
-                debug!("KV fetch: key={} hit=true len={}", key, len);
+                info!("KV fetch: key={} hit=true len={}", key, len);
                 buf[..len].copy_from_slice(value);
                 Ok(Some(&buf[..len]))
             }
             Ok(None) => {
-                debug!("KV fetch: key={} hit=false len=0", key);
+                info!("KV fetch: key={} hit=false len=0", key);
                 Ok(None)
             }
             Err(e) => Err(e.into()),
@@ -165,7 +165,7 @@ impl<
     }
 
     async fn store(&self, key: &str, value: &[u8]) -> Result<(), Self::Error> {
-        debug!("KV store: key={} len={}", key, value.len());
+        info!("KV store: key={} len={}", key, value.len());
         let mut inner = self.inner.lock().await;
         let Inner {
             map,
@@ -181,7 +181,7 @@ impl<
     }
 
     async fn remove(&self, key: &str) -> Result<(), Self::Error> {
-        debug!("KV remove: key={}", key);
+        info!("KV remove: key={}", key);
         let mut inner = self.inner.lock().await;
         let Inner {
             map,
@@ -245,7 +245,7 @@ impl<
             }
         }
 
-        debug!("KV remove_if: prefix={} removed={}", prefix, removed);
+        info!("KV remove_if: prefix={} removed={}", prefix, removed);
         Ok(removed)
     }
 }
