@@ -77,6 +77,87 @@ use serde::Serialize;
 use core::future::Future;
 
 // =============================================================================
+// DeltaContent — extends Option<T> for desired cleanup
+// =============================================================================
+
+/// Content wrapper for adjacently-tagged enum delta config fields.
+///
+/// Extends `Option<T>` with a `NullFields` variant that serializes field names
+/// as null values. This is used to clean up stale desired fields in AWS IoT
+/// Shadow when an adjacently-tagged enum switches variants.
+///
+/// Without cleanup, stale desired fields persist after variant switches and
+/// cause infinite delta loops (AWS computes delta from desired keys not in
+/// reported).
+#[derive(Clone)]
+pub enum DeltaContent<T> {
+    /// No content — field skipped by `skip_serializing_if`.
+    Absent,
+    /// Actual delta value — delegates to T's Serialize.
+    Value(T),
+    /// Null cleanup — serializes as `{field1: null, field2: null, ...}`.
+    ///
+    /// Each inner slice is a `FIELD_NAMES` from a `ReportedUnionFields` impl,
+    /// allowing multiple variants' fields to be combined.
+    NullFields(&'static [&'static [&'static str]]),
+}
+
+impl<T> Default for DeltaContent<T> {
+    fn default() -> Self {
+        DeltaContent::Absent
+    }
+}
+
+impl<T> From<Option<T>> for DeltaContent<T> {
+    fn from(opt: Option<T>) -> Self {
+        match opt {
+            Some(v) => DeltaContent::Value(v),
+            None => DeltaContent::Absent,
+        }
+    }
+}
+
+impl<T> DeltaContent<T> {
+    /// Returns `true` if this is `Absent`.
+    pub fn is_absent(&self) -> bool {
+        matches!(self, DeltaContent::Absent)
+    }
+
+    /// Returns a reference to the inner value if `Value`.
+    pub fn as_ref_value(&self) -> Option<&T> {
+        match self {
+            DeltaContent::Value(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+impl<T: Serialize> Serialize for DeltaContent<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            DeltaContent::Absent => serializer.serialize_none(),
+            DeltaContent::Value(v) => v.serialize(serializer),
+            DeltaContent::NullFields(field_slices) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(None)?;
+                for fields in *field_slices {
+                    serialize_null_fields(*fields, &mut map)?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+/// Serde helper for `#[serde(skip_serializing_if = "...")]` on `DeltaContent` fields.
+pub fn delta_content_is_absent<T>(dc: &DeltaContent<T>) -> bool {
+    dc.is_absent()
+}
+
+// =============================================================================
 // KV-based Shadow Storage Traits
 // =============================================================================
 
@@ -203,7 +284,7 @@ pub trait ShadowNode: Default + Clone + Sized {
     ///
     /// ## Trait Bounds
     ///
-    /// - `Default`: Create empty delta for `update_desired()` pattern
+    /// - `Default`: Create empty delta for internal use and builder defaults
     /// - `Serialize`: Send delta to cloud via MQTT (device→cloud desired updates)
     ///
     /// ## Delta Type Shapes
@@ -311,6 +392,21 @@ pub trait ShadowNode: Default + Clone + Sized {
     /// their cloud values.
     #[allow(clippy::wrong_self_convention)]
     fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported;
+
+    /// Generate a cleanup delta to null stale desired fields after a variant switch.
+    ///
+    /// For adjacently-tagged enums: when the variant changes, the old variant's
+    /// content fields remain in `desired` (AWS only removes null keys from
+    /// `reported`). This method returns a delta with `NullFields` for the
+    /// stale content, which is sent as `desired` in the same shadow update.
+    ///
+    /// For structs: delegates to nested fields and aggregates their cleanups.
+    ///
+    /// Returns `None` if no cleanup is needed (no variant switch, or leaf type).
+    fn desired_cleanup(&self, delta: &Self::Delta) -> Option<Self::Delta> {
+        let _ = delta;
+        None
+    }
 }
 
 // =============================================================================

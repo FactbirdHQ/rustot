@@ -56,6 +56,7 @@ use super::CodegenOutput;
 /// This struct captures the complete output of processing one field,
 /// making it easier to understand what code is generated for each field.
 /// KVPersist codegen is handled separately in a cfg-gated block.
+#[allow(dead_code)]
 struct FieldCodegen {
     /// The serde field name (for FIELD_NAMES constant)
     serde_name: String,
@@ -83,6 +84,18 @@ struct FieldCodegen {
 
     /// into_reported() field assignment (for ShadowNode impl)
     into_reported_arm: TokenStream,
+
+    /// desired_cleanup() delegation arm (None for leaf and report_only fields)
+    desired_cleanup_arm: Option<TokenStream>,
+
+    /// Builder parameter for desired() (None if report_only)
+    desired_builder_param: Option<TokenStream>,
+    /// Builder field assignment for desired() (None if report_only)
+    desired_builder_assign: Option<TokenStream>,
+    /// Builder parameter for reported()
+    reported_builder_param: TokenStream,
+    /// Builder field assignment for reported()
+    reported_builder_assign: TokenStream,
 }
 
 /// Process a single struct field and generate all code fragments.
@@ -267,6 +280,20 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         quote! { #field_name: Some(#krate::shadows::ShadowNode::into_reported(&self.#field_name)), }
     };
 
+    // --- desired_cleanup arm (only for non-report_only nested fields) ---
+    let desired_cleanup_arm = if attrs.report_only || is_leaf {
+        None
+    } else {
+        Some(quote! {
+            if let Some(ref inner_delta) = delta.#field_name {
+                if let Some(inner_cleanup) = self.#field_name.desired_cleanup(inner_delta) {
+                    cleanup.#field_name = Some(inner_cleanup);
+                    has_cleanup = true;
+                }
+            }
+        })
+    };
+
     // --- variant_at_path arm (only for non-report_only nested fields) ---
     let variant_at_path_arm = if attrs.report_only || is_leaf {
         None
@@ -285,6 +312,32 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         })
     };
 
+    // --- Builder parameters for desired() ---
+    let desired_builder_param = if attrs.report_only {
+        None
+    } else if is_leaf {
+        Some(quote! { #field_name: Option<#field_ty>, })
+    } else {
+        let delta_ty = quote! { <#field_ty as #krate::shadows::ShadowNode>::Delta };
+        Some(quote! { #[builder(into)] #field_name: Option<#delta_ty>, })
+    };
+
+    let desired_builder_assign = if attrs.report_only {
+        None
+    } else {
+        Some(quote! { #field_name, })
+    };
+
+    // --- Builder parameters for reported() ---
+    let reported_builder_param = if is_leaf {
+        quote! { #field_name: Option<#field_ty>, }
+    } else {
+        let reported_ty = quote! { <#field_ty as #krate::shadows::ShadowNode>::Reported };
+        quote! { #[builder(into)] #field_name: Option<#reported_ty>, }
+    };
+
+    let reported_builder_assign = quote! { #field_name, };
+
     FieldCodegen {
         serde_name,
         delta_field,
@@ -297,6 +350,11 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         parse_delta_field_name,
         parse_delta_arm,
         into_reported_arm,
+        desired_cleanup_arm,
+        desired_builder_param,
+        desired_builder_assign,
+        reported_builder_param,
+        reported_builder_assign,
     }
 }
 
@@ -375,6 +433,10 @@ pub(crate) fn generate_struct_code(
     let into_reported_arms: Vec<_> = field_codegens
         .iter()
         .map(|f| f.into_reported_arm.clone())
+        .collect();
+    let desired_cleanup_arms: Vec<_> = field_codegens
+        .iter()
+        .filter_map(|f| f.desired_cleanup_arm.clone())
         .collect();
 
     // Generate Delta type - always use FieldScanner, no Deserialize needed
@@ -460,6 +522,13 @@ pub(crate) fn generate_struct_code(
                 #reported_name {
                     #(#into_partial_reported_arms)*
                 }
+            }
+
+            fn desired_cleanup(&self, delta: &Self::Delta) -> Option<Self::Delta> {
+                let mut cleanup = Self::Delta::default();
+                let mut has_cleanup = false;
+                #(#desired_cleanup_arms)*
+                if has_cleanup { Some(cleanup) } else { None }
             }
         }
     };
@@ -769,10 +838,52 @@ pub(crate) fn generate_struct_code(
         }
     };
 
+    // Generate builder functions for desired() and reported()
+    #[cfg(feature = "builders")]
+    let builder_impl = {
+        let desired_builder_params: Vec<_> = field_codegens
+            .iter()
+            .filter_map(|f| f.desired_builder_param.clone())
+            .collect();
+        let desired_builder_assigns: Vec<_> = field_codegens
+            .iter()
+            .filter_map(|f| f.desired_builder_assign.clone())
+            .collect();
+        let reported_builder_params: Vec<_> = field_codegens
+            .iter()
+            .map(|f| f.reported_builder_param.clone())
+            .collect();
+        let reported_builder_assigns: Vec<_> = field_codegens
+            .iter()
+            .map(|f| f.reported_builder_assign.clone())
+            .collect();
+
+        quote! {
+            #[#krate::__macro_support::bon::bon]
+            impl #name {
+                #[builder(finish_fn = build)]
+                #[allow(clippy::too_many_arguments)]
+                #vis fn desired(#(#desired_builder_params)*) -> #delta_name {
+                    #delta_name { #(#desired_builder_assigns)* }
+                }
+
+                #[builder(finish_fn = build)]
+                #[allow(clippy::too_many_arguments)]
+                #vis fn reported(#(#reported_builder_params)*) -> #reported_name {
+                    #reported_name { #(#reported_builder_assigns)* }
+                }
+            }
+        }
+    };
+
+    #[cfg(not(feature = "builders"))]
+    let builder_impl = quote! {};
+
     Ok(CodegenOutput {
         delta_type,
         reported_type,
         shadow_node_impl,
         reported_union_fields_impl,
+        builder_impl,
     })
 }

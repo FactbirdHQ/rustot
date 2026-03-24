@@ -747,5 +747,6 @@ pub(crate) fn generate_simple_enum_code(
         reported_type,
         shadow_node_impl,
         reported_union_fields_impl,
+        builder_impl: TokenStream::new(),
     })
 }
