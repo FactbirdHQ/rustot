@@ -56,6 +56,7 @@ use super::CodegenOutput;
 /// This struct captures the complete output of processing one field,
 /// making it easier to understand what code is generated for each field.
 /// KVPersist codegen is handled separately in a cfg-gated block.
+#[allow(dead_code)]
 struct FieldCodegen {
     /// The serde field name (for FIELD_NAMES constant)
     serde_name: String,
@@ -328,7 +329,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- Builder parameters for reported() ---
-    let reported_builder_param = if is_leaf || attrs.report_only {
+    let reported_builder_param = if is_leaf {
         quote! { #field_name: Option<#field_ty>, }
     } else {
         let reported_ty = quote! { <#field_ty as #krate::shadows::ShadowNode>::Reported };
@@ -838,39 +839,45 @@ pub(crate) fn generate_struct_code(
     };
 
     // Generate builder functions for desired() and reported()
-    let desired_builder_params: Vec<_> = field_codegens
-        .iter()
-        .filter_map(|f| f.desired_builder_param.clone())
-        .collect();
-    let desired_builder_assigns: Vec<_> = field_codegens
-        .iter()
-        .filter_map(|f| f.desired_builder_assign.clone())
-        .collect();
-    let reported_builder_params: Vec<_> = field_codegens
-        .iter()
-        .map(|f| f.reported_builder_param.clone())
-        .collect();
-    let reported_builder_assigns: Vec<_> = field_codegens
-        .iter()
-        .map(|f| f.reported_builder_assign.clone())
-        .collect();
+    #[cfg(feature = "builders")]
+    let builder_impl = {
+        let desired_builder_params: Vec<_> = field_codegens
+            .iter()
+            .filter_map(|f| f.desired_builder_param.clone())
+            .collect();
+        let desired_builder_assigns: Vec<_> = field_codegens
+            .iter()
+            .filter_map(|f| f.desired_builder_assign.clone())
+            .collect();
+        let reported_builder_params: Vec<_> = field_codegens
+            .iter()
+            .map(|f| f.reported_builder_param.clone())
+            .collect();
+        let reported_builder_assigns: Vec<_> = field_codegens
+            .iter()
+            .map(|f| f.reported_builder_assign.clone())
+            .collect();
 
-    let builder_impl = quote! {
-        #[#krate::__macro_support::bon::bon]
-        impl #name {
-            #[builder(finish_fn = build)]
-            #[allow(clippy::too_many_arguments)]
-            #vis fn desired(#(#desired_builder_params)*) -> #delta_name {
-                #delta_name { #(#desired_builder_assigns)* }
-            }
+        quote! {
+            #[#krate::__macro_support::bon::bon]
+            impl #name {
+                #[builder(finish_fn = build)]
+                #[allow(clippy::too_many_arguments)]
+                #vis fn desired(#(#desired_builder_params)*) -> #delta_name {
+                    #delta_name { #(#desired_builder_assigns)* }
+                }
 
-            #[builder(finish_fn = build)]
-            #[allow(clippy::too_many_arguments)]
-            #vis fn reported(#(#reported_builder_params)*) -> #reported_name {
-                #reported_name { #(#reported_builder_assigns)* }
+                #[builder(finish_fn = build)]
+                #[allow(clippy::too_many_arguments)]
+                #vis fn reported(#(#reported_builder_params)*) -> #reported_name {
+                    #reported_name { #(#reported_builder_assigns)* }
+                }
             }
         }
     };
+
+    #[cfg(not(feature = "builders"))]
+    let builder_impl = quote! {};
 
     Ok(CodegenOutput {
         delta_type,

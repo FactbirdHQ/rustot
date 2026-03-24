@@ -408,7 +408,7 @@ where
     /// ## Example
     ///
     /// ```ignore
-    /// // Report specific fields using builder
+    /// // Report specific fields using builder (requires "builders" feature)
     /// shadow.update_reported(
     ///     MyState::reported().timeout(5000u32).build()
     /// ).await?;
@@ -446,7 +446,7 @@ where
     /// ## Example
     ///
     /// ```ignore
-    /// // Request timeout change using builder
+    /// // Request timeout change using builder (requires "builders" feature)
     /// shadow.update_desired(
     ///     MyState::desired().timeout(5000).build()
     /// ).await?;

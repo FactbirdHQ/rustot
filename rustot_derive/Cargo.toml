@@ -17,6 +17,8 @@ default = []
 kv_persist = []
 # When enabled, generates std-compatible code (uses alloc instead of fixed buffers)
 std = []
+# When enabled, generates bon-based builder methods (desired(), reported()) on shadow structs
+builders = []
 
 [dependencies]
 syn = { version = "2", features = ["extra-traits"] }
