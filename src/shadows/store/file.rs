@@ -243,7 +243,9 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
     async fn get_state(&self, prefix: &str) -> Result<St, Self::Error> {
         let mut state = St::default();
         let mut key_buf = heapless::String::<128>::new();
-        key_buf.push_str(prefix).map_err(|_| FileKVStoreError::KeyEncoding)?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| FileKVStoreError::KeyEncoding)?;
         let _ = state
             .load_from_kv::<Self, 128>(&mut key_buf, self)
             .await
@@ -256,7 +258,9 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
 
     async fn set_state(&self, prefix: &str, state: &St) -> Result<(), Self::Error> {
         let mut key_buf = heapless::String::<128>::new();
-        key_buf.push_str(prefix).map_err(|_| FileKVStoreError::KeyEncoding)?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| FileKVStoreError::KeyEncoding)?;
         state
             .persist_to_kv::<Self, 128>(&mut key_buf, self)
             .await
@@ -268,7 +272,9 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
 
     async fn apply_delta(&self, prefix: &str, delta: &St::Delta) -> Result<St, Self::Error> {
         let mut key_buf = heapless::String::<128>::new();
-        key_buf.push_str(prefix).map_err(|_| FileKVStoreError::KeyEncoding)?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| FileKVStoreError::KeyEncoding)?;
         St::persist_delta::<Self, 128>(delta, self, &mut key_buf)
             .await
             .map_err(|e| match e {
@@ -405,7 +411,9 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
 
         // Persist delta directly (avoids method dispatch ambiguity)
         let mut key_buf = heapless::String::<128>::new();
-        key_buf.push_str(prefix).map_err(|_| ApplyJsonError::Store(FileKVStoreError::KeyEncoding))?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| ApplyJsonError::Store(FileKVStoreError::KeyEncoding))?;
         St::persist_delta::<Self, 128>(&delta, self, &mut key_buf)
             .await
             .map_err(|e| match e {

@@ -639,10 +639,7 @@ pub(crate) fn generate_struct_code(
                     &field_path,
                     field_ty,
                 ));
-                field_count_items.push(kv_codegen::nested_field_count(
-                    krate,
-                    field_ty,
-                ));
+                field_count_items.push(kv_codegen::nested_field_count(krate, field_ty));
             }
         }
 

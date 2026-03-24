@@ -90,7 +90,11 @@ where
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
         let mut result = LoadFieldResult::default();
         let mut buf = [0u8; N + 5];
-        match kv.fetch(key_buf.as_str(), &mut buf).await.map_err(KvError::Kv)? {
+        match kv
+            .fetch(key_buf.as_str(), &mut buf)
+            .await
+            .map_err(KvError::Kv)?
+        {
             Some(data) => {
                 *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
                 result.loaded += 1;
@@ -218,7 +222,11 @@ where
     ) -> Result<LoadFieldResult, KvError<K::Error>> {
         let mut result = LoadFieldResult::default();
         let mut buf = [0u8; N * T::POSTCARD_MAX_SIZE + 5];
-        match kv.fetch(key_buf.as_str(), &mut buf).await.map_err(KvError::Kv)? {
+        match kv
+            .fetch(key_buf.as_str(), &mut buf)
+            .await
+            .map_err(KvError::Kv)?
+        {
             Some(data) => {
                 *self = postcard::from_bytes(data).map_err(|_| KvError::Serialization)?;
                 result.loaded += 1;
@@ -539,18 +547,17 @@ where
             let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", index));
 
             let mut kb = K::zero_key_buf();
-            let bytes =
-                postcard::to_slice(key, kb.as_mut()).map_err(|_| KvError::Serialization)?;
-            kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)?;
+            let bytes = postcard::to_slice(key, kb.as_mut()).map_err(|_| KvError::Serialization)?;
+            kv.store(key_buf.as_str(), bytes)
+                .await
+                .map_err(KvError::Kv)?;
             key_buf.truncate(__saved_len);
 
             // Write value
             let __saved_len = key_buf.len();
             let _ = key_buf.push_str("/");
             let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", key));
-            value
-                .persist_to_kv::<K2, KEY_LEN>(key_buf, kv)
-                .await?;
+            value.persist_to_kv::<K2, KEY_LEN>(key_buf, kv).await?;
             key_buf.truncate(__saved_len);
 
             index += 1;
@@ -562,7 +569,9 @@ where
         let mut count_buf = [0u8; 3];
         let bytes =
             postcard::to_slice(&index, &mut count_buf).map_err(|_| KvError::Serialization)?;
-        kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)?;
+        kv.store(key_buf.as_str(), bytes)
+            .await
+            .map_err(KvError::Kv)?;
         key_buf.truncate(__saved_len);
 
         Ok(())
@@ -659,9 +668,11 @@ where
                 let _ = core::fmt::Write::write_fmt(key_buf, format_args!("{}", i));
 
                 let mut kb = K::zero_key_buf();
-                let bytes = postcard::to_slice(key, kb.as_mut())
-                    .map_err(|_| KvError::Serialization)?;
-                kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)?;
+                let bytes =
+                    postcard::to_slice(key, kb.as_mut()).map_err(|_| KvError::Serialization)?;
+                kv.store(key_buf.as_str(), bytes)
+                    .await
+                    .map_err(KvError::Kv)?;
                 key_buf.truncate(__saved_len);
             }
 
@@ -672,7 +683,9 @@ where
             let mut count_buf = [0u8; 3];
             let bytes = postcard::to_slice(&new_count, &mut count_buf)
                 .map_err(|_| KvError::Serialization)?;
-            kv.store(key_buf.as_str(), bytes).await.map_err(KvError::Kv)?;
+            kv.store(key_buf.as_str(), bytes)
+                .await
+                .map_err(KvError::Kv)?;
             key_buf.truncate(__saved_len);
         }
 

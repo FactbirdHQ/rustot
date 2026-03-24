@@ -140,7 +140,9 @@ impl<
         let mut inner = self.inner.lock().await;
         let Inner { map, key_tmp, .. } = &mut *inner;
         key_tmp.clear();
-        key_tmp.push_str(key).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_tmp
+            .push_str(key)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         match map.fetch_item::<&[u8]>(buf, key_tmp).await {
             Ok(value) => Ok(value),
             Err(e) => Err(e.into()),
@@ -149,18 +151,30 @@ impl<
 
     async fn store(&self, key: &str, value: &[u8]) -> Result<(), Self::Error> {
         let mut inner = self.inner.lock().await;
-        let Inner { map, scratch, key_tmp } = &mut *inner;
+        let Inner {
+            map,
+            scratch,
+            key_tmp,
+        } = &mut *inner;
         key_tmp.clear();
-        key_tmp.push_str(key).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_tmp
+            .push_str(key)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         map.store_item(scratch, key_tmp, &value).await?;
         Ok(())
     }
 
     async fn remove(&self, key: &str) -> Result<(), Self::Error> {
         let mut inner = self.inner.lock().await;
-        let Inner { map, scratch, key_tmp } = &mut *inner;
+        let Inner {
+            map,
+            scratch,
+            key_tmp,
+        } = &mut *inner;
         key_tmp.clear();
-        key_tmp.push_str(key).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_tmp
+            .push_str(key)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         map.remove_item(scratch, key_tmp).await?;
         Ok(())
     }
@@ -235,7 +249,9 @@ impl<
     async fn get_state(&self, prefix: &str) -> Result<St, Self::Error> {
         let mut state = St::default();
         let mut key_buf: String<MAX_KEY_LEN> = String::new();
-        key_buf.push_str(prefix).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         let _ = state
             .load_from_kv::<Self, MAX_KEY_LEN>(&mut key_buf, self)
             .await
@@ -248,7 +264,9 @@ impl<
 
     async fn set_state(&self, prefix: &str, state: &St) -> Result<(), Self::Error> {
         let mut key_buf: String<MAX_KEY_LEN> = String::new();
-        key_buf.push_str(prefix).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         state
             .persist_to_kv::<Self, MAX_KEY_LEN>(&mut key_buf, self)
             .await
@@ -260,7 +278,9 @@ impl<
 
     async fn apply_delta(&self, prefix: &str, delta: &St::Delta) -> Result<St, Self::Error> {
         let mut key_buf: String<MAX_KEY_LEN> = String::new();
-        key_buf.push_str(prefix).map_err(|_| SequentialKVStoreError::KeyTooLong)?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| SequentialKVStoreError::KeyTooLong)?;
         St::persist_delta::<Self, MAX_KEY_LEN>(delta, self, &mut key_buf)
             .await
             .map_err(|e| match e {
@@ -407,7 +427,9 @@ impl<
 
         // Persist delta directly (avoids method dispatch ambiguity)
         let mut key_buf: String<MAX_KEY_LEN> = String::new();
-        key_buf.push_str(prefix).map_err(|_| ApplyJsonError::Store(SequentialKVStoreError::KeyTooLong))?;
+        key_buf
+            .push_str(prefix)
+            .map_err(|_| ApplyJsonError::Store(SequentialKVStoreError::KeyTooLong))?;
         St::persist_delta::<Self, MAX_KEY_LEN>(&delta, self, &mut key_buf)
             .await
             .map_err(|e| match e {
