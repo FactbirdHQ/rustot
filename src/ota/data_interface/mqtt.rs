@@ -2,7 +2,7 @@ use core::fmt::{Display, Write};
 use core::ops::{Deref, DerefMut};
 use core::str::FromStr;
 
-use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, QoS};
+use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
 
 use crate::jobs::JobTopic;
 use crate::ota::error::OtaError;
@@ -231,7 +231,11 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
         );
 
         self.0
-            .publish(topic.as_str(), &buf[..len])
+            .publish_with_options(
+                topic.as_str(),
+                &buf[..len],
+                PublishOptions::new().qos(QoS::AtMostOnce),
+            )
             .await
             .map_err(|_| OtaError::Mqtt)
     }

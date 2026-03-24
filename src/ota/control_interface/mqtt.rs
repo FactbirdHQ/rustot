@@ -1,7 +1,7 @@
 use super::ControlInterface;
-use crate::jobs::data_types::JobStatus;
-use crate::jobs::{JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
-use crate::mqtt::{Mqtt, MqttClient, PublishOptions, QoS};
+use crate::jobs::data_types::{ErrorResponse, JobStatus};
+use crate::jobs::{self, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
+use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
 use crate::ota::encoding::json::JobStatusReason;
 use crate::ota::encoding::FileContext;
 use crate::ota::error::OtaError;
@@ -64,7 +64,33 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
             QoS::AtLeastOnce
         };
 
-        let topic = JobTopic::Update(file_ctx.job_name.as_str())
+        let job_name = file_ctx.job_name.as_str();
+
+        // For QoS 1 updates, subscribe to accepted/rejected before publishing
+        // so we can verify the cloud processed the update. Critical for the
+        // final Succeeded update before reboot.
+        let mut sub = if qos == QoS::AtLeastOnce {
+            let accepted_topic =
+                JobTopic::UpdateAccepted(job_name)
+                    .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
+            let rejected_topic =
+                JobTopic::UpdateRejected(job_name)
+                    .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
+
+            Some(
+                self.0
+                    .subscribe(&[
+                        (accepted_topic.as_str(), QoS::AtMostOnce),
+                        (rejected_topic.as_str(), QoS::AtMostOnce),
+                    ])
+                    .await
+                    .map_err(|_| OtaError::Mqtt)?,
+            )
+        } else {
+            None
+        };
+
+        let topic = JobTopic::Update(job_name)
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
 
         let combined = progress_state
@@ -81,61 +107,43 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
             .await
             .map_err(|_| OtaError::Mqtt)?;
 
+        // For QoS 1: wait for accepted/rejected response
+        if let Some(ref mut sub) = sub {
+            loop {
+                let message = match embassy_time::with_timeout(
+                    embassy_time::Duration::from_secs(5),
+                    sub.next_message(),
+                )
+                .await
+                {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) => return Err(OtaError::Mqtt),
+                    Err(_) => {
+                        warn!("Timeout waiting for job update accepted/rejected");
+                        return Err(OtaError::Timeout);
+                    }
+                };
+
+                match jobs::Topic::from_str(message.topic_name()) {
+                    Some(jobs::Topic::UpdateAccepted(_)) => {
+                        return Ok(());
+                    }
+                    Some(jobs::Topic::UpdateRejected(_)) => {
+                        let (error_response, _) =
+                            serde_json_core::from_slice::<ErrorResponse>(message.payload())
+                                .map_err(|_| OtaError::Mqtt)?;
+
+                        error!("Job update rejected: {:?}", error_response.message);
+                        return Err(OtaError::UpdateRejected(error_response.code));
+                    }
+                    _ => {
+                        // Not our topic, keep waiting
+                        continue;
+                    }
+                }
+            }
+        }
+
         Ok(())
-
-        // loop {
-        //     let message = match with_timeout(
-        //         embassy_time::Duration::from_secs(1),
-        //         sub.next_message(),
-        //     )
-        //     .await
-        //     {
-        //         Ok(res) => res.ok_or(JobError::Encoding)?,
-        //         Err(_) => return Err(OtaError::Timeout),
-        //     };
-
-        //     // Check if topic is GetAccepted
-        //     match crate::jobs::Topic::from_str(message.topic_name()) {
-        //         Some(crate::jobs::Topic::UpdateAccepted(_)) => {
-        //             // Check client token
-        //             let (response, _) = serde_json_core::from_slice::<
-        //                 UpdateJobExecutionResponse<encoding::json::OtaJob<'_>>,
-        //             >(message.payload())
-        //             .map_err(|_| JobError::Encoding)?;
-
-        //             if response.client_token != Some(self.0.client_id()) {
-        //                 error!(
-        //                     "Unexpected client token received: {}, expected: {}",
-        //                     response.client_token.unwrap_or("None"),
-        //                     self.0.client_id()
-        //                 );
-        //                 continue;
-        //             }
-
-        //             return Ok(());
-        //         }
-        //         Some(crate::jobs::Topic::UpdateRejected(_)) => {
-        //             let (error_response, _) =
-        //                 serde_json_core::from_slice::<ErrorResponse>(message.payload())
-        //                     .map_err(|_| JobError::Encoding)?;
-
-        //             if error_response.client_token != Some(self.0.client_id()) {
-        //                 error!(
-        //                     "Unexpected client token received: {}, expected: {}",
-        //                     error_response.client_token.unwrap_or("None"),
-        //                     self.0.client_id()
-        //                 );
-        //                 continue;
-        //             }
-
-        //             error!("OTA Update rejected: {:?}", error_response.message);
-
-        //             return Err(OtaError::UpdateRejected(error_response.code));
-        //         }
-        //         _ => {
-        //             error!("Expected Topic name GetRejected or GetAccepted but got something else");
-        //         }
-        //     }
-        // }
     }
 }
