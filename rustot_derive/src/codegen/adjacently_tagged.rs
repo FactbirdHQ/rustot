@@ -156,7 +156,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 desired_variants.push(quote! { #variant_ident, });
                 from_desired_arms.push(quote! {
                     #desired_name::#variant_ident => #delta_name {
-                        mode: Some(#variant_enum_name::#variant_ident),
+                        mode: #krate::shadows::DeltaMode::Known(#variant_enum_name::#variant_ident),
                         config: #krate::shadows::DeltaContent::Absent,
                     },
                 });
@@ -202,7 +202,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 desired_variants.push(quote! { #variant_ident(#delta_inner_ty), });
                 from_desired_arms.push(quote! {
                     #desired_name::#variant_ident(config) => #delta_name {
-                        mode: Some(#variant_enum_name::#variant_ident),
+                        mode: #krate::shadows::DeltaMode::Known(#variant_enum_name::#variant_ident),
                         config: #krate::shadows::DeltaContent::Value(#delta_config_name::#variant_ident(config)),
                     },
                 });
@@ -404,6 +404,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     };
 
     // Generate Delta type (no Deserialize - uses parse_delta instead)
+    let delta_mode_absent_fn = format!("{}::shadows::delta_mode_is_absent", krate);
     let delta_type = quote! {
         #variant_enum_type
 
@@ -411,8 +412,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
         #[derive(Clone, Default, ::serde::Serialize)]
         #vis struct #delta_name {
-            #[serde(rename = #tag_key, skip_serializing_if = "Option::is_none")]
-            pub mode: Option<#variant_enum_name>,
+            #[serde(rename = #tag_key, skip_serializing_if = #delta_mode_absent_fn)]
+            pub mode: #krate::shadows::DeltaMode<#variant_enum_name>,
             #config_field_for_struct
         }
 
@@ -672,12 +673,16 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
         quote! {
             fn desired_cleanup(&self, delta: &Self::Delta) -> Option<Self::Delta> {
-                if delta.mode.is_some() {
+                if delta.mode.has_value() {
                     let null_fields = match self {
                         #(#cleanup_arms)*
                     };
                     Some(Self::Delta {
-                        mode: None,
+                        mode: if delta.mode.is_fallback() {
+                            delta.mode.clone()
+                        } else {
+                            #krate::shadows::DeltaMode::Absent
+                        },
                         config: #krate::shadows::DeltaContent::NullFields(null_fields),
                     })
                 } else {
@@ -704,14 +709,21 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     let scan = #krate::shadows::TaggedJsonScan::scan(json, #tag_key, #content_key)
                         .map_err(#krate::shadows::ParseError::Scan)?;
 
-                    // Parse tag, using fallback from resolver if missing
-                    let mode = match scan.tag_str() {
-                        Some(s) => Some(s.parse::<#variant_enum_name>()
-                            .map_err(|_| #krate::shadows::ParseError::UnknownVariant)?),
+                    // Parse tag, tracking whether we fell back from an unknown variant
+                    let (mode, is_fallback) = match scan.tag_str() {
+                        Some(s) => match s.parse::<#variant_enum_name>() {
+                            Ok(v) => (Some(v), false),
+                            Err(_) => {
+                                // Unknown variant — resolve from KV state
+                                let resolved = resolver.resolve(path).await
+                                    .and_then(|s| s.parse::<#variant_enum_name>().ok());
+                                (resolved, resolved.is_some())
+                            }
+                        },
                         None => {
-                            // Try to get fallback variant from resolver
-                            resolver.resolve(path).await
-                                .and_then(|s| s.parse::<#variant_enum_name>().ok())
+                            // Missing tag — normal resolver fallback (not unknown)
+                            (resolver.resolve(path).await
+                                .and_then(|s| s.parse::<#variant_enum_name>().ok()), false)
                         }
                     };
 
@@ -722,13 +734,20 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         _ => None,
                     };
 
-                    Ok(#delta_name { mode, config: config.into() })
+                    // Wrap mode into DeltaMode
+                    let delta_mode = match (mode, is_fallback) {
+                        (Some(v), true) => #krate::shadows::DeltaMode::Fallback(v),
+                        (Some(v), false) => #krate::shadows::DeltaMode::Known(v),
+                        (None, _) => #krate::shadows::DeltaMode::Absent,
+                    };
+
+                    Ok(#delta_name { mode: delta_mode, config: config.into() })
                 }
             }
 
             fn apply_delta(&mut self, delta: &Self::Delta) {
                 // Handle mode (variant switch)
-                if let Some(ref new_mode) = delta.mode {
+                if let Some(new_mode) = delta.mode.as_value() {
                     match new_mode {
                         #(#mode_switch_arms)*
                     }
@@ -939,8 +958,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                 ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<K::Error>>> {
                     async move {
-                        // Handle mode (variant switch) - only write if mode is Some
-                        if let Some(ref new_mode) = delta.mode {
+                        // Handle mode (variant switch) - only write if mode has a value
+                        if let Some(new_mode) = delta.mode.as_value() {
                             let __saved_len = key_buf.len();
                             let _ = key_buf.push_str(#VARIANT_KEY_PATH);
                             match new_mode {

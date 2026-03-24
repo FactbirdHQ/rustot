@@ -3,7 +3,7 @@
 use super::Shadow;
 use crate::mqtt::mock::MockMqttClient;
 use crate::shadows::store::{FileKVStore, InMemory, KVStore};
-use crate::shadows::DeltaContent;
+use crate::shadows::{DeltaContent, DeltaMode};
 
 // =========================================================================
 // Phase 8 Tests - Test fixtures using proc macros
@@ -1113,7 +1113,7 @@ mod adjacently_tagged {
     fn test_adjacently_tagged_delta_is_struct() {
         // Verify DeltaPortMode is a struct with mode and config fields
         let delta = DeltaPortMode {
-            mode: Some(PortModeVariant::Sio),
+            mode: DeltaMode::Known(PortModeVariant::Sio),
             config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
@@ -1121,27 +1121,27 @@ mod adjacently_tagged {
 
         // Test Default
         let default_delta = DeltaPortMode::default();
-        assert!(default_delta.mode.is_none());
+        assert!(default_delta.mode.is_absent());
         assert!(matches!(default_delta.config, DeltaContent::Absent));
 
         // Test mode-only
         let mode_only = DeltaPortMode {
-            mode: Some(PortModeVariant::Inactive),
+            mode: DeltaMode::Known(PortModeVariant::Inactive),
             config: DeltaContent::Absent,
         };
-        assert_eq!(mode_only.mode, Some(PortModeVariant::Inactive));
+        assert_eq!(mode_only.mode, DeltaMode::Known(PortModeVariant::Inactive));
 
         // Test config-only
         let config_only = DeltaPortMode {
-            mode: None,
+            mode: DeltaMode::Absent,
             config: DeltaContent::Value(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
                 cycle_time: Some(1000),
             })),
         };
-        assert!(config_only.mode.is_none());
+        assert!(config_only.mode.is_absent());
 
         // Verify that the delta has both mode and config
-        assert_eq!(delta.mode, Some(PortModeVariant::Sio));
+        assert_eq!(delta.mode, DeltaMode::Known(PortModeVariant::Sio));
     }
 
     #[test]
@@ -1172,7 +1172,7 @@ mod adjacently_tagged {
     async fn test_adjacently_tagged_delta_serialization() {
         // Test JSON serialization of delta with mode and config
         let delta = DeltaPortMode {
-            mode: Some(PortModeVariant::Sio),
+            mode: DeltaMode::Known(PortModeVariant::Sio),
             config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
@@ -1190,7 +1190,7 @@ mod adjacently_tagged {
         let parsed = PortMode::parse_delta(json.as_bytes(), "", &NullResolver)
             .await
             .unwrap();
-        assert_eq!(parsed.mode, Some(PortModeVariant::Sio));
+        assert_eq!(parsed.mode, DeltaMode::Known(PortModeVariant::Sio));
     }
 
     #[tokio::test]
@@ -1201,7 +1201,7 @@ mod adjacently_tagged {
         let delta = PortMode::parse_delta(json, "", &NullResolver)
             .await
             .unwrap();
-        assert_eq!(delta.mode, Some(PortModeVariant::Inactive));
+        assert_eq!(delta.mode, DeltaMode::Known(PortModeVariant::Inactive));
         assert!(matches!(delta.config, DeltaContent::Absent));
     }
 
@@ -1222,7 +1222,7 @@ mod adjacently_tagged {
 
         let json = br#"{"config": {"polarity": false}}"#;
         let delta = PortMode::parse_delta(json, "", &resolver).await.unwrap();
-        assert!(delta.mode.is_some()); // fallback from resolver
+        assert!(delta.mode.has_value()); // fallback from resolver
         assert!(matches!(delta.config, DeltaContent::Value(_)));
 
         if let DeltaContent::Value(DeltaPortModeConfig::Sio(sio_config)) = delta.config {
@@ -1287,7 +1287,7 @@ mod adjacently_tagged {
         let mut port_mode = PortMode::Inactive;
 
         let delta = DeltaPortMode {
-            mode: Some(PortModeVariant::Sio),
+            mode: DeltaMode::Known(PortModeVariant::Sio),
             config: DeltaContent::Absent,
         };
 
@@ -1309,7 +1309,7 @@ mod adjacently_tagged {
         let mut port_mode = PortMode::Sio(SioConfig { polarity: false });
 
         let delta = DeltaPortMode {
-            mode: None,
+            mode: DeltaMode::Absent,
             config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
@@ -1333,7 +1333,7 @@ mod adjacently_tagged {
         let mut port_mode = PortMode::Inactive;
 
         let delta = DeltaPortMode {
-            mode: None,
+            mode: DeltaMode::Absent,
             config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
@@ -1353,7 +1353,7 @@ mod adjacently_tagged {
         let mut port_mode = PortMode::Inactive;
 
         let delta = DeltaPortMode {
-            mode: Some(PortModeVariant::IoLink),
+            mode: DeltaMode::Known(PortModeVariant::IoLink),
             config: DeltaContent::Value(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
                 cycle_time: Some(5000),
             })),
@@ -1380,7 +1380,7 @@ mod adjacently_tagged {
         // When mode changes, full reported should be returned
         let mut port_mode = PortMode::Inactive;
         let delta = DeltaPortMode {
-            mode: Some(PortModeVariant::Sio),
+            mode: DeltaMode::Known(PortModeVariant::Sio),
             config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
@@ -1405,7 +1405,7 @@ mod adjacently_tagged {
         // AWS expects it. The optimization happens at the parent struct level.
         let mut port_mode = PortMode::Sio(SioConfig { polarity: false });
         let delta = DeltaPortMode {
-            mode: None,
+            mode: DeltaMode::Absent,
             config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                 polarity: Some(true),
             })),
@@ -1442,7 +1442,7 @@ mod adjacently_tagged {
         let delta = DeltaConfigWithAdjacent {
             simple_field: None,
             adjacent: Some(DeltaPortMode {
-                mode: None,
+                mode: DeltaMode::Absent,
                 config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
                     polarity: Some(true),
                 })),
@@ -1572,6 +1572,260 @@ mod adjacently_tagged {
         assert!(kv_has_key(&kv, "port/mode/_variant").await);
         // Orphan removed
         assert!(!kv_has_key(&kv, "port/stale_field").await);
+    }
+
+    // =========================================================================
+    // Migration: _variant key persisted after migration load
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_migration_persists_variant_keys() {
+        use crate::shadows::store::StateStore;
+
+        // 1. First boot: load + commit writes hash and _variant
+        let kv = empty_kv();
+        let mqtt = MockMqttClient::new("test-client");
+        let shadow = Shadow::<PortShadow, _, _>::new(&kv, &mqtt);
+
+        let result = shadow.load().await.unwrap();
+        assert!(result.first_boot);
+        shadow.commit().await.unwrap();
+
+        // _variant should exist after first boot
+        assert!(kv_has_key(&kv, "port/mode/_variant").await);
+
+        // 2. Simulate schema migration: overwrite hash with a different value
+        kv.store("port/__schema_hash__", &0xDEAD_BEEFu64.to_le_bytes())
+            .await
+            .unwrap();
+
+        // 3. load() again → triggers migration path
+        let result = shadow.load().await.unwrap();
+        assert!(result.schema_changed);
+
+        // 4. _variant key must exist after migration load (the fix)
+        assert!(
+            kv_has_key(&kv, "port/mode/_variant").await,
+            "_variant must be persisted after migration load"
+        );
+
+        // 5. Set state to Sio via apply_json_delta (includes parse + persist)
+        let json_set_sio = br#"{"mode": {"mode": "sio", "config": {"polarity": false}}}"#;
+        <FileKVStore as StateStore<PortShadow>>::apply_json_delta(&kv, "port", json_set_sio)
+            .await
+            .unwrap();
+
+        // Verify _variant is now "sio"
+        let mut buf = [0u8; 256];
+        let val = kv
+            .fetch("port/mode/_variant", &mut buf)
+            .await
+            .unwrap()
+            .expect("_variant should exist");
+        assert_eq!(core::str::from_utf8(val).unwrap(), "sio");
+
+        // 6. Config-only delta (no tag) — resolver must find "sio" from KV
+        let json_config_only = br#"{"mode": {"config": {"polarity": true}}}"#;
+        let delta = <FileKVStore as StateStore<PortShadow>>::apply_json_delta(
+            &kv,
+            "port",
+            json_config_only,
+        )
+        .await
+        .unwrap();
+
+        // The resolver should have filled in Sio from KV
+        let mode_delta = delta.mode.as_ref().expect("mode delta should be present");
+        assert_eq!(
+            mode_delta.mode,
+            DeltaMode::Known(PortModeVariant::Sio),
+            "resolver should resolve Sio from KV"
+        );
+
+        // Verify the polarity was updated in KV
+        let val = kv
+            .fetch("port/mode/sio/polarity", &mut buf)
+            .await
+            .unwrap()
+            .expect("polarity should be persisted");
+        let polarity: bool = postcard::from_bytes(val).unwrap();
+        assert!(polarity, "polarity should be true after config-only delta");
+    }
+
+    // =========================================================================
+    // desired_cleanup tests
+    // =========================================================================
+
+    #[test]
+    fn test_adjacently_tagged_desired_cleanup_data_to_unit() {
+        use crate::shadows::ShadowNode;
+
+        // Switch from Sio to Inactive
+        let mut port_mode = PortMode::Sio(SioConfig { polarity: true });
+        let delta = DeltaPortMode {
+            mode: DeltaMode::Known(PortModeVariant::Inactive),
+            config: DeltaContent::Absent,
+        };
+        port_mode.apply_delta(&delta);
+
+        // After apply, state is Inactive. desired_cleanup should null all data variant fields.
+        let cleanup = port_mode.desired_cleanup(&delta);
+        assert!(
+            cleanup.is_some(),
+            "cleanup should be Some for variant switch"
+        );
+
+        let cleanup = cleanup.unwrap();
+        assert!(cleanup.mode.is_absent(), "cleanup should not re-set mode");
+        match &cleanup.config {
+            DeltaContent::NullFields(field_slices) => {
+                let all_fields: Vec<&str> = field_slices
+                    .iter()
+                    .flat_map(|s| s.iter().copied())
+                    .collect();
+                assert!(
+                    all_fields.contains(&"polarity"),
+                    "should null polarity (from SioConfig)"
+                );
+                assert!(
+                    all_fields.contains(&"cycle_time"),
+                    "should null cycle_time (from IoLinkConfig)"
+                );
+            }
+            _ => panic!("Expected NullFields"),
+        }
+    }
+
+    #[test]
+    fn test_adjacently_tagged_desired_cleanup_serialization() {
+        use crate::shadows::ShadowNode;
+
+        // Switch from Sio to IoLink — cleanup should null SioConfig's polarity
+        let mut port_mode = PortMode::Sio(SioConfig { polarity: true });
+        let delta = DeltaPortMode {
+            mode: DeltaMode::Known(PortModeVariant::IoLink),
+            config: DeltaContent::Value(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
+                cycle_time: Some(5000),
+            })),
+        };
+        port_mode.apply_delta(&delta);
+
+        let cleanup = port_mode.desired_cleanup(&delta).unwrap();
+        let json = serde_json::to_string(&cleanup).unwrap();
+
+        // cleanup.config should serialize polarity as null
+        assert!(
+            json.contains("\"polarity\":null"),
+            "cleanup JSON should contain polarity:null, got: {}",
+            json
+        );
+        // cycle_time should NOT be nulled (it's IoLink's own field)
+        assert!(
+            !json.contains("\"cycle_time\":null"),
+            "cleanup JSON should NOT null cycle_time, got: {}",
+            json
+        );
+    }
+
+    #[test]
+    fn test_adjacently_tagged_desired_cleanup_no_mode_change() {
+        use crate::shadows::ShadowNode;
+
+        // Config-only delta (no variant switch)
+        let mut port_mode = PortMode::Sio(SioConfig { polarity: false });
+        let delta = DeltaPortMode {
+            mode: DeltaMode::Absent,
+            config: DeltaContent::Value(DeltaPortModeConfig::Sio(DeltaSioConfig {
+                polarity: Some(true),
+            })),
+        };
+        port_mode.apply_delta(&delta);
+
+        let cleanup = port_mode.desired_cleanup(&delta);
+        assert!(
+            cleanup.is_none(),
+            "no cleanup needed when mode doesn't change"
+        );
+    }
+
+    #[test]
+    fn test_adjacently_tagged_desired_cleanup_data_to_data() {
+        use crate::shadows::ShadowNode;
+
+        // Switch from Sio to IoLink
+        let mut port_mode = PortMode::Sio(SioConfig { polarity: true });
+        let delta = DeltaPortMode {
+            mode: DeltaMode::Known(PortModeVariant::IoLink),
+            config: DeltaContent::Value(DeltaPortModeConfig::IoLink(DeltaIoLinkConfig {
+                cycle_time: Some(2000),
+            })),
+        };
+        port_mode.apply_delta(&delta);
+
+        // After apply, state is IoLink. Should null SioConfig fields but not IoLinkConfig fields.
+        let cleanup = port_mode.desired_cleanup(&delta).unwrap();
+        match &cleanup.config {
+            DeltaContent::NullFields(field_slices) => {
+                let all_fields: Vec<&str> = field_slices
+                    .iter()
+                    .flat_map(|s| s.iter().copied())
+                    .collect();
+                assert!(
+                    all_fields.contains(&"polarity"),
+                    "should null polarity (Sio's field)"
+                );
+                assert!(
+                    !all_fields.contains(&"cycle_time"),
+                    "should NOT null cycle_time (IoLink's own field)"
+                );
+            }
+            _ => panic!("Expected NullFields"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unknown_variant_fallback_vs_absent() {
+        use crate::shadows::{NullResolver, ShadowNode};
+
+        let json = br#"{"mode": "future_mode"}"#;
+
+        // With resolver: falls back to current variant
+        let store = InMemory::<PortMode>::new();
+        store.set_state("/test", &PortMode::Inactive).await.unwrap();
+        let resolver = store.resolver("/test");
+        let delta = PortMode::parse_delta(json, "", &resolver).await.unwrap();
+        assert_eq!(delta.mode, DeltaMode::Fallback(PortModeVariant::Inactive));
+
+        // Without resolver: mode is absent
+        let delta = PortMode::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
+        assert!(delta.mode.is_absent());
+    }
+
+    #[test]
+    fn test_desired_cleanup_fallback_includes_mode_known_excludes() {
+        use crate::shadows::ShadowNode;
+
+        // Fallback mode → cleanup includes mode (to overwrite invalid desired)
+        let mut pm = PortMode::Sio(SioConfig { polarity: true });
+        let delta = DeltaPortMode {
+            mode: DeltaMode::Fallback(PortModeVariant::Inactive),
+            config: DeltaContent::Absent,
+        };
+        pm.apply_delta(&delta);
+        let cleanup = pm.desired_cleanup(&delta).unwrap();
+        assert_eq!(cleanup.mode, DeltaMode::Fallback(PortModeVariant::Inactive));
+
+        // Known mode → cleanup excludes mode (current behavior)
+        let mut pm = PortMode::Sio(SioConfig { polarity: true });
+        let delta = DeltaPortMode {
+            mode: DeltaMode::Known(PortModeVariant::Inactive),
+            config: DeltaContent::Absent,
+        };
+        pm.apply_delta(&delta);
+        let cleanup = pm.desired_cleanup(&delta).unwrap();
+        assert!(cleanup.mode.is_absent());
     }
 }
 

@@ -380,6 +380,12 @@ impl<
                         .load_from_kv_with_migration::<Self, MAX_KEY_LEN>(&mut key_buf, self)
                         .await?;
 
+                    // Persist loaded state so KV is consistent (e.g. _variant
+                    // keys for new adjacently-tagged enum fields). Same as the
+                    // first-boot path. Schema hash is NOT written here — that
+                    // is deferred to commit().
+                    self.set_state(prefix, &state).await.map_err(KvError::Kv)?;
+
                     info!(
                         "KV load: prefix={} migrated={} loaded={} defaulted={}",
                         prefix, field_result.migrated, field_result.loaded, field_result.defaulted

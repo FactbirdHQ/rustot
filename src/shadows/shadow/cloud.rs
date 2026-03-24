@@ -72,7 +72,11 @@ where
 
                 let delta_state = self.get_shadow_from_cloud().await?;
 
-                return Ok(delta_state.delta);
+                // Prefer desired over delta on initial sync. The delta is
+                // computed against cloud's reported state which may be stale
+                // (e.g. after factory reset). Using the full desired ensures
+                // the device converges to the correct state regardless.
+                return Ok(delta_state.desired.or(delta_state.delta));
             }
 
             // Scope the mutable borrow of the subscription so we can call
@@ -361,6 +365,10 @@ where
     /// }
     /// ```
     pub async fn wait_delta(&self) -> Result<(S, Option<S::Delta>), Error> {
+        info!(
+            "[{:?}] wait_delta: entry",
+            S::NAME.unwrap_or(CLASSIC_SHADOW)
+        );
         let delta = self.handle_delta().await?;
 
         let state = if let Some(ref delta) = delta {
@@ -379,7 +387,13 @@ where
             // including desired cleanup to null stale fields after variant switches
             let reported = state.into_partial_reported(delta);
             let cleanup = state.desired_cleanup(delta);
-            self.update_shadow(cleanup, Some(reported)).await?;
+            if let Err(e) = self.update_shadow(cleanup, Some(reported)).await {
+                // Force re-fetch on next call — without this, the subscription
+                // survives MQTT reconnection (clean_start=false) and the delta
+                // is never re-delivered, causing permanent desync.
+                self.subscription.lock().await.take();
+                return Err(e);
+            }
 
             state
         } else {
@@ -390,6 +404,11 @@ where
                 .map_err(|_| Error::DaoWrite)?
         };
 
+        info!(
+            "[{:?}] wait_delta: return has_delta={}",
+            S::NAME.unwrap_or(CLASSIC_SHADOW),
+            delta.is_some()
+        );
         Ok((state, delta))
     }
 
