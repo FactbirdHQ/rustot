@@ -102,8 +102,8 @@ impl OtaPal for FileHandler {
     type BlockWriter = BlockFile;
     type StatusDetails = TestStatusDetails;
 
-    fn status_details(&self) -> &Self::StatusDetails {
-        &self.extra_status
+    fn status_details(&self) -> Self::StatusDetails {
+        self.extra_status.clone()
     }
 
     async fn abort(
