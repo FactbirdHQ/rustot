@@ -245,39 +245,6 @@ where
         }
     }
 
-    /// Delete the shadow from the cloud.
-    async fn delete_from_cloud(&self) -> Result<(), Error> {
-        // Wait for mqtt to connect
-        self.mqtt.wait_connected().await;
-
-        let mut sub = self.publish_and_subscribe(Topic::Delete, b"").await?;
-
-        let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
-
-        // Check if topic is DeleteAccepted
-        match Topic::from_str(S::PREFIX, message.topic_name()) {
-            Some((Topic::DeleteAccepted, _, _)) => Ok(()),
-            Some((Topic::DeleteRejected, _, _)) => {
-                let mut buf = [0u8; 64];
-                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
-                    message.payload(),
-                    &mut buf,
-                )
-                .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
-
-                Err(Error::ShadowError(
-                    error_response.try_into().unwrap_or(ShadowError::NotFound),
-                ))
-            }
-            _ => {
-                error!(
-                    "Expected Topic name DeleteRejected or DeleteAccepted but got something else"
-                );
-                Err(Error::WrongShadowName)
-            }
-        }
-    }
-
     /// Create a new shadow with default state.
     async fn create_shadow(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
         debug!(
@@ -520,25 +487,47 @@ where
         Ok(state)
     }
 
-    /// Delete the shadow from the cloud and reset local state to defaults.
+    /// Delete the shadow from the cloud and remove all persisted state.
     ///
-    /// This removes the shadow from the cloud and resets the local state
-    /// to defaults in storage.
+    /// Publishes a delete request via MQTT, waits for acceptance, then
+    /// removes all stored KV entries for this shadow's prefix.
     ///
     /// ## Example
     ///
     /// ```ignore
-    /// shadow.delete_shadow().await?;  // Gone from cloud, local reset to defaults
+    /// shadow.delete_shadow().await?;  // Gone from cloud, storage cleaned up
     /// ```
     pub async fn delete_shadow(&self) -> Result<(), Error> {
-        // Delete from cloud
-        self.delete_from_cloud().await?;
+        self.mqtt.wait_connected().await;
 
-        // Reset state to default in storage
-        let prefix = Self::prefix();
-        let state = S::default();
+        let mut sub = self.publish_and_subscribe(Topic::Delete, b"").await?;
+
+        let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+
+        match Topic::from_str(S::PREFIX, message.topic_name()) {
+            Some((Topic::DeleteAccepted, _, _)) => {}
+            Some((Topic::DeleteRejected, _, _)) => {
+                let mut buf = [0u8; 64];
+                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
+                    message.payload(),
+                    &mut buf,
+                )
+                .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
+
+                return Err(Error::ShadowError(
+                    error_response.try_into().unwrap_or(ShadowError::NotFound),
+                ));
+            }
+            _ => {
+                error!(
+                    "Expected Topic name DeleteRejected or DeleteAccepted but got something else"
+                );
+                return Err(Error::WrongShadowName);
+            }
+        }
+
         self.store
-            .set_state(prefix, &state)
+            .delete_state(Self::prefix())
             .await
             .map_err(|_| Error::DaoWrite)?;
 
