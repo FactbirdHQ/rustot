@@ -19,6 +19,8 @@ kv_persist = []
 std = []
 # When enabled, generates bon-based builder methods (desired(), reported()) on shadow structs
 builders = []
+# When enabled, generates the #[multi_shadow_root] attribute macro
+multi = []
 
 [dependencies]
 syn = { version = "2", features = ["extra-traits"] }

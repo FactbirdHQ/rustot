@@ -93,9 +93,10 @@ use core::future::Future;
 /// Without cleanup, stale desired fields persist after variant switches and
 /// cause infinite delta loops (AWS computes delta from desired keys not in
 /// reported).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum DeltaContent<T> {
     /// No content — field skipped by `skip_serializing_if`.
+    #[default]
     Absent,
     /// Actual delta value — delegates to T's Serialize.
     Value(T),
@@ -104,12 +105,6 @@ pub enum DeltaContent<T> {
     /// Each inner slice is a `FIELD_NAMES` from a `ReportedUnionFields` impl,
     /// allowing multiple variants' fields to be combined.
     NullFields(&'static [&'static [&'static str]]),
-}
-
-impl<T> Default for DeltaContent<T> {
-    fn default() -> Self {
-        DeltaContent::Absent
-    }
 }
 
 impl<T> From<Option<T>> for DeltaContent<T> {
@@ -148,7 +143,7 @@ impl<T: Serialize> Serialize for DeltaContent<T> {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(None)?;
                 for fields in *field_slices {
-                    serialize_null_fields(*fields, &mut map)?;
+                    serialize_null_fields(fields, &mut map)?;
                 }
                 map.end()
             }
@@ -171,9 +166,10 @@ pub fn delta_content_is_absent<T>(dc: &DeltaContent<T>) -> bool {
 /// via fallback after an unknown variant tag was encountered. Both serialize
 /// identically, but `Fallback` signals `desired_cleanup` to overwrite the
 /// invalid desired mode on the cloud so the delta clears itself.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum DeltaMode<T> {
     /// No mode in delta — skipped during serialization.
+    #[default]
     Absent,
     /// Mode parsed directly from JSON tag.
     Known(T),
@@ -181,12 +177,6 @@ pub enum DeltaMode<T> {
     /// Serialized identically to Known. Signals desired_cleanup
     /// to overwrite the invalid desired mode.
     Fallback(T),
-}
-
-impl<T> Default for DeltaMode<T> {
-    fn default() -> Self {
-        DeltaMode::Absent
-    }
 }
 
 impl<T> DeltaMode<T> {

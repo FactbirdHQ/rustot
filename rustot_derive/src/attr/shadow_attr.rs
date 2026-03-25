@@ -17,6 +17,23 @@ pub struct ShadowRootParams {
     pub max_payload_len: Option<usize>,
 }
 
+/// Parameters for the #[multi_shadow_root(pattern = "...")] macro
+///
+/// This macro marks a struct as a multi-shadow root with pattern-based naming.
+/// It implements both `MultiShadowRoot` and `ShadowNode` traits.
+#[cfg(feature = "multi")]
+#[derive(FromMeta)]
+pub struct MultiShadowRootParams {
+    /// Shadow pattern prefix (e.g., "flow-" matches "flow-pump-01", "flow-valve-02")
+    pub pattern: String,
+    /// Topic prefix for MQTT topics (e.g., "$aws" for AWS IoT)
+    #[darling(default)]
+    pub topic_prefix: Option<String>,
+    /// Maximum payload size for shadow documents
+    #[darling(default)]
+    pub max_payload_len: Option<usize>,
+}
+
 /// Parameters for the #[shadow_node] macro (no parameters currently)
 ///
 /// This macro marks a struct or enum as a nested shadow type with KV persistence
