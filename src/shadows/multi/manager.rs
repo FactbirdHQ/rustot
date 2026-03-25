@@ -318,10 +318,7 @@ where
             if let Some(id) = shadow_name.strip_prefix(T::PATTERN) {
                 let prefix = Self::shadow_name(id);
                 self.store.delete_state(&prefix).await.map_err(|e| {
-                    MultiShadowError::StorageError(format!(
-                        "Failed to delete state: {:?}",
-                        e
-                    ))
+                    MultiShadowError::StorageError(format!("Failed to delete state: {:?}", e))
                 })?;
                 self.shadow_ids.write().await.remove(id);
                 return Ok(Some(id.to_string()));
@@ -536,10 +533,7 @@ where
             Ok(Ok(())) | Err(_) => {
                 let prefix = Self::shadow_name(id);
                 self.store.delete_state(&prefix).await.map_err(|e| {
-                    MultiShadowError::StorageError(format!(
-                        "Failed to delete state: {:?}",
-                        e
-                    ))
+                    MultiShadowError::StorageError(format!("Failed to delete state: {:?}", e))
                 })?;
                 self.shadow_ids.write().await.remove(id);
                 Ok(())
