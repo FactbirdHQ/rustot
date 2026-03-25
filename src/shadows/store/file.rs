@@ -270,6 +270,11 @@ impl<St: KVPersist> StateStore<St> for FileKVStore {
             })
     }
 
+    async fn delete_state(&self, prefix: &str) -> Result<(), Self::Error> {
+        self.remove_if(prefix, |_| true).await?;
+        Ok(())
+    }
+
     async fn apply_delta(&self, prefix: &str, delta: &St::Delta) -> Result<St, Self::Error> {
         let mut key_buf = heapless::String::<128>::new();
         key_buf
