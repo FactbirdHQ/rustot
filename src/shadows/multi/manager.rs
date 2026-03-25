@@ -244,6 +244,20 @@ where
         Err(MultiShadowError::Timeout)
     }
 
+    /// Wait for the next shadow deletion from any managed shadow.
+    ///
+    /// Returns the deleted shadow ID, or `None` if the deletion was for
+    /// an unrecognized shadow (not matching the pattern).
+    pub async fn wait_deletion(&self) -> MultiShadowResult<Option<String>> {
+        let mut sub = self.create_deletion_subscription().await?;
+
+        if let Some(msg) = sub.next_message().await {
+            return self.handle_deletion_from_parts(msg.topic_name()).await;
+        }
+
+        Err(MultiShadowError::Timeout)
+    }
+
     /// Parse a delta message from topic and payload.
     ///
     /// Applies the delta to the local state store, reports the updated state,
