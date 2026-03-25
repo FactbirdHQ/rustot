@@ -72,7 +72,7 @@ impl Updater {
             file_size: file_ctx.filesize,
             request_momentum: None,
             status_details: initial_status,
-            extra_status: pal.status_details().clone(),
+            extra_status: pal.status_details(),
         });
 
         // Create the JobUpdater
@@ -115,6 +115,10 @@ impl Updater {
             };
 
             info!("Initialized file handler! Requesting file blocks");
+            {
+                let mut progress = progress_state.lock().await;
+                progress.request_momentum = Some(0);
+            }
 
             // Outer loop to handle resubscription on clean session
             loop {
@@ -249,6 +253,16 @@ impl Updater {
                 } else {
                     pal::OtaEvent::UpdateComplete
                 };
+
+                // The status_update_fut was dropped when data_fut completed,
+                // so the signalled update was never sent. Send the final status
+                // directly and wait for the cloud to accept it before rebooting.
+                let (status, reason) = if let Some(0) = file_ctx.file_type {
+                    (JobStatus::InProgress, JobStatusReason::SigCheckPassed)
+                } else {
+                    (JobStatus::Succeeded, JobStatusReason::Accepted)
+                };
+                job_updater.update_job_status(status, reason).await?;
 
                 info!(
                     "OTA Download finished! Running complete callback: {:?}",
