@@ -83,6 +83,12 @@ pub trait StateStore<S: ShadowNode> {
     /// Returns the updated state after applying the delta.
     async fn apply_delta(&self, prefix: &str, delta: &S::Delta) -> Result<S, Self::Error>;
 
+    /// Delete all stored state for a shadow prefix.
+    ///
+    /// Removes all keys associated with the given prefix from storage.
+    /// For `InMemory<S>`, this resets the state to `None`.
+    async fn delete_state(&self, prefix: &str) -> Result<(), Self::Error>;
+
     /// Load state from storage, handling first boot and schema migrations.
     ///
     /// ## Behavior

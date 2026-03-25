@@ -294,6 +294,11 @@ impl<
             })
     }
 
+    async fn delete_state(&self, prefix: &str) -> Result<(), Self::Error> {
+        self.remove_if(prefix, |_| true).await?;
+        Ok(())
+    }
+
     async fn apply_delta(&self, prefix: &str, delta: &St::Delta) -> Result<St, Self::Error> {
         info!("KV apply_delta: prefix={}", prefix);
         let mut key_buf: String<MAX_KEY_LEN> = String::new();

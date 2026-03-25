@@ -244,6 +244,20 @@ where
         Err(MultiShadowError::Timeout)
     }
 
+    /// Wait for the next shadow deletion from any managed shadow.
+    ///
+    /// Returns the deleted shadow ID, or `None` if the deletion was for
+    /// an unrecognized shadow (not matching the pattern).
+    pub async fn wait_deletion(&self) -> MultiShadowResult<Option<String>> {
+        let mut sub = self.create_deletion_subscription().await?;
+
+        if let Some(msg) = sub.next_message().await {
+            return self.handle_deletion_from_parts(msg.topic_name()).await;
+        }
+
+        Err(MultiShadowError::Timeout)
+    }
+
     /// Parse a delta message from topic and payload.
     ///
     /// Applies the delta to the local state store, reports the updated state,
@@ -302,6 +316,10 @@ where
             Topic::from_str(T::PREFIX, topic)
         {
             if let Some(id) = shadow_name.strip_prefix(T::PATTERN) {
+                let prefix = Self::shadow_name(id);
+                self.store.delete_state(&prefix).await.map_err(|e| {
+                    MultiShadowError::StorageError(format!("Failed to delete state: {:?}", e))
+                })?;
                 self.shadow_ids.write().await.remove(id);
                 return Ok(Some(id.to_string()));
             }
@@ -513,6 +531,10 @@ where
 
         match result {
             Ok(Ok(())) | Err(_) => {
+                let prefix = Self::shadow_name(id);
+                self.store.delete_state(&prefix).await.map_err(|e| {
+                    MultiShadowError::StorageError(format!("Failed to delete state: {:?}", e))
+                })?;
                 self.shadow_ids.write().await.remove(id);
                 Ok(())
             }

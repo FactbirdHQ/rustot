@@ -76,6 +76,11 @@ impl<S: ShadowNode> StateStore<S> for InMemory<S> {
         Ok(())
     }
 
+    async fn delete_state(&self, _prefix: &str) -> Result<(), Self::Error> {
+        *self.state.lock().await = None;
+        Ok(())
+    }
+
     async fn apply_delta(&self, _prefix: &str, delta: &S::Delta) -> Result<S, Self::Error> {
         let mut guard = self.state.lock().await;
         let state = guard.get_or_insert_with(S::default);
