@@ -38,7 +38,7 @@ sequential-storage = { version = "7.0", features = ["heapless-09"], optional = t
 serde-json-core = { version = "0.6" }
 rustot-derive = { path = "rustot_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
-mqttrust = { git = "https://github.com/FactbirdHQ/mqttrust", rev = "cc55012", optional = true }
+mqttrust = { git = "https://github.com/FactbirdHQ/mqttrust", rev = "629e3bb", optional = true }
 
 embassy-time = { version = "0.5.0" }
 embassy-sync = "0.7.2"
@@ -58,6 +58,7 @@ rumqttc = { version = "0.24", optional = true }
 greengrass-ipc-rust = { git = "https://github.com/FactbirdHQ/greengrass-ipc-rust", rev = "0f0469e", optional = true }
 bytes = { version = "1", optional = true }
 futures = { version = "0.3", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 
 # Multi-shadow manager dependencies (optional, feature-gated)
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"], optional = true }
@@ -98,10 +99,12 @@ aws-credential-types = "1"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 serial_test = "3"
+rumqttc = { version = "0.24", features = ["use-native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 
 [features]
-default = ["ota_mqtt_data", "metric_cbor", "provision_cbor", "shadows_kv_persist", "mqttrust"]
+default = ["ota_mqtt_data", "metric_cbor", "provision_cbor", "shadows_kv_persist", "mqtt_mqttrust"]
 
 metric_cbor = ["dep:minicbor", "dep:minicbor-serde"]
 
@@ -110,6 +113,7 @@ provision_cbor = ["dep:minicbor", "dep:minicbor-serde"]
 ota_mqtt_data = ["dep:minicbor", "dep:minicbor-serde"]
 
 ota_http_data = []
+ota_http_reqwest = ["ota_http_data", "std", "dep:reqwest"]
 
 std = ["serde/std", "minicbor-serde?/std", "dep:tokio", "dep:serde_json", "dep:base64", "postcard/alloc", "rustot-derive/std", "embassy-time/std", "embassy-time/generic-queue-8"]
 
@@ -131,9 +135,9 @@ log = ["dep:log"]
 shadows_multi = ["std", "dep:aws-config", "dep:aws-sdk-iotdataplane", "dep:uuid", "tokio/time", "rustot-derive/multi"]
 
 # MQTT client implementations (all optional, feature-gated)
-mqttrust = ["dep:mqttrust"]
-rumqttc = ["std", "dep:rumqttc", "tokio/time"]
-greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes", "dep:futures"]
+mqtt_mqttrust = ["dep:mqttrust"]
+mqtt_rumqttc = ["std", "dep:rumqttc", "tokio/time"]
+mqtt_greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes", "dep:futures"]
 
 [patch.crates-io]
 serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core", rev = "a435f78" }

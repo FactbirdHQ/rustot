@@ -61,6 +61,9 @@ pub struct FileContext {
     pub filesize: usize,
     pub fileid: u8,
     pub certfile: Option<heapless::String<64>>,
+    #[cfg(feature = "ota_http_data")]
+    pub update_data_url: Option<heapless::String<2048>>,
+    #[cfg(not(feature = "ota_http_data"))]
     pub update_data_url: Option<heapless::String<64>>,
     pub auth_scheme: Option<heapless::String<64>>,
     pub signature: Option<Signature>,
@@ -70,9 +73,8 @@ pub struct FileContext {
     pub status_details: StatusDetailsOwned,
     pub block_offset: u32,
     pub blocks_remaining: usize,
-    pub request_block_remaining: u32,
     pub job_name: heapless::String<64>,
-    pub stream_name: heapless::String<64>,
+    pub stream_name: Option<heapless::String<64>>,
     pub bitmap: Bitmap,
 }
 
@@ -113,9 +115,10 @@ impl FileContext {
             certfile: file_desc
                 .certfile
                 .map(|cert| heapless::String::try_from(cert).unwrap()),
-            update_data_url: file_desc
-                .update_data_url
-                .map(|s| heapless::String::try_from(s).unwrap()),
+            update_data_url: match file_desc.update_data_url {
+                Some(s) => Some(heapless::String::try_from(s).map_err(|_| OtaError::Overflow)?),
+                None => None,
+            },
             auth_scheme: file_desc
                 .auth_scheme
                 .map(|s| heapless::String::try_from(s).unwrap()),
@@ -138,9 +141,11 @@ impl FileContext {
 
             job_name: heapless::String::try_from(job_data.job_name).unwrap(),
             block_offset,
-            request_block_remaining: (bitmap.len() as u32).min(config.max_blocks_per_request),
             blocks_remaining: file_desc.filesize.div_ceil(config.block_size),
-            stream_name: heapless::String::try_from(job_data.ota_document.streamname).unwrap(),
+            stream_name: job_data
+                .ota_document
+                .streamname
+                .map(|s| heapless::String::try_from(s).unwrap()),
             bitmap,
         })
     }

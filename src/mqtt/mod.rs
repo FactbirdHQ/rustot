@@ -15,25 +15,25 @@
 use core::fmt::Debug;
 use core::future::Future;
 
-#[cfg(feature = "mqttrust")]
+#[cfg(feature = "mqtt_mqttrust")]
 mod mqttrust;
 
-#[cfg(feature = "rumqttc")]
-mod rumqttc;
+#[cfg(feature = "mqtt_rumqttc")]
+pub mod rumqttc;
 
-#[cfg(feature = "greengrass")]
+#[cfg(feature = "mqtt_greengrass")]
 mod greengrass;
 
 #[cfg(test)]
 pub mod mock;
 
-#[cfg(feature = "mqttrust")]
+#[cfg(feature = "mqtt_mqttrust")]
 pub use self::mqttrust::*;
 
-#[cfg(feature = "rumqttc")]
+#[cfg(feature = "mqtt_rumqttc")]
 pub use self::rumqttc::*;
 
-#[cfg(feature = "greengrass")]
+#[cfg(feature = "mqtt_greengrass")]
 pub use self::greengrass::*;
 
 /// Newtype wrapper for implementing service-specific traits

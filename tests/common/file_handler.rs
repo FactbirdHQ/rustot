@@ -184,7 +184,7 @@ impl OtaPal for FileHandler {
                 sig => panic!("Unexpected signature format! {:?}", sig),
             };
 
-            assert_eq!(signature, "This is my custom signature\\n");
+            assert_eq!(signature, "This is my custom signature");
 
             self.plateform_state = State::Swap;
 

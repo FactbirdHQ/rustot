@@ -6,7 +6,7 @@ pub mod error;
 pub mod pal;
 pub mod status_details;
 
-use core::{future::Future, ops::DerefMut as _};
+use core::future::Future;
 
 #[cfg(feature = "ota_mqtt_data")]
 pub use data_interface::mqtt::{Encoding, Topic};
@@ -14,14 +14,11 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex, signal::Sign
 use embedded_storage_async::nor_flash::{NorFlash, NorFlashError as _};
 pub use status_details::{OtaStatusDetails, StatusDetailsExt};
 
-use crate::{
-    jobs::data_types::JobStatus,
-    ota::{data_interface::BlockTransfer, encoding::json::JobStatusReason},
-};
+use crate::{jobs::data_types::JobStatus, ota::encoding::json::JobStatusReason};
 
 use self::{
     control_interface::ControlInterface,
-    data_interface::DataInterface,
+    data_interface::{BlockProgress, BlockTransfer, DataInterface, FileBlock, RawBlock},
     encoding::{Bitmap, FileContext},
     pal::{ImageState, ImageStateReason},
 };
@@ -51,7 +48,9 @@ impl Updater {
     ) -> Result<(), error::OtaError> {
         info!(
             "[OTA] Starting perform_ota for job={} stream={} size={}",
-            file_ctx.job_name, file_ctx.stream_name, file_ctx.filesize
+            file_ctx.job_name,
+            file_ctx.stream_name.as_deref().unwrap_or("N/A"),
+            file_ctx.filesize
         );
         // Initialize status details, preserving self_test state if present
         let mut initial_status = OtaStatusDetails::new();
@@ -66,11 +65,8 @@ impl Updater {
             total_blocks: file_ctx.filesize.div_ceil(config.block_size),
             blocks_remaining: file_ctx.filesize.div_ceil(config.block_size),
             block_offset: file_ctx.block_offset,
-            request_block_remaining: (file_ctx.bitmap.len() as u32)
-                .min(config.max_blocks_per_request),
             bitmap: file_ctx.bitmap.clone(),
             file_size: file_ctx.filesize,
-            request_momentum: None,
             status_details: initial_status,
             extra_status: pal.status_details(),
         });
@@ -84,14 +80,6 @@ impl Updater {
         };
 
         info!("Job document was accepted. Attempting to begin the update");
-
-        // Signal used to wake the momentum handler when the download completes,
-        // so it doesn't have to wait for its full sleep timer to expire.
-        let done_signal: Signal<NoopRawMutex, ()> = Signal::new();
-
-        // Spawn the request momentum future
-        let momentum_fut =
-            Self::handle_momentum(data, config, &file_ctx, &progress_state, &done_signal);
 
         // Spawn the status update future
         let status_update_fut = job_updater.handle_status_updates();
@@ -115,135 +103,147 @@ impl Updater {
             };
 
             info!("Initialized file handler! Requesting file blocks");
-            {
-                let mut progress = progress_state.lock().await;
-                progress.request_momentum = Some(0);
-            }
 
-            // Outer loop to handle resubscription on clean session
+            // Outer loop to handle re-establishment on clean session
             loop {
-                // Prepare the storage layer on receiving a new file
-                let mut subscription = data.init_file_transfer(&file_ctx).await?;
+                let block_progress = {
+                    let progress = progress_state.lock().await;
+                    BlockProgress {
+                        bitmap: progress.bitmap.clone(),
+                        block_offset: progress.block_offset,
+                    }
+                };
 
-                {
-                    let mut progress = progress_state.lock().await;
-                    data.request_file_blocks(&file_ctx, &mut progress, config)
-                        .await?;
-                }
+                let mut transfer = data
+                    .begin_transfer(&file_ctx, config, &block_progress)
+                    .await?;
 
                 info!("Awaiting file blocks!");
 
-                // Inner loop to process blocks
+                // Inner loop to process blocks.
+                //
+                // The block processing is split into two phases to satisfy
+                // the borrow checker: the match on `transfer.next_block()`
+                // borrows `transfer`, so `on_block_written` must be called
+                // after the match scope ends.
                 loop {
-                    // Select over the futures
-                    match subscription.next_block().await {
-                        Ok(Some(mut payload)) => {
-                            // Decode the file block received
-                            let mut progress = progress_state.lock().await;
+                    let notify_progress = {
+                        let result = transfer.next_block().await;
+                        match result {
+                            Ok(Some(mut raw)) => {
+                                let mut progress = progress_state.lock().await;
 
-                            match Self::ingest_data_block(
-                                data,
-                                &mut block_writer,
-                                config,
-                                &mut progress,
-                                payload.deref_mut(),
-                            )
-                            .await
-                            {
-                                Ok(true) => {
-                                    // ... (Handle end of file) ...
-                                    match pal.close_file(&file_ctx).await {
-                                        Err(e) => {
-                                            // FIXME: This seems like duplicate status update, as it will also report during cleanup
-                                            // job_updater.signal_update(
-                                            //     JobStatus::Failed,
-                                            //     JobStatusReason::Pal(0),
-                                            // );
-
-                                            return Err(e.into());
-                                        }
-                                        Ok(_) if file_ctx.file_type == Some(0) => {
-                                            job_updater.signal_update(
-                                                JobStatus::InProgress,
-                                                JobStatusReason::SigCheckPassed,
-                                            );
-                                            return Ok(());
-                                        }
-                                        Ok(_) => {
-                                            job_updater.signal_update(
-                                                JobStatus::Succeeded,
-                                                JobStatusReason::Accepted,
-                                            );
-                                            return Ok(());
+                                match raw.decode() {
+                                    Ok(block) => {
+                                        match Self::ingest_data_block(
+                                            &block,
+                                            &mut block_writer,
+                                            config,
+                                            &mut progress,
+                                        )
+                                        .await
+                                        {
+                                            Ok(true) => {
+                                                // All blocks received — close file
+                                                drop(progress);
+                                                match pal.close_file(&file_ctx).await {
+                                                    Err(e) => {
+                                                        return Err(e.into());
+                                                    }
+                                                    Ok(_) if file_ctx.file_type == Some(0) => {
+                                                        job_updater.signal_update(
+                                                            JobStatus::InProgress,
+                                                            JobStatusReason::SigCheckPassed,
+                                                        );
+                                                        return Ok(());
+                                                    }
+                                                    Ok(_) => {
+                                                        job_updater.signal_update(
+                                                            JobStatus::Succeeded,
+                                                            JobStatusReason::Accepted,
+                                                        );
+                                                        return Ok(());
+                                                    }
+                                                }
+                                            }
+                                            Ok(false) => {
+                                                // Block ingested — signal status if milestone
+                                                if progress.blocks_remaining
+                                                    % config.status_update_frequency as usize
+                                                    == 0
+                                                {
+                                                    job_updater.signal_update(
+                                                        JobStatus::InProgress,
+                                                        JobStatusReason::Receiving,
+                                                    );
+                                                }
+                                                Some(BlockProgress {
+                                                    bitmap: progress.bitmap.clone(),
+                                                    block_offset: progress.block_offset,
+                                                })
+                                            }
+                                            Err(e) if e.is_retryable() => {
+                                                error!(
+                                                    "Failed block validation: {:?}! Retrying",
+                                                    e
+                                                );
+                                                None
+                                            }
+                                            Err(e) => return Err(e),
                                         }
                                     }
-                                }
-                                Ok(false) => {
-                                    // ... (Handle successful block processing) ...
-                                    progress.request_momentum = Some(0);
-
-                                    // Update the job status to reflect the download progress
-                                    if progress.blocks_remaining
-                                        % config.status_update_frequency as usize
-                                        == 0
-                                    {
-                                        job_updater.signal_update(
-                                            JobStatus::InProgress,
-                                            JobStatusReason::Receiving,
-                                        );
+                                    Err(e) if e.is_retryable() => {
+                                        error!("Failed block decode: {:?}! Retrying", e);
+                                        None
                                     }
-
-                                    if progress.request_block_remaining > 1 {
-                                        progress.request_block_remaining -= 1;
-                                    } else {
-                                        data.request_file_blocks(&file_ctx, &mut progress, config)
-                                            .await?;
-                                    }
-                                }
-                                Err(e) if e.is_retryable() => {
-                                    // ... (Handle retryable errors) ...
-                                    error!("Failed block validation: {:?}! Retrying", e);
-                                }
-                                Err(e) => {
-                                    // ... (Handle fatal errors) ...
-                                    return Err(e);
+                                    Err(e) => return Err(e),
                                 }
                             }
+                            Ok(None) => {
+                                warn!("[OTA] Data stream ended (clean session/disconnect). Re-establishing and resuming...");
+
+                                let blocks_remaining = {
+                                    let progress = progress_state.lock().await;
+                                    progress.blocks_remaining
+                                };
+
+                                info!("[OTA] Resuming OTA: {} blocks remaining", blocks_remaining);
+
+                                // Break inner loop to trigger re-establishment
+                                break;
+                            }
+
+                            Err(e) if e.is_retryable() => {
+                                // Momentum timeout or transient error — retry
+                                continue;
+                            }
+                            Err(e) => {
+                                error!("Block transfer error: {:?}", e);
+                                return Err(e);
+                            }
                         }
-                        Ok(None) => {
-                            warn!("[OTA] Data stream subscription ended (clean session/disconnect). Resubscribing and resuming...");
+                    };
 
-                            let blocks_remaining = {
-                                let progress = progress_state.lock().await;
-                                progress.blocks_remaining
-                            };
-
-                            info!("[OTA] Resuming OTA: {} blocks remaining", blocks_remaining);
-
-                            // Break inner loop to trigger resubscription in outer loop
-                            break;
-                        }
-
-                        Err(e) => {
-                            error!("Block transfer error: {:?}", e);
-                            return Err(e);
-                        }
+                    // Notify the transfer outside the match scope so the
+                    // borrow from next_block() is released.
+                    if let Some(bp) = notify_progress {
+                        transfer.on_block_written(&bp).await?;
                     }
                 } // End of inner block processing loop
-            } // End of outer resubscribe loop
+            } // End of outer re-establish loop
         };
 
-        let data_fut = async {
-            let res = data_fut.await;
-            done_signal.signal(());
-            res
+        // select: when data_fut completes, status_update_fut is dropped.
+        // The final status update is sent directly below, not via the
+        // signal/handler — the handler loop would block forever otherwise.
+        let data_res = match embassy_futures::select::select(data_fut, status_update_fut).await {
+            embassy_futures::select::Either::First(res) => res,
+            embassy_futures::select::Either::Second(res) => {
+                // status_update_fut returned first — this means a status publish
+                // error occurred. Propagate it.
+                return res;
+            }
         };
-
-        let (data_res, _) = embassy_futures::join::join(
-            data_fut,
-            embassy_futures::select::select(status_update_fut, momentum_fut),
-        )
-        .await;
 
         // Cleanup and update the job status accordingly
         match data_res {
@@ -315,15 +315,12 @@ impl Updater {
         }
     }
 
-    async fn ingest_data_block<D: DataInterface, E: StatusDetailsExt>(
-        data: &D,
+    async fn ingest_data_block<E: StatusDetailsExt>(
+        block: &FileBlock<'_>,
         block_writer: &mut impl NorFlash,
         config: &config::Config,
         progress: &mut ProgressState<E>,
-        payload: &mut [u8],
     ) -> Result<bool, error::OtaError> {
-        let block = data.decode_file_block(payload)?;
-
         if block.validate(config.block_size, progress.file_size) {
             if block.block_id < progress.block_offset as usize
                 || !progress
@@ -385,59 +382,6 @@ impl Updater {
             Err(error::OtaError::BlockOutOfRange)
         }
     }
-
-    async fn handle_momentum<D: DataInterface, E: StatusDetailsExt>(
-        data: &D,
-        config: &config::Config,
-        file_ctx: &FileContext,
-        progress_state: &Mutex<NoopRawMutex, ProgressState<E>>,
-        done_signal: &Signal<NoopRawMutex, ()>,
-    ) -> Result<(), error::OtaError> {
-        loop {
-            match embassy_futures::select::select(
-                embassy_time::Timer::after(config.request_wait),
-                done_signal.wait(),
-            )
-            .await
-            {
-                // Timer expired — check momentum
-                embassy_futures::select::Either::First(()) => {}
-                // Download completed — exit immediately
-                embassy_futures::select::Either::Second(()) => break,
-            }
-
-            let mut progress = progress_state.lock().await;
-
-            if progress.blocks_remaining == 0 {
-                // No more blocks to request
-                break;
-            }
-
-            let Some(request_momentum) = &mut progress.request_momentum else {
-                continue;
-            };
-
-            // Increment momentum
-            *request_momentum += 1;
-
-            if *request_momentum == 1 {
-                continue;
-            }
-
-            if *request_momentum <= config.max_request_momentum {
-                warn!("Momentum requesting more blocks!");
-
-                // Request data blocks
-                data.request_file_blocks(file_ctx, &mut progress, config)
-                    .await?;
-            } else {
-                // Too much momentum, abort
-                return Err(error::OtaError::MomentumAbort);
-            }
-        }
-
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -447,8 +391,6 @@ pub struct ProgressState<E: StatusDetailsExt = ()> {
     pub blocks_remaining: usize,
     pub file_size: usize,
     pub block_offset: u32,
-    pub request_block_remaining: u32,
-    pub request_momentum: Option<u8>,
     #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
     pub bitmap: Bitmap,
     #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
@@ -595,19 +537,6 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
         // Call the platform specific code to set the image state
         let image_state = match pal.set_platform_image_state(image_state).await {
             Err(e) if !matches!(image_state, ImageState::Aborted(_)) => {
-                // If the platform image state couldn't be set correctly, force
-                // fail the update by setting the image state to "Rejected"
-                // unless it's already in "Aborted".
-
-                // Capture the failure reason if not already set (and we're not
-                // already Aborted as checked above). Otherwise Keep the
-                // original reject reason code since it is possible for the PAL
-                // to fail to update the image state in some cases (e.g. a reset
-                // already caused the bundle rollback and we failed to rollback
-                // again).
-
-                // Intentionally override reason since we failed within this
-                // function
                 ImageState::Rejected(ImageStateReason::Pal(e))
             }
             _ => image_state,
@@ -618,8 +547,6 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
 
         match image_state {
             ImageState::Testing(_) => {
-                // We discovered we're ready for test mode, put job status
-                // in self_test active
                 self.control
                     .update_job_status(
                         self.file_ctx,
@@ -630,8 +557,6 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
                     .await?;
             }
             ImageState::Accepted => {
-                // Now that we have accepted the firmware update, we can
-                // complete the job
                 self.control
                     .update_job_status(
                         self.file_ctx,
@@ -642,10 +567,6 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
                     .await?;
             }
             ImageState::Rejected(reason) => {
-                // The firmware update was rejected, complete the job as
-                // FAILED (Job service will not allow us to set REJECTED
-                // after the job has been started already).
-
                 self.control
                     .update_job_status(
                         self.file_ctx,
@@ -656,10 +577,6 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
                     .await?;
             }
             ImageState::Aborted(reason) => {
-                // The firmware update was aborted, complete the job as
-                // FAILED (Job service will not allow us to set REJECTED
-                // after the job has been started already).
-
                 self.control
                     .update_job_status(
                         self.file_ctx,
@@ -670,8 +587,6 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
                     .await?;
             }
             ImageState::Unknown => {
-                // Unknown state, abort with no reason
-
                 self.control
                     .update_job_status(
                         self.file_ctx,

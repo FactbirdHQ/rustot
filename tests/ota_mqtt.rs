@@ -10,87 +10,16 @@ use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use mqttrust::transport::embedded_nal::NalTransport;
-use mqttrust::{
-    Config, DomainBroker, Message, SliceBufferProvider, State, Subscribe, SubscribeTopic,
-};
-use serde::Deserialize;
+use mqttrust::{Config, DomainBroker, State, Subscribe, SubscribeTopic};
 use serial_test::serial;
 use static_cell::StaticCell;
 
 use aws_credential_types::provider::SharedCredentialsProvider;
 use rustot::{
-    jobs::{
-        self,
-        data_types::{DescribeJobExecutionResponse, NextJobExecutionChanged},
-    },
+    jobs,
     mqtt::Mqtt,
-    ota::{
-        self,
-        encoding::{json::OtaJob, FileContext},
-        pal::OtaPalError,
-        JobEventData, Updater,
-    },
+    ota::{self, pal::OtaPalError, Updater},
 };
-
-#[derive(Debug, Deserialize)]
-pub enum Jobs<'a> {
-    #[serde(rename = "afr_ota")]
-    #[serde(borrow)]
-    Ota(OtaJob<'a>),
-}
-
-impl<'a> Jobs<'a> {
-    pub fn ota_job(self) -> Option<OtaJob<'a>> {
-        match self {
-            Jobs::Ota(ota_job) => Some(ota_job),
-        }
-    }
-}
-
-fn handle_ota<'a>(
-    message: Message<'a, NoopRawMutex, SliceBufferProvider<'a>>,
-    config: &ota::config::Config,
-) -> Option<FileContext> {
-    let job = match jobs::Topic::from_str(message.topic_name()) {
-        Some(jobs::Topic::NotifyNext) => {
-            let (execution_changed, _) =
-                serde_json_core::from_slice::<NextJobExecutionChanged<Jobs>>(message.payload())
-                    .ok()?;
-            execution_changed.execution?
-        }
-        Some(jobs::Topic::DescribeAccepted(_)) => {
-            let (execution_changed, _) = serde_json_core::from_slice::<
-                DescribeJobExecutionResponse<Jobs>,
-            >(message.payload())
-            .ok()?;
-
-            if execution_changed.execution.is_none() {
-                if std::env::var("CI").is_ok() {
-                    panic!("No OTA jobs queued?");
-                }
-                return None;
-            }
-
-            execution_changed.execution?
-        }
-        _ => {
-            return None;
-        }
-    };
-
-    let ota_job = job.job_document?.ota_job()?;
-
-    FileContext::new_from(
-        JobEventData {
-            job_name: job.job_id,
-            ota_document: ota_job,
-            status_details: job.status_details,
-        },
-        0,
-        config,
-    )
-    .ok()
-}
 
 #[tokio::test(flavor = "current_thread")]
 #[serial]
@@ -199,7 +128,7 @@ async fn run_ota_happy_path() -> Result<(), ota::error::OtaError> {
 
         let message = jobs_subscription.next_message().await.unwrap();
 
-        if let Some(mut file_ctx) = handle_ota(message, &ota_config) {
+        if let Some(mut file_ctx) = common::handle_ota(message, &ota_config) {
             // Nested subscriptions are a problem for mqttrust, so unsubscribe here
             jobs_subscription.unsubscribe().await.unwrap();
 
@@ -438,7 +367,7 @@ async fn run_ota_cancel(
 
         let message = jobs_subscription.next_message().await.unwrap();
 
-        if let Some(file_ctx) = handle_ota(message, &ota_config) {
+        if let Some(file_ctx) = common::handle_ota(message, &ota_config) {
             jobs_subscription.unsubscribe().await.unwrap();
 
             // Run OTA and cancel concurrently
@@ -568,7 +497,7 @@ async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
 
         let message = jobs_subscription.next_message().await.unwrap();
 
-        if let Some(file_ctx) = handle_ota(message, &ota_config) {
+        if let Some(file_ctx) = common::handle_ota(message, &ota_config) {
             jobs_subscription.unsubscribe().await.unwrap();
 
             // This should fail with SignatureCheckFailed

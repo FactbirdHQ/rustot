@@ -8,7 +8,8 @@ use serde::Deserialize;
 #[serde(rename = "afr_ota")]
 pub struct OtaJob<'a> {
     pub protocols: heapless::Vec<Protocol, 2>,
-    pub streamname: &'a str,
+    #[serde(default)]
+    pub streamname: Option<&'a str>,
     pub files: heapless::Vec<FileDescription<'a>, 1>,
 }
 
