@@ -402,6 +402,32 @@ where
         }
         HashMapReported(reported)
     }
+
+    fn desired_cleanup(&self, delta: &Self::Delta) -> Option<Self::Delta> {
+        if let Some(ref patches) = delta.0 {
+            let mut result: HashMap<K, Patch<V::Delta>> = HashMap::new();
+            let mut has_cleanup = false;
+
+            for (key, patch) in patches.iter() {
+                if let Patch::Set(inner_delta) = patch {
+                    if let Some(v) = self.get(key) {
+                        if let Some(inner_cleanup) = v.desired_cleanup(inner_delta) {
+                            result.insert(key.clone(), Patch::Set(inner_cleanup));
+                            has_cleanup = true;
+                        }
+                    }
+                }
+            }
+
+            if has_cleanup {
+                Some(HashMapDelta(Some(result)))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(feature = "shadows_kv_persist")]

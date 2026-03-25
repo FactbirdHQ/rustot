@@ -158,6 +158,85 @@ pub fn delta_content_is_absent<T>(dc: &DeltaContent<T>) -> bool {
 }
 
 // =============================================================================
+// DeltaMode — variant wrapper distinguishing known vs fallback resolution
+// =============================================================================
+
+/// Mode wrapper for adjacently-tagged enum delta mode fields.
+///
+/// Distinguishes between a mode parsed directly from JSON and one resolved
+/// via fallback after an unknown variant tag was encountered. Both serialize
+/// identically, but `Fallback` signals `desired_cleanup` to overwrite the
+/// invalid desired mode on the cloud so the delta clears itself.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeltaMode<T> {
+    /// No mode in delta — skipped during serialization.
+    Absent,
+    /// Mode parsed directly from JSON tag.
+    Known(T),
+    /// Mode resolved via fallback after unknown tag in JSON.
+    /// Serialized identically to Known. Signals desired_cleanup
+    /// to overwrite the invalid desired mode.
+    Fallback(T),
+}
+
+impl<T> Default for DeltaMode<T> {
+    fn default() -> Self {
+        DeltaMode::Absent
+    }
+}
+
+impl<T> DeltaMode<T> {
+    /// Returns `true` if this is `Absent`.
+    pub fn is_absent(&self) -> bool {
+        matches!(self, DeltaMode::Absent)
+    }
+
+    /// Returns `true` if this is `Known` or `Fallback`.
+    pub fn has_value(&self) -> bool {
+        matches!(self, DeltaMode::Known(_) | DeltaMode::Fallback(_))
+    }
+
+    /// Returns `true` if this is `Fallback`.
+    pub fn is_fallback(&self) -> bool {
+        matches!(self, DeltaMode::Fallback(_))
+    }
+
+    /// Returns a reference to the inner value for `Known` or `Fallback`.
+    pub fn as_value(&self) -> Option<&T> {
+        match self {
+            DeltaMode::Known(v) | DeltaMode::Fallback(v) => Some(v),
+            DeltaMode::Absent => None,
+        }
+    }
+}
+
+impl<T: Serialize> Serialize for DeltaMode<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            DeltaMode::Known(v) | DeltaMode::Fallback(v) => v.serialize(serializer),
+            DeltaMode::Absent => serializer.serialize_none(),
+        }
+    }
+}
+
+impl<T> From<Option<T>> for DeltaMode<T> {
+    fn from(opt: Option<T>) -> Self {
+        match opt {
+            Some(v) => DeltaMode::Known(v),
+            None => DeltaMode::Absent,
+        }
+    }
+}
+
+/// Serde helper for `#[serde(skip_serializing_if = "...")]` on `DeltaMode` fields.
+pub fn delta_mode_is_absent<T>(dm: &DeltaMode<T>) -> bool {
+    dm.is_absent()
+}
+
+// =============================================================================
 // KV-based Shadow Storage Traits
 // =============================================================================
 

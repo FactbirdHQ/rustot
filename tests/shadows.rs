@@ -1,4 +1,8 @@
-#![cfg(all(feature = "std", feature = "shadows_kv_persist"))]
+#![cfg(all(
+    feature = "std",
+    feature = "shadows_kv_persist",
+    feature = "shadows_builders"
+))]
 #![allow(async_fn_in_trait)]
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]

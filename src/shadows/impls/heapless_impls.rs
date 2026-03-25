@@ -424,6 +424,32 @@ where
         }
         LinearMapReported(reported)
     }
+
+    fn desired_cleanup(&self, delta: &Self::Delta) -> Option<Self::Delta> {
+        if let Some(ref patches) = delta.0 {
+            let mut result: heapless::LinearMap<K, Patch<V::Delta>, N> = heapless::LinearMap::new();
+            let mut has_cleanup = false;
+
+            for (key, patch) in patches.iter() {
+                if let Patch::Set(inner_delta) = patch {
+                    if let Some(v) = self.get(key) {
+                        if let Some(inner_cleanup) = v.desired_cleanup(inner_delta) {
+                            let _ = result.insert(key.clone(), Patch::Set(inner_cleanup));
+                            has_cleanup = true;
+                        }
+                    }
+                }
+            }
+
+            if has_cleanup {
+                Some(LinearMapDelta(Some(result)))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
 }
 
 /// LinearMap uses individual key storage to avoid large manifest buffers.

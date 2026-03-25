@@ -2,12 +2,29 @@ use serde::{Deserialize, Serialize};
 
 use super::{tag_scanner::FieldScanner, ParseError, ShadowNode, VariantResolver};
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Patch<T> {
     #[default]
     Unset,
     Set(T),
+}
+
+/// Custom Serialize: `Set(x)` serializes transparently as `x`, `Unset` as `null`.
+///
+/// This matches AWS IoT Shadow semantics where map entries are plain values
+/// and `null` removes a key. The derive would wrap Set in `{"set": x}` which
+/// AWS doesn't understand.
+impl<T: Serialize> Serialize for Patch<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Patch::Set(v) => v.serialize(serializer),
+            Patch::Unset => serializer.serialize_none(),
+        }
+    }
 }
 
 impl<T> Clone for Patch<T>
@@ -298,7 +315,8 @@ mod tests {
 
     #[test]
     fn serialize_map_patch_delta() {
-        let payload = "{\"1\":{\"set\":{\"field\":true}}}";
+        // Patch::Set serializes transparently (no "set" wrapper) to match AWS Shadow format
+        let payload = "{\"1\":{\"field\":true}}";
 
         let mut exp_map = TestMap(heapless::LinearMap::default());
         exp_map
@@ -311,6 +329,21 @@ mod tests {
 
         let patch = serde_json_core::to_string::<_, 512>(&exp_map).unwrap();
         assert_eq!(patch.as_str(), payload);
+    }
+
+    #[test]
+    fn serialize_map_patch_unset() {
+        // Patch::Unset serializes as null to remove the key from AWS Shadow
+        let mut map = TestMap(heapless::LinearMap::default());
+        map.0
+            .insert(
+                heapless::String::try_from("1").unwrap(),
+                Patch::<Test>::Unset,
+            )
+            .unwrap();
+
+        let json = serde_json_core::to_string::<_, 512>(&map).unwrap();
+        assert_eq!(json.as_str(), "{\"1\":null}");
     }
 
     #[test]
