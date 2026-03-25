@@ -245,16 +245,6 @@ where
         }
     }
 
-    /// Create a new shadow with default state.
-    async fn create_shadow(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
-        debug!(
-            "[{:?}] Creating initial shadow value.",
-            S::NAME.unwrap_or(CLASSIC_SHADOW),
-        );
-
-        self.update_shadow(None, Some(S::Reported::default())).await
-    }
-
     /// Subscribe to accepted/rejected topics and then publish a request.
     ///
     /// This helper handles the subscribe-then-publish pattern used by
@@ -485,6 +475,25 @@ where
         };
 
         Ok(state)
+    }
+
+    /// Create a new shadow in the cloud with default reported state.
+    ///
+    /// Publishes an update request with `S::Reported::default()` and returns
+    /// the resulting delta state from the cloud.
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// let delta_state = shadow.create_shadow().await?;
+    /// ```
+    pub async fn create_shadow(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
+        debug!(
+            "[{:?}] Creating initial shadow value.",
+            S::NAME.unwrap_or(CLASSIC_SHADOW),
+        );
+
+        self.update_shadow(None, Some(S::Reported::default())).await
     }
 
     /// Delete the shadow from the cloud and remove all persisted state.
