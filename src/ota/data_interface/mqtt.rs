@@ -2,7 +2,7 @@ use core::fmt::{Display, Write};
 use core::ops::{Deref, DerefMut};
 use core::str::FromStr;
 
-use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, QoS};
+use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
 
 use crate::jobs::JobTopic;
 use crate::ota::error::OtaError;
@@ -141,16 +141,35 @@ impl<M: MqttMessage> DerefMut for MessagePayload<M> {
     }
 }
 
-pub struct MqttTransfer<S>(S);
+pub struct MqttTransfer<S> {
+    sub: S,
+    job_name: heapless::String<64>,
+}
 
 impl<S: MqttSubscription> BlockTransfer for MqttTransfer<S> {
     async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError> {
-        match self.0.next_message().await {
+        match self.sub.next_message().await {
             Some(msg) => {
-                if !msg.topic_name().contains("/streams/") {
-                    return Err(OtaError::UserAbort);
+                if msg.topic_name().contains("/streams/") {
+                    return Ok(Some(MessagePayload(msg)));
                 }
-                Ok(Some(MessagePayload(msg)))
+
+                // Non-stream message on the merged subscription (notify-next).
+                // Only treat it as cancellation if our job name is absent from
+                // the payload — that means execution is null (job gone) or a
+                // different job replaced ours. A status update for the same job
+                // (e.g. InProgress) still contains the job name and is harmless;
+                // return Ok(None) to trigger a resubscribe cycle in the caller.
+                if msg
+                    .payload()
+                    .windows(self.job_name.len())
+                    .any(|w| w == self.job_name.as_bytes())
+                {
+                    debug!("Ignoring notify-next status update for current job");
+                    Ok(None)
+                } else {
+                    Err(OtaError::UserAbort)
+                }
             }
             None => Ok(None),
         }
@@ -183,13 +202,14 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
             &data_topic, &notify_topic
         );
 
+        let job_name = file_ctx.job_name.clone();
         self.0
             .subscribe(&[
                 (data_topic.as_str(), QoS::AtMostOnce),
                 (notify_topic.as_str(), QoS::AtMostOnce),
             ])
             .await
-            .map(MqttTransfer)
+            .map(|sub| MqttTransfer { sub, job_name })
             .map_err(|_| OtaError::Mqtt)
     }
 
@@ -231,7 +251,11 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
         );
 
         self.0
-            .publish(topic.as_str(), &buf[..len])
+            .publish_with_options(
+                topic.as_str(),
+                &buf[..len],
+                PublishOptions::new().qos(QoS::AtMostOnce),
+            )
             .await
             .map_err(|_| OtaError::Mqtt)
     }

@@ -153,7 +153,7 @@ pub trait OtaPal {
     type StatusDetails: super::StatusDetailsExt + Clone;
 
     /// Returns a reference to the extra status details.
-    fn status_details(&self) -> &Self::StatusDetails;
+    fn status_details(&self) -> Self::StatusDetails;
 
     /// OTA abort.
     ///
