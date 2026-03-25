@@ -127,6 +127,7 @@ pub type StatusDetailsOwned = heapless::LinearMap<heapless::String<15>, heapless
 pub enum JobError {
     Overflow,
     Encoding,
+    #[cfg(feature = "mqttrust")]
     Mqtt(mqttrust::Error),
 }
 

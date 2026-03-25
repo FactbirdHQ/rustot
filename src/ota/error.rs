@@ -45,6 +45,7 @@ impl From<JobError> for OtaError {
         match e {
             JobError::Overflow => Self::Overflow,
             JobError::Encoding => Self::Encoding,
+            #[cfg(feature = "mqttrust")]
             JobError::Mqtt(_) => Self::Mqtt,
         }
     }
