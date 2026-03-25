@@ -128,7 +128,7 @@ log = ["dep:log"]
 
 # Multi-shadow manager (runtime-named shadows with wildcard subscriptions)
 # Requires std for tokio, AWS SDK, etc.
-shadows_multi = ["std", "dep:aws-config", "dep:aws-sdk-iotdataplane", "dep:uuid", "tokio/time"]
+shadows_multi = ["std", "dep:aws-config", "dep:aws-sdk-iotdataplane", "dep:uuid", "tokio/time", "rustot-derive/multi"]
 
 # MQTT client implementations (all optional, feature-gated)
 mqttrust = ["dep:mqttrust"]

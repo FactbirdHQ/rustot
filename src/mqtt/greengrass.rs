@@ -37,6 +37,15 @@ impl GreengrassClient {
         })
     }
 
+    /// Create a client from an existing IPC client.
+    ///
+    /// The client ID is retrieved from the `AWS_IOT_THING_NAME` environment variable.
+    pub fn from_ipc(client: Arc<greengrass_ipc_rust::GreengrassCoreIPCClient>) -> Self {
+        let client_id =
+            std::env::var("AWS_IOT_THING_NAME").unwrap_or_else(|_| "unknown".to_string());
+        Self { client, client_id }
+    }
+
     /// Create a new client with a custom client ID.
     pub async fn connect_with_client_id(
         client_id: impl Into<String>,

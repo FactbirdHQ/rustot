@@ -6,6 +6,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::DeriveInput;
 
+#[cfg(feature = "multi")]
+use attr::MultiShadowRootParams;
 use attr::{FieldAttrs, ShadowNodeParams, ShadowRootParams};
 use codegen::generate_shadow_node;
 
@@ -115,6 +117,41 @@ pub fn shadow_node(
         .into()
 }
 
+/// The `#[multi_shadow_root(pattern = "...")]` attribute macro for multi-shadow root types.
+///
+/// This is the multi-shadow counterpart to [`shadow_root`]. It generates:
+/// - `MultiShadowRoot` trait implementation (includes the shadow pattern)
+/// - `ShadowNode` trait implementation (persistence support)
+/// - `Delta{Name}` struct for applying partial updates
+/// - `Reported{Name}` struct with serde skip_serializing_if
+/// - `ReportedUnionFields` implementation
+/// - `desired()` / `reported()` builder methods (requires `shadows_builders` feature)
+///
+/// # Attributes
+///
+/// - `pattern = "string"` - Shadow pattern prefix (e.g., "flow-" for "flow-pump-01")
+///
+/// # Example
+///
+/// ```ignore
+/// #[multi_shadow_root(pattern = "flow-")]
+/// #[derive(Clone, Default, Serialize, Deserialize)]
+/// struct FlowState {
+///     pub flow_rate: f64,
+///     pub temperature: f64,
+/// }
+/// ```
+#[cfg(feature = "multi")]
+#[proc_macro_attribute]
+pub fn multi_shadow_root(
+    attr: proc_macro::TokenStream,
+    input: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    multi_shadow_root_impl(attr.into(), input.into())
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
 fn shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenStream> {
     let derive_input = syn::parse2::<DeriveInput>(input)?;
 
@@ -160,6 +197,49 @@ fn shadow_node_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenS
     Ok(quote! {
         #original
         #shadow_code
+    })
+}
+
+#[cfg(feature = "multi")]
+fn multi_shadow_root_impl(attr: TokenStream, input: TokenStream) -> syn::Result<TokenStream> {
+    let derive_input = syn::parse2::<DeriveInput>(input)?;
+
+    let meta_list = darling::ast::NestedMeta::parse_meta_list(attr)
+        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+    let params = MultiShadowRootParams::from_list(&meta_list)
+        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+
+    // Strip shadow_attr from the original definition
+    let original = strip_shadow_attrs(&derive_input);
+
+    // Generate shadow node code (without ShadowRoot impl)
+    let shadow_code = generate_shadow_node(&derive_input, None)?;
+
+    // Generate MultiShadowRoot impl
+    let name = &derive_input.ident;
+    let krate = codegen::rustot_crate_path();
+    let pattern = &params.pattern;
+
+    let prefix_const = params.topic_prefix.as_ref().map(|p| {
+        quote! { const PREFIX: &'static str = #p; }
+    });
+
+    let max_payload_const = params.max_payload_len.map(|s| {
+        quote! { const MAX_PAYLOAD_SIZE: usize = #s; }
+    });
+
+    let multi_root_impl = quote! {
+        impl #krate::shadows::multi::MultiShadowRoot for #name {
+            const PATTERN: &'static str = #pattern;
+            #prefix_const
+            #max_payload_const
+        }
+    };
+
+    Ok(quote! {
+        #original
+        #shadow_code
+        #multi_root_impl
     })
 }
 

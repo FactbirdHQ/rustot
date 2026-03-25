@@ -3,6 +3,8 @@
 //! Manages multiple runtime-named shadows using a single wildcard
 //! MQTT subscription per operation type.
 
+use serde::Serialize;
+
 use crate::mqtt::{MqttClient, MqttMessage, MqttSubscription, QoS};
 use crate::shadows::data_types::{
     AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
@@ -366,67 +368,95 @@ where
     // Update
     // =========================================================================
 
-    /// Update reported state for a specific shadow by ID.
+    /// Report state changes to the cloud for a specific shadow.
     ///
-    /// The closure receives the current state and a mutable reported struct.
-    /// Set fields on the reported struct to report them to the cloud.
-    pub async fn update<F>(&self, id: &str, f: F) -> MultiShadowResult<T>
-    where
-        F: FnOnce(&T, &mut T::Reported),
-    {
+    /// Accepts anything convertible to `T::Reported` via `Into`, including
+    /// the state type `T` itself (reports all fields) or a builder result.
+    ///
+    /// If the cloud responds with a delta (because reported differs from
+    /// desired), the delta is automatically applied and persisted.
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// // Report specific fields using builder (requires "builders" feature)
+    /// manager.update_reported("pump-01",
+    ///     FlowState::reported().flow_rate(42.0).build()
+    /// ).await?;
+    /// ```
+    pub async fn update_reported(
+        &self,
+        id: &str,
+        reported: impl Into<T::Reported>,
+    ) -> MultiShadowResult<T> {
         if !self.shadow_ids.read().await.contains(id) {
             return Err(MultiShadowError::ShadowNotManaged(id.to_string()));
         }
 
-        let prefix = Self::shadow_name(id);
-        let state: T =
-            self.store.get_state(&prefix).await.map_err(|e| {
-                MultiShadowError::StorageError(format!("Failed to get state: {:?}", e))
-            })?;
-
-        let mut reported = T::Reported::default();
-        f(&state, &mut reported);
-
+        let reported: T::Reported = reported.into();
         let response = self.report(id, reported).await?;
 
-        let state = if let Some(ref delta) = response.delta {
+        let prefix = Self::shadow_name(id);
+        if let Some(ref delta) = response.delta {
             self.store.apply_delta(&prefix, delta).await.map_err(|e| {
                 MultiShadowError::StorageError(format!("Failed to apply delta: {:?}", e))
-            })?
+            })
         } else {
-            state
-        };
-
-        Ok(state)
+            self.store.get_state(&prefix).await.map_err(|e| {
+                MultiShadowError::StorageError(format!("Failed to get state: {:?}", e))
+            })
+        }
     }
 
-    /// Update desired state for a specific shadow by ID.
+    /// Request state changes from the cloud for a specific shadow.
     ///
-    /// The closure receives the current state (mutable) and a mutable reported struct.
-    /// Modify the state to set the desired values, and set reported fields to acknowledge.
-    pub async fn update_desired<F>(&self, id: &str, f: F) -> MultiShadowResult<()>
-    where
-        F: FnOnce(&mut T, &mut T::Reported),
-    {
+    /// Accepts anything convertible to `T::Delta` via `Into`, including
+    /// builder results and `DesiredFoo` types for adjacently-tagged enums.
+    ///
+    /// If the cloud accepts the change and returns a delta, it is
+    /// automatically applied and persisted.
+    ///
+    /// ## Example
+    ///
+    /// ```ignore
+    /// // Request changes using builder (requires "builders" feature)
+    /// manager.update_desired("pump-01",
+    ///     FlowState::desired().flow_rate(42.0).build()
+    /// ).await?;
+    /// ```
+    pub async fn update_desired(
+        &self,
+        id: &str,
+        desired: impl Into<T::Delta>,
+    ) -> MultiShadowResult<()> {
         if !self.shadow_ids.read().await.contains(id) {
             return Err(MultiShadowError::ShadowNotManaged(id.to_string()));
         }
 
-        let prefix = Self::shadow_name(id);
-        let mut state: T =
-            self.store.get_state(&prefix).await.map_err(|e| {
-                MultiShadowError::StorageError(format!("Failed to get state: {:?}", e))
+        let desired: T::Delta = desired.into();
+
+        let shadow_name = Self::shadow_name(id);
+        let client_token = uuid::Uuid::new_v4().to_string();
+
+        let request: Request<'_, T::Delta, T::Reported> = Request {
+            state: RequestState {
+                desired: Some(desired),
+                reported: None,
+            },
+            client_token: Some(&client_token),
+            version: None,
+        };
+
+        let response = self
+            .publish_and_wait_response(&shadow_name, &request, Some(&client_token))
+            .await?;
+
+        if let Some(ref delta) = response.delta {
+            let prefix = Self::shadow_name(id);
+            self.store.apply_delta(&prefix, delta).await.map_err(|e| {
+                MultiShadowError::StorageError(format!("Failed to apply delta: {:?}", e))
             })?;
-
-        let mut reported = T::Reported::default();
-        f(&mut state, &mut reported);
-
-        self.desired(id, state.clone(), reported).await?;
-
-        self.store
-            .set_state(&prefix, &state)
-            .await
-            .map_err(|e| MultiShadowError::StorageError(format!("Failed to set state: {:?}", e)))?;
+        }
 
         Ok(())
     }
@@ -559,34 +589,11 @@ where
             .await
     }
 
-    /// Update both desired and reported state.
-    async fn desired(
-        &self,
-        id: &str,
-        desired: T,
-        reported: T::Reported,
-    ) -> MultiShadowResult<DeltaState<T::Delta, T::Delta>> {
-        let shadow_name = Self::shadow_name(id);
-        let client_token = uuid::Uuid::new_v4().to_string();
-
-        let request: Request<'_, T, T::Reported> = Request {
-            state: RequestState {
-                desired: Some(desired),
-                reported: Some(reported),
-            },
-            client_token: Some(&client_token),
-            version: None,
-        };
-
-        self.publish_and_wait_response(&shadow_name, &request, Some(&client_token))
-            .await
-    }
-
     /// Subscribe to update accepted/rejected, publish a request, and wait for response.
-    async fn publish_and_wait_response(
+    async fn publish_and_wait_response<D: Serialize + Sync, R: Serialize + Sync>(
         &self,
         shadow_name: &str,
-        request: &Request<'_, T, T::Reported>,
+        request: &Request<'_, D, R>,
         client_token: Option<&str>,
     ) -> MultiShadowResult<DeltaState<T::Delta, T::Delta>> {
         let accepted_topic = Topic::UpdateAccepted
