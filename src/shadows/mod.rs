@@ -11,6 +11,10 @@ pub mod migration;
 pub mod shadow;
 pub mod store;
 
+// Multi-shadow manager (std only, runtime-named shadows)
+#[cfg(feature = "shadows_multi")]
+pub mod multi;
+
 pub use rustot_derive;
 
 // Re-export StateStore trait and implementations
@@ -22,7 +26,7 @@ pub use store::StateStore;
 pub use store::FileKVStore;
 #[cfg(feature = "shadows_kv_persist")]
 pub use store::KVStore;
-#[cfg(feature = "shadows_kv_persist")]
+#[cfg(feature = "sequential_storage")]
 pub use store::SequentialKVStore;
 
 // Re-export Shadow

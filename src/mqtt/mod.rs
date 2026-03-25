@@ -15,6 +15,7 @@
 use core::fmt::Debug;
 use core::future::Future;
 
+#[cfg(feature = "mqttrust")]
 mod mqttrust;
 
 #[cfg(feature = "rumqttc")]
@@ -26,6 +27,7 @@ mod greengrass;
 #[cfg(test)]
 pub mod mock;
 
+#[cfg(feature = "mqttrust")]
 pub use self::mqttrust::*;
 
 #[cfg(feature = "rumqttc")]

@@ -38,7 +38,7 @@ sequential-storage = { version = "7.0", features = ["heapless-09"], optional = t
 serde-json-core = { version = "0.6" }
 rustot-derive = { path = "rustot_derive", version = "0.2.1" }
 embedded-storage-async = "0.4"
-mqttrust = { git = "https://github.com/FactbirdHQ/mqttrust", rev = "cc55012" }
+mqttrust = { git = "https://github.com/FactbirdHQ/mqttrust", rev = "cc55012", optional = true }
 
 embassy-time = { version = "0.5.0" }
 embassy-sync = "0.7.2"
@@ -58,6 +58,11 @@ rumqttc = { version = "0.24", optional = true }
 greengrass-ipc-rust = { git = "https://github.com/FactbirdHQ/greengrass-ipc-rust", rev = "0f0469e", optional = true }
 bytes = { version = "1", optional = true }
 futures = { version = "0.3", optional = true }
+
+# Multi-shadow manager dependencies (optional, feature-gated)
+aws-config = { version = "1.1.7", features = ["behavior-version-latest"], optional = true }
+aws-sdk-iotdataplane = { version = "1.72.0", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
 native-tls = { version = "0.2" }
@@ -96,7 +101,7 @@ serial_test = "3"
 
 
 [features]
-default = ["ota_mqtt_data", "metric_cbor", "provision_cbor", "shadows_kv_persist"]
+default = ["ota_mqtt_data", "metric_cbor", "provision_cbor", "shadows_kv_persist", "mqttrust"]
 
 metric_cbor = ["dep:minicbor", "dep:minicbor-serde"]
 
@@ -108,9 +113,11 @@ ota_http_data = []
 
 std = ["serde/std", "minicbor-serde?/std", "dep:tokio", "dep:serde_json", "dep:base64", "postcard/alloc", "rustot-derive/std", "embassy-time/std", "embassy-time/generic-queue-8"]
 
-# Field-level KV shadow persistence (SequentialKVStore, FileKVStore)
-# Enables KVStore trait, KVPersist trait, and KV-based StateStore implementations
-shadows_kv_persist = ["dep:sequential-storage", "rustot-derive/kv_persist", "postcard/heapless"]
+# Field-level KV shadow persistence traits (KVStore, KVPersist, FileKVStore with std)
+shadows_kv_persist = ["rustot-derive/kv_persist", "postcard/heapless"]
+
+# Flash-based KV store using sequential-storage (requires shadows_kv_persist)
+sequential_storage = ["shadows_kv_persist", "dep:sequential-storage"]
 
 # Generates bon-based builder methods (desired(), reported()) on shadow structs.
 # Downstream crates must also add `bon` as a direct dependency.
@@ -119,7 +126,12 @@ shadows_builders = ["rustot-derive/builders"]
 defmt = ["dep:defmt", "sequential-storage?/defmt"]
 log = ["dep:log"]
 
-# MQTT client implementations (std/tokio)
+# Multi-shadow manager (runtime-named shadows with wildcard subscriptions)
+# Requires std for tokio, AWS SDK, etc.
+shadows_multi = ["std", "dep:aws-config", "dep:aws-sdk-iotdataplane", "dep:uuid", "tokio/time"]
+
+# MQTT client implementations (all optional, feature-gated)
+mqttrust = ["dep:mqttrust"]
 rumqttc = ["std", "dep:rumqttc", "tokio/time"]
 greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes", "dep:futures"]
 

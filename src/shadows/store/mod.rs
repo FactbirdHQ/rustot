@@ -14,7 +14,7 @@
 
 mod in_memory;
 
-#[cfg(feature = "shadows_kv_persist")]
+#[cfg(feature = "sequential_storage")]
 mod sequential;
 
 #[cfg(all(feature = "std", feature = "shadows_kv_persist"))]
@@ -22,7 +22,7 @@ mod file;
 
 pub use in_memory::InMemory;
 
-#[cfg(feature = "shadows_kv_persist")]
+#[cfg(feature = "sequential_storage")]
 pub use sequential::SequentialKVStore;
 
 #[cfg(all(feature = "std", feature = "shadows_kv_persist"))]
