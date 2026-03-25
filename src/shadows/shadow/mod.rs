@@ -175,10 +175,26 @@ where
     /// Users should use the cloud methods instead, which handle both persistence
     /// and cloud acknowledgment in a single operation.
     pub(crate) async fn apply_and_save(&self, delta: &S::Delta) -> Result<S, KvError<K::Error>> {
-        self.store
+        info!(
+            "[{:?}] apply_and_save: persisting delta",
+            S::NAME.unwrap_or("classic")
+        );
+        let result = self
+            .store
             .apply_delta(Self::prefix(), delta)
             .await
-            .map_err(KvError::Kv)
+            .map_err(KvError::Kv);
+        match &result {
+            Ok(_) => info!(
+                "[{:?}] apply_and_save: success",
+                S::NAME.unwrap_or("classic")
+            ),
+            Err(_) => error!(
+                "[{:?}] apply_and_save: failed",
+                S::NAME.unwrap_or("classic")
+            ),
+        }
+        result
     }
 
     /// Commit schema changes and clean up orphaned keys.
