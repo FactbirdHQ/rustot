@@ -6,6 +6,7 @@ pub mod mqtt;
 use serde::Deserialize;
 
 use crate::ota::config::Config;
+use crate::ota::status_details::StatusDetailsExt;
 
 use super::{encoding::OtaJobContext, error::OtaError};
 
