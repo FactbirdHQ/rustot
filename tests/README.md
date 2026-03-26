@@ -1,87 +1,67 @@
-# AWS IoT Rust Examples
+# Integration Tests
 
-This repository contains examples demonstrating how to use the AWS IoT SDK for Rust. These examples are also integrated into our CI pipeline as integration tests.
+These integration tests run against real AWS IoT infrastructure. They require AWS credentials, a provisioned IoT thing, and device certificates.
 
-## Examples
+## Prerequisites
 
-### AWS IoT Fleet Provisioning (`provisioning.rs`)
+All tests require:
 
-This example demonstrates how to use the AWS IoT Fleet Provisioning service to provision a device.
+* A PKCS #12 (.pfx) identity file in `tests/secrets/identity.pfx`
+* A root CA certificate in `tests/secrets/root-ca.pem`
+* Environment variables:
+  * `IDENTITY_PASSWORD` — password for the .pfx file
+  * `AWS_HOSTNAME` — your AWS IoT endpoint (e.g. `xxxxx-ats.iot.eu-west-1.amazonaws.com`)
 
-**Requirements:**
+To create the .pfx file from PEM certificates:
 
-* An AWS account with AWS IoT Core and AWS IoT Fleet Provisioning configured.
-* A device certificate and private key. You can generate these using OpenSSL or your preferred method.
-* A provisioning template configured in your AWS account.
+```bash
+openssl pkcs12 -export -out identity.pfx -inkey private.pem.key -in certificate.pem.crt -certfile root-ca.pem
+```
 
-**To run the example:**
+Fleet provisioning additionally requires `tests/secrets/claim_identity.pfx` with claim credentials.
 
-1. **Create a PKCS #12 (.pfx) identity file:**
-   If you haven't already, create a PKCS #12 (.pfx) file containing your device certificate and private key.  You can use OpenSSL for this:
+## Tests
 
-   ```bash
-   openssl pkcs12 -export -out claim_identity.pfx -inkey private.pem.key -in certificate.pem.crt -certfile root-ca.pem
-   ```
-   Replace `private.pem.key`, `certificate.pem.crt`, and `root-ca.pem` with your actual file names.
+### OTA via MQTT (`ota_mqtt.rs`)
 
-2. **Store the Identity File:**
-    Place the `claim_identity.pfx` file in the `tests/secrets/` directory.
+OTA firmware update using MQTT for both control and data planes. Uses `mqttrust` (no_std/embassy MQTT client). Creates an OTA job with MQTT protocol, downloads the file as CBOR-encoded blocks over MQTT streams, verifies file integrity and signature, then runs the self-test commit flow.
 
-3. **Set Environment Variables:**
-    Set the following environment variables:
-   * `IDENTITY_PASSWORD`: The password you set for the `claim_identity.pfx` file.
-   * `AWS_HOSTNAME`: Your AWS IoT endpoint. You can find this in the AWS IoT console.
+```bash
+cargo test --test ota_mqtt --features "ota_mqtt_data,log,std"
+```
 
-4. **Run the Test:**
+### OTA via HTTP (`ota_http.rs`)
 
-   ```bash
-   cargo test --test provisioning --features "log,std"
-   ```
+OTA firmware update using MQTT for the control plane and HTTP for the data plane. Uses `rumqttc` (std/tokio MQTT client) for job management and `reqwest` for downloading the file via HTTP Range requests against a pre-signed S3 URL. Same verification and self-test flow as the MQTT variant.
 
-### AWS IoT OTA (`ota_mqtt.rs`)
+```bash
+cargo test --test ota_http --features "ota_http_reqwest,mqtt_rumqttc,log,std"
+```
 
-This example demonstrates how to perform an over-the-air (OTA) firmware update using AWS IoT Jobs.
+### Device Defender Metrics (`metric.rs`)
 
-**Requirements:**
+Publishes device defender metrics and verifies an accepted response from AWS IoT.
 
-* An AWS account with AWS IoT Core and AWS IoT Jobs configured.
-* A device certificate and private key.
-* A PKCS #12 (.pfx) file containing the device certificate and private key (see previous example for creation instructions).
-* An OTA update job created in your AWS account.
+```bash
+cargo test --test metric --features "metric_cbor,log,std"
+```
 
-**To run the example:**
+### Fleet Provisioning (`provisioning.rs`)
 
-1. **Create an OTA Job:** Create an OTA update job.  You can find instructions on how to do this in the AWS IoT documentation or refer to the `scripts/create_ota.sh` script for inspiration.
-2. **Store the Identity File:** Ensure the `identity.pfx` file (containing your device certificate and private key) is located in the `tests/secrets/` directory.
-3. **Set Environment Variables:**
-   * `IDENTITY_PASSWORD`: The password for your `identity.pfx` file.
-   * `AWS_HOSTNAME`: Your AWS IoT endpoint.
+Provisions a device using AWS IoT Fleet Provisioning with claim-based workflow and certificate signing.
 
-4. **Run the Test:**
+```bash
+cargo test --test provisioning --features "provision_cbor,log,std"
+```
 
-   ```bash
-   cargo test --test ota_mqtt --features "log,std"
-   ```
+### Device Shadows (`shadows.rs`)
 
-### AWS IoT Shadows (`shadows.rs`)
+Tests device shadow operations — create, update, get, and delete — including named shadows and KV-persist integration.
 
-This example demonstrates how to interact with AWS IoT device shadows. Device shadows allow you to store and retrieve the latest state of your devices even when they are offline.
+```bash
+cargo test --test shadows --features "std,log,shadows_kv_persist,shadows_builders"
+```
 
-**Requirements:**
+## CI
 
-* An AWS account with AWS IoT Core and AWS IoT Device Shadows configured.
-* A device certificate and private key.
-* A PKCS #12 (.pfx) file containing the device certificate and private key (see previous examples for creation instructions).
-
-**To run the example:**
-
-1. **Store the Identity File:** Ensure the `claim_identity.pfx` file (containing your device certificate and private key) is in the `tests/secrets/` directory.
-2. **Set Environment Variables:**
-   * `IDENTITY_PASSWORD`: The password for your `claim_identity.pfx` file.
-   * `AWS_HOSTNAME`: Your AWS IoT endpoint.
-
-3. **Run the Test:**
-
-   ```bash
-   cargo test --test shadows --features "log,std"
-   ```
+All integration tests run in CI after build, unit tests, fmt, and clippy pass. See `.github/workflows/ci.yml` for the full feature set used.

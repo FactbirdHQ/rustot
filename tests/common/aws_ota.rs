@@ -148,11 +148,18 @@ impl OtaTestContext {
     }
 }
 
-/// Set up AWS OTA test resources.
+/// Set up AWS OTA test resources using MQTT protocol.
 ///
 /// Returns `Some(OtaTestContext)` if credentials are available and role
 /// assumption succeeds, or `None` if the test should be skipped.
 pub async fn setup() -> Option<OtaTestContext> {
+    setup_with_protocols(&[aws_sdk_iot::types::Protocol::Mqtt]).await
+}
+
+/// Set up AWS OTA test resources with the given protocol(s).
+pub async fn setup_with_protocols(
+    protocols: &[aws_sdk_iot::types::Protocol],
+) -> Option<OtaTestContext> {
     let region = aws_config::Region::new(REGION);
 
     // Load default MGMT credentials from environment
@@ -286,7 +293,7 @@ pub async fn setup() -> Option<OtaTestContext> {
 
     let signature = base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
-        b"This is my custom signature\n",
+        b"This is my custom signature",
     );
 
     let ota_update_role_arn = format!("arn:aws:iam::{TARGET_ACCOUNT_ID}:role/{OTA_UPDATE_ROLE}");
@@ -339,7 +346,7 @@ pub async fn setup() -> Option<OtaTestContext> {
         .ota_update_id(&update_id)
         .description("RustOT OTA integration test")
         .targets(&thing_arn)
-        .protocols(aws_sdk_iot::types::Protocol::Mqtt)
+        .set_protocols(Some(protocols.to_vec()))
         .target_selection(aws_sdk_iot::types::TargetSelection::Snapshot)
         .role_arn(&ota_update_role_arn)
         .files(ota_file)

@@ -1,16 +1,15 @@
-// #[cfg(feature = "ota_http_data")]
-// pub mod http;
+#[cfg(feature = "ota_http_data")]
+pub mod http;
 #[cfg(feature = "ota_mqtt_data")]
 pub mod mqtt;
-
-use core::ops::DerefMut;
 
 use serde::Deserialize;
 
 use crate::ota::config::Config;
-use crate::ota::status_details::StatusDetailsExt;
 
-use super::{encoding::FileContext, error::OtaError, ProgressState};
+use super::{encoding::FileContext, error::OtaError};
+
+use super::encoding::Bitmap;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -45,28 +44,60 @@ impl FileBlock<'_> {
     }
 }
 
+/// Current download progress, passed to the transfer so it can make
+/// protocol-specific decisions (which blocks to request/fetch).
+pub struct BlockProgress {
+    pub bitmap: Bitmap,
+    pub block_offset: u32,
+}
+
+/// Protocol-specific raw block data that can be decoded into a [`FileBlock`].
+///
+/// For MQTT, decoding performs in-place CBOR deserialization (zero-copy).
+/// For HTTP, decoding is trivial (the metadata was known at fetch time).
+pub trait RawBlock {
+    fn decode(&mut self) -> Result<FileBlock<'_>, OtaError>;
+}
+
 pub trait BlockTransfer {
-    async fn next_block(&mut self) -> Result<Option<impl DerefMut<Target = [u8]>>, OtaError>;
+    type RawBlock<'b>: RawBlock
+    where
+        Self: 'b;
+
+    /// Receive the next block.
+    ///
+    /// Returns `Ok(Some(raw))` with protocol-specific raw block data.
+    /// Returns `Ok(None)` if the transfer session was interrupted and needs
+    /// to be re-established via [`DataInterface::begin_transfer`].
+    ///
+    /// For pull-based protocols (HTTP), this fetches the next needed block.
+    /// For push-based protocols (MQTT), this waits for the next pushed block
+    /// and handles momentum/timeout internally.
+    async fn next_block(&mut self) -> Result<Option<Self::RawBlock<'_>>, OtaError>;
+
+    /// Notify the transfer that a block was successfully written to flash.
+    ///
+    /// Passes the updated progress so the transfer can request more blocks
+    /// when a batch is exhausted (MQTT) or advance its internal cursor (HTTP).
+    async fn on_block_written(&mut self, progress: &BlockProgress) -> Result<(), OtaError>;
 }
 
 pub trait DataInterface {
     const PROTOCOL: Protocol;
 
-    type ActiveTransfer<'t>: BlockTransfer
+    type Transfer<'t>: BlockTransfer
     where
         Self: 't;
 
-    async fn init_file_transfer(
+    /// Establish a transfer session.
+    ///
+    /// For MQTT: subscribes to data stream + notify-next topics and publishes
+    /// the initial block request.
+    /// For HTTP: validates the pre-signed URL and prepares the range fetcher.
+    async fn begin_transfer(
         &self,
         file_ctx: &FileContext,
-    ) -> Result<Self::ActiveTransfer<'_>, OtaError>;
-
-    async fn request_file_blocks<E: StatusDetailsExt>(
-        &self,
-        file_ctx: &FileContext,
-        progress_state: &mut ProgressState<E>,
         config: &Config,
-    ) -> Result<(), OtaError>;
-
-    fn decode_file_block<'a>(&self, payload: &'a mut [u8]) -> Result<FileBlock<'a>, OtaError>;
+        progress: &BlockProgress,
+    ) -> Result<Self::Transfer<'_>, OtaError>;
 }
