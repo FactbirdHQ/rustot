@@ -1,6 +1,4 @@
 //! Platform abstraction trait for OTA updates
-use embedded_storage_async::nor_flash::NorFlash;
-
 use super::encoding::OtaJobContext;
 use super::StatusDetailsExt;
 
@@ -140,9 +138,77 @@ pub enum OtaEvent {
     UpdateComplete,
 }
 
+/// Trait for writing OTA data blocks to storage.
+///
+/// This is the abstraction between the OTA orchestrator and the storage
+/// backend. The orchestrator calls `write(offset, data)` for each received
+/// block.
+///
+/// A blanket implementation is provided for all [`NorFlash`] types, so
+/// embedded users can pass their flash partition directly. `std` users can
+/// implement this for files, IPC streams, or any other target.
+pub trait BlockWriter {
+    type Error: core::fmt::Debug;
+
+    /// Write `data` at the given byte `offset`.
+    ///
+    /// For random-access backends (flash, files): seek to `offset` and write.
+    /// For streaming backends (swupdate IPC): `offset` may be ignored if the
+    /// data interface delivers blocks sequentially (e.g. HTTP Range requests).
+    async fn write(&mut self, offset: u32, data: &[u8]) -> Result<(), Self::Error>;
+}
+
+/// Blanket implementation: any [`NorFlash`] is a [`BlockWriter`].
+impl<T: embedded_storage_async::nor_flash::NorFlash> BlockWriter for T {
+    type Error = T::Error;
+
+    async fn write(&mut self, offset: u32, data: &[u8]) -> Result<(), Self::Error> {
+        embedded_storage_async::nor_flash::NorFlash::write(self, offset, data).await
+    }
+}
+
+/// File-based block writer for `std` targets.
+///
+/// Writes OTA blocks to a file on disk using tokio. Suitable for testing
+/// or Linux-based OTA targets.
+#[cfg(feature = "std")]
+pub struct FileWriter {
+    file: tokio::fs::File,
+}
+
+#[cfg(feature = "std")]
+impl FileWriter {
+    /// Create a new `FileWriter` for the given file path.
+    ///
+    /// Creates or truncates the file.
+    pub async fn create(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        Ok(Self {
+            file: tokio::fs::File::create(path).await?,
+        })
+    }
+
+    /// Create from an already-opened tokio file.
+    pub fn from_file(file: tokio::fs::File) -> Self {
+        Self { file }
+    }
+}
+
+#[cfg(feature = "std")]
+impl BlockWriter for FileWriter {
+    type Error = std::io::Error;
+
+    async fn write(&mut self, offset: u32, data: &[u8]) -> Result<(), Self::Error> {
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+        self.file
+            .seek(std::io::SeekFrom::Start(offset as u64))
+            .await?;
+        self.file.write_all(data).await
+    }
+}
+
 /// Platform abstraction layer for OTA jobs
 pub trait OtaPal {
-    type BlockWriter: NorFlash;
+    type BlockWriter: BlockWriter;
 
     /// Extra status details to include in job status updates.
     ///

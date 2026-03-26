@@ -11,7 +11,6 @@ use core::future::Future;
 #[cfg(feature = "ota_mqtt_data")]
 pub use data_interface::mqtt::{Encoding, Topic};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex, signal::Signal};
-use embedded_storage_async::nor_flash::{NorFlash, NorFlashError as _};
 pub use status_details::{OtaStatusDetails, StatusDetailsExt};
 
 use crate::{jobs::data_types::JobStatus, ota::encoding::json::JobStatusReason};
@@ -88,7 +87,7 @@ impl Updater {
         // Spawn the data handling future
         let data_fut = async {
             // Create/Open the OTA file on the file system
-            let mut block_writer = match pal.create_file_for_rx(job).await {
+            let block_writer = match pal.create_file_for_rx(job).await {
                 Ok(block_writer) => block_writer,
                 Err(e) => {
                     job_updater
@@ -136,7 +135,7 @@ impl Updater {
                                     Ok(block) => {
                                         match Self::ingest_data_block(
                                             &block,
-                                            &mut block_writer,
+                                            block_writer,
                                             config,
                                             &mut progress,
                                         )
@@ -321,7 +320,7 @@ impl Updater {
 
     async fn ingest_data_block<E: StatusDetailsExt>(
         block: &FileBlock<'_>,
-        block_writer: &mut impl NorFlash,
+        block_writer: &mut impl pal::BlockWriter,
         config: &config::Config,
         progress: &mut ProgressState<E>,
     ) -> Result<IngestResult, error::OtaError> {
@@ -350,7 +349,10 @@ impl Updater {
                     block.block_payload,
                 )
                 .await
-                .map_err(|e| error::OtaError::Write(e.kind()))?;
+                .map_err(|e| {
+                    error!("Block write failed: {:?}", e);
+                    error::OtaError::WriteFailed
+                })?;
 
             let block_offset = progress.block_offset;
             progress
