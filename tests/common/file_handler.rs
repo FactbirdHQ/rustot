@@ -1,16 +1,12 @@
 use core::ops::Deref;
-use embedded_storage_async::nor_flash::{ErrorType, NorFlash, ReadNorFlash};
 use rustot::ota::{
     encoding::json,
-    pal::{OtaPal, OtaPalError, PalImageState},
+    pal::{BlockWriter, OtaPal, OtaPalError, PalImageState},
     StatusDetailsExt,
 };
 use serde::ser::SerializeMap;
 use sha2::{Digest, Sha256};
-use std::{
-    convert::Infallible,
-    io::{Cursor, Write},
-};
+use std::io::{Cursor, Write};
 
 /// Custom status details to test StatusDetailsExt integration.
 #[derive(Debug, Clone, Default)]
@@ -31,44 +27,34 @@ pub enum State {
     Boot,
 }
 
-pub struct BlockFile {
-    filebuf: Cursor<Vec<u8>>,
+/// In-memory block writer backed by a `Vec<u8>`.
+pub struct MemWriter {
+    buf: Cursor<Vec<u8>>,
 }
 
-impl NorFlash for BlockFile {
-    const WRITE_SIZE: usize = 1;
-
-    const ERASE_SIZE: usize = 1;
-
-    async fn erase(&mut self, _from: u32, _to: u32) -> Result<(), Self::Error> {
-        Ok(())
+impl MemWriter {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            buf: Cursor::new(Vec::with_capacity(capacity)),
+        }
     }
 
-    async fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
-        self.filebuf.set_position(offset as u64);
-        self.filebuf.write_all(bytes).unwrap();
-        Ok(())
+    pub fn data(&self) -> &[u8] {
+        self.buf.get_ref()
     }
 }
 
-impl ReadNorFlash for BlockFile {
-    const READ_SIZE: usize = 1;
+impl BlockWriter for MemWriter {
+    type Error = std::io::Error;
 
-    async fn read(&mut self, _offset: u32, _bytes: &mut [u8]) -> Result<(), Self::Error> {
-        todo!()
+    async fn write(&mut self, offset: u32, data: &[u8]) -> Result<(), Self::Error> {
+        self.buf.set_position(offset as u64);
+        self.buf.write_all(data)
     }
-
-    fn capacity(&self) -> usize {
-        self.filebuf.get_ref().capacity()
-    }
-}
-
-impl ErrorType for BlockFile {
-    type Error = Infallible;
 }
 
 pub struct FileHandler {
-    filebuf: Option<BlockFile>,
+    writer: Option<MemWriter>,
     compare_file_path: String,
     pub plateform_state: State,
     /// If set, `close_file` will return this error instead of succeeding
@@ -80,7 +66,7 @@ impl FileHandler {
     #[allow(dead_code)]
     pub fn new(compare_file_path: String) -> Self {
         FileHandler {
-            filebuf: None,
+            writer: None,
             compare_file_path,
             plateform_state: State::Boot,
             fail_close_with: None,
@@ -99,7 +85,7 @@ impl FileHandler {
 }
 
 impl OtaPal for FileHandler {
-    type BlockWriter = BlockFile;
+    type BlockWriter = MemWriter;
     type StatusDetails = TestStatusDetails;
 
     fn status_details(&self) -> Self::StatusDetails {
@@ -117,9 +103,7 @@ impl OtaPal for FileHandler {
         &mut self,
         file: &rustot::ota::encoding::OtaJobContext<'_, impl rustot::ota::StatusDetailsExt>,
     ) -> Result<&mut Self::BlockWriter, OtaPalError> {
-        Ok(self.filebuf.get_or_insert(BlockFile {
-            filebuf: Cursor::new(Vec::with_capacity(file.filesize)),
-        }))
+        Ok(self.writer.get_or_insert(MemWriter::new(file.filesize)))
     }
 
     async fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError> {
@@ -154,10 +138,10 @@ impl OtaPal for FileHandler {
             return Err(error);
         }
 
-        if let Some(ref mut buf) = &mut self.filebuf {
+        if let Some(ref writer) = self.writer {
             log::debug!(
                 "Closing completed file. Len: {}/{} -> {}",
-                buf.filebuf.get_ref().len(),
+                writer.data().len(),
                 file.filesize,
                 file.filepath
             );
@@ -172,10 +156,10 @@ impl OtaPal for FileHandler {
                 self.compare_file_path,
                 file.filepath
             );
-            assert_eq!(buf.filebuf.get_ref().len(), file.filesize);
+            assert_eq!(writer.data().len(), file.filesize);
 
             let mut hasher = <Sha256 as Digest>::new();
-            hasher.update(buf.filebuf.get_ref());
+            hasher.update(writer.data());
             assert_eq!(hasher.finalize().deref(), expected_hash.deref());
 
             // Check file signature

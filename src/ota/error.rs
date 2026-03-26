@@ -17,10 +17,7 @@ pub enum OtaError {
     UnexpectedTopic,
     InvalidFile,
     UpdateRejected(ErrorCode),
-    Write(
-        #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
-        embedded_storage_async::nor_flash::NorFlashErrorKind,
-    ),
+    WriteFailed,
     Mqtt,
     #[cfg(feature = "ota_http_data")]
     Http,
