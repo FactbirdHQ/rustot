@@ -8,7 +8,8 @@ use common::file_handler::{FileHandler, State as FileHandlerState};
 use serial_test::serial;
 
 use rustot::{
-    mqtt::{rumqttc::RumqttcClient, Mqtt, MqttClient, MqttMessage, MqttSubscription},
+    jobs::stream::{parse_job_message, JobAgent},
+    mqtt::{rumqttc::RumqttcClient, Mqtt, MqttClient, MqttSubscription},
     ota::{
         self,
         data_interface::http::{HttpInterface, ReqwestClient},
@@ -89,51 +90,18 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
     rumqttc_client.wait_connected().await;
 
     let mqtt = Mqtt(&rumqttc_client);
+    let job_agent = JobAgent::new(&mqtt);
 
-    // Subscribe to job topics
-    let mut jobs_subscription = rumqttc_client
-        .subscribe(&[
-            (
-                &rustot::jobs::JobTopic::NotifyNext
-                    .format::<64>(thing_name)
-                    .map_err(|_| ota::error::OtaError::Overflow)?,
-                rustot::mqtt::QoS::AtMostOnce,
-            ),
-            (
-                &rustot::jobs::JobTopic::DescribeAccepted("$next")
-                    .format::<64>(thing_name)
-                    .map_err(|_| ota::error::OtaError::Overflow)?,
-                rustot::mqtt::QoS::AtMostOnce,
-            ),
-        ])
-        .await
-        .map_err(|_| ota::error::OtaError::Mqtt)?;
+    let mut sub = job_agent.subscribe().await?;
+    let mut message = sub.next_message().await.unwrap();
 
-    Updater::check_for_job(&mqtt).await?;
+    let execution = parse_job_message::<common::OtaJobs>(&mut message)
+        .expect("Failed to parse OTA job document — check logs for details");
 
-    let ota_config = ota::config::Config {
-        block_size: 4096,
-        ..Default::default()
-    };
-
-    let message = jobs_subscription.next_message().await.unwrap();
-
-    // Copy payload to owned buffer, drop message, borrow from buffer
-    let payload = message.payload().to_vec();
-    let topic = message.topic_name().to_string();
-    drop(message);
-
-    let job_ctx = common::handle_ota::<common::file_handler::TestStatusDetails>(
-        &topic,
-        &payload,
+    let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
+        execution,
         Default::default(),
-    )
-    .expect("Failed to parse OTA job document — check logs for details");
-
-    jobs_subscription
-        .unsubscribe()
-        .await
-        .map_err(|_| ota::error::OtaError::Mqtt)?;
+    )?;
 
     log::info!(
         "OTA job received! Protocols: {:?}, update_data_url present: {}",
@@ -142,6 +110,11 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
     );
 
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
+
+    let ota_config = ota::config::Config {
+        block_size: 4096,
+        ..Default::default()
+    };
 
     // HTTP for data interface (file download via Range requests)
     let http_client = ReqwestClient::new(reqwest::Client::new());

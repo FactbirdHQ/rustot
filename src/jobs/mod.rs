@@ -128,6 +128,7 @@ pub enum JobError {
     Overflow,
     Encoding,
     Mqtt,
+    Timeout,
 }
 
 #[derive(Debug, Clone, PartialEq)]

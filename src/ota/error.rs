@@ -48,6 +48,7 @@ impl From<JobError> for OtaError {
             JobError::Overflow => Self::Overflow,
             JobError::Encoding => Self::Encoding,
             JobError::Mqtt => Self::Mqtt,
+            JobError::Timeout => Self::Timeout,
         }
     }
 }
