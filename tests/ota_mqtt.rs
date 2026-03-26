@@ -10,14 +10,14 @@ use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use mqttrust::transport::embedded_nal::NalTransport;
-use mqttrust::{Config, DomainBroker, State, Subscribe, SubscribeTopic};
+use mqttrust::{Config, DomainBroker, State};
 use serial_test::serial;
 use static_cell::StaticCell;
 
 use aws_credential_types::provider::SharedCredentialsProvider;
 use rustot::{
-    jobs,
-    mqtt::Mqtt,
+    jobs::stream::{parse_job_message, JobAgent},
+    mqtt::{Mqtt, OwnedMessage},
     ota::{self, pal::OtaPalError, Updater},
 };
 
@@ -94,55 +94,27 @@ async fn run_ota_happy_path() -> Result<(), ota::error::OtaError> {
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
 
     let ota_fut = async {
-        let mut jobs_subscription = client
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                jobs::JobTopic::NotifyNext
-                                    .format::<64>(thing_name)?
-                                    .as_str(),
-                            )
-                            .build(),
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                jobs::JobTopic::DescribeAccepted("$next")
-                                    .format::<64>(thing_name)?
-                                    .as_str(),
-                            )
-                            .build(),
-                    ])
-                    .build(),
-            )
-            .await
-            .map_err(|_| ota::error::OtaError::Mqtt)?;
-
         let mqtt = Mqtt(&client);
-        Updater::check_for_job(&mqtt).await?;
+        let job_agent = JobAgent::new(&mqtt);
+
+        let mut sub = job_agent.subscribe().await?;
+        let message = sub.next_message().await.unwrap();
+        let mut owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
+        drop(message);
+        sub.unsubscribe().await.unwrap();
+
+        let execution = parse_job_message::<common::OtaJobs>(&mut owned)
+            .expect("Failed to parse OTA job document");
+
+        let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
+            execution,
+            Default::default(),
+        )?;
 
         let ota_config = ota::config::Config {
             block_size: 4096,
             ..Default::default()
         };
-
-        let message = jobs_subscription.next_message().await.unwrap();
-
-        // Copy payload to owned buffer so we can drop the MQTT message
-        // and borrow from the buffer for OtaJobContext
-        let payload = message.payload().to_vec();
-        let topic = message.topic_name().to_string();
-        drop(message);
-
-        let job_ctx = common::handle_ota::<common::file_handler::TestStatusDetails>(
-            &topic,
-            &payload,
-            Default::default(),
-        )
-        .expect("Failed to parse OTA job document");
-
-        // Nested subscriptions are a problem for mqttrust, so unsubscribe here
-        jobs_subscription.unsubscribe().await.unwrap();
 
         // We have an OTA job, leeeets go!
         Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await?;
@@ -329,32 +301,22 @@ async fn run_ota_cancel(
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
 
     let ota_fut = async {
-        let mut jobs_subscription = client
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                jobs::JobTopic::NotifyNext
-                                    .format::<64>(thing_name)?
-                                    .as_str(),
-                            )
-                            .build(),
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                jobs::JobTopic::DescribeAccepted("$next")
-                                    .format::<64>(thing_name)?
-                                    .as_str(),
-                            )
-                            .build(),
-                    ])
-                    .build(),
-            )
-            .await
-            .map_err(|_| ota::error::OtaError::Mqtt)?;
-
         let mqtt = Mqtt(&client);
-        Updater::check_for_job(&mqtt).await?;
+        let job_agent = JobAgent::new(&mqtt);
+
+        let mut sub = job_agent.subscribe().await?;
+        let message = sub.next_message().await.unwrap();
+        let mut owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
+        drop(message);
+        sub.unsubscribe().await.unwrap();
+
+        let execution = parse_job_message::<common::OtaJobs>(&mut owned)
+            .expect("Failed to parse OTA job document");
+
+        let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
+            execution,
+            Default::default(),
+        )?;
 
         // Use small block_size + max_blocks_per_request=1 to slow down the
         // download, giving us a comfortable window to cancel the job
@@ -367,63 +329,48 @@ async fn run_ota_cancel(
             ..Default::default()
         };
 
-        let message = jobs_subscription.next_message().await.unwrap();
-        let payload = message.payload().to_vec();
-        let topic = message.topic_name().to_string();
-        drop(message);
+        // Run OTA and cancel concurrently
+        let ota_future =
+            Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config);
 
-        if let Some(job_ctx) = common::handle_ota::<common::file_handler::TestStatusDetails>(
-            &topic,
-            &payload,
-            Default::default(),
-        ) {
-            jobs_subscription.unsubscribe().await.unwrap();
+        let cancel_future = async {
+            // Wait for download to start, then force-cancel
+            embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
+            log::info!("Force-cancelling job {} from cloud...", job_id);
+            common::aws_ota::force_cancel_job(&job_id, &iot_creds, &region)
+                .await
+                .expect("Failed to force-cancel job");
+        };
 
-            // Run OTA and cancel concurrently
-            let ota_future =
-                Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config);
+        // Wrap in a timeout — if perform_ota doesn't detect cancel, it
+        // will complete the download normally (proving the device doesn't
+        // handle cancellation)
+        let result = embassy_time::with_timeout(
+            embassy_time::Duration::from_secs(60),
+            embassy_futures::join::join(ota_future, cancel_future),
+        )
+        .await;
 
-            let cancel_future = async {
-                // Wait for download to start, then force-cancel
-                embassy_time::Timer::after(embassy_time::Duration::from_secs(3)).await;
-                log::info!("Force-cancelling job {} from cloud...", job_id);
-                common::aws_ota::force_cancel_job(&job_id, &iot_creds, &region)
-                    .await
-                    .expect("Failed to force-cancel job");
-            };
-
-            // Wrap in a timeout — if perform_ota doesn't detect cancel, it
-            // will complete the download normally (proving the device doesn't
-            // handle cancellation)
-            let result = embassy_time::with_timeout(
-                embassy_time::Duration::from_secs(60),
-                embassy_futures::join::join(ota_future, cancel_future),
-            )
-            .await;
-
-            match result {
-                Ok((ota_result, ())) => {
-                    // perform_ota returned — it should have detected the cancel
-                    // and returned an error, not completed successfully
-                    assert!(
-                        ota_result.is_err(),
-                        "perform_ota should detect job cancellation and return an error, \
-                         but it completed successfully — the device did not handle the cancel"
-                    );
-                    log::info!(
-                        "perform_ota detected cancellation as expected: {:?}",
-                        ota_result.err()
-                    );
-                }
-                Err(_timeout) => {
-                    panic!(
-                        "perform_ota timed out at 60s — device neither completed \
-                         nor detected the cancellation"
-                    );
-                }
+        match result {
+            Ok((ota_result, ())) => {
+                // perform_ota returned — it should have detected the cancel
+                // and returned an error, not completed successfully
+                assert!(
+                    ota_result.is_err(),
+                    "perform_ota should detect job cancellation and return an error, \
+                     but it completed successfully — the device did not handle the cancel"
+                );
+                log::info!(
+                    "perform_ota detected cancellation as expected: {:?}",
+                    ota_result.err()
+                );
             }
-
-            return Ok(());
+            Err(_timeout) => {
+                panic!(
+                    "perform_ota timed out at 60s — device neither completed \
+                     nor detected the cancellation"
+                );
+            }
         }
 
         Ok::<_, ota::error::OtaError>(())
@@ -434,6 +381,124 @@ async fn run_ota_cancel(
     match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(120),
         select::select(stack.run(&mut transport), ota_fut),
+    )
+    .await
+    .unwrap()
+    {
+        select::Either::First(_) => {
+            unreachable!()
+        }
+        select::Either::Second(result) => result.unwrap(),
+    };
+
+    Ok(())
+}
+
+/// Test rejecting a job with a reason via JobAgent::reject_job.
+///
+/// Creates an OTA job (reusing the OTA test infrastructure), but instead of
+/// performing the OTA, immediately rejects it with a reason string. Verifies
+/// that the cloud-side job status is REJECTED and the reason appears in
+/// statusDetails.
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn test_mqtt_job_reject() {
+    let _ = env_logger::Builder::from_default_env()
+        .filter_module("serial_test", log::LevelFilter::Warn)
+        .try_init();
+
+    log::info!("Starting job reject test...");
+
+    let ctx = match common::aws_ota::setup().await {
+        Some(ctx) => ctx,
+        None => {
+            log::info!(
+                "Skipping job reject test: no valid AWS credentials or role assumption failed"
+            );
+            return;
+        }
+    };
+
+    let test_result = common::aws_ota::catch_unwind_future(run_job_reject()).await;
+
+    let cloud_status = ctx.describe_job_execution().await;
+
+    ctx.cleanup().await;
+
+    match test_result {
+        Ok(inner) => {
+            inner.unwrap();
+            let (status, details) = cloud_status.expect("Failed to describe job execution");
+            assert_eq!(
+                status,
+                aws_sdk_iot::types::JobExecutionStatus::Rejected,
+                "Expected cloud job status REJECTED, got {:?} with details: {:?}",
+                status,
+                details
+            );
+            assert_eq!(
+                details.get("reason").map(|s| s.as_str()),
+                Some("unsupported job type"),
+                "Expected reject reason in status details, got: {:?}",
+                details
+            );
+        }
+        Err(panic) => {
+            if let Ok((status, details)) = &cloud_status {
+                log::error!(
+                    "Test panicked! Cloud job status at panic: {:?}, details: {:?}",
+                    status,
+                    details
+                );
+            }
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
+async fn run_job_reject() -> Result<(), ota::error::OtaError> {
+    let (thing_name, identity) = credentials::identity();
+
+    let hostname = credentials::HOSTNAME.unwrap();
+
+    static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
+    let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
+
+    let broker = DomainBroker::<_, 128>::new_with_port(hostname, 8883, network).unwrap();
+    let config = Config::builder()
+        .client_id(thing_name.try_into().unwrap())
+        .keepalive_interval(embassy_time::Duration::from_secs(50))
+        .build();
+
+    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 20 }>> = StaticCell::new();
+    let state = STATE.init(State::new());
+    let (mut stack, client) = mqttrust::new(state, config);
+
+    let reject_fut = async {
+        let mqtt = Mqtt(&client);
+        let job_agent = JobAgent::new(&mqtt);
+
+        let mut sub = job_agent.subscribe().await?;
+        let message = sub.next_message().await.unwrap();
+        let mut owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
+        drop(message);
+        sub.unsubscribe().await.unwrap();
+
+        let execution =
+            parse_job_message::<common::OtaJobs>(&mut owned).expect("Failed to parse job document");
+
+        job_agent
+            .reject_job(execution.job_id, "unsupported job type")
+            .await?;
+
+        Ok::<_, ota::error::OtaError>(())
+    };
+
+    let mut transport = NalTransport::new(network, broker);
+
+    match embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(30),
+        select::select(stack.run(&mut transport), reject_fut),
     )
     .await
     .unwrap()
@@ -472,70 +537,45 @@ async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
         .with_close_failure(OtaPalError::SignatureCheckFailed);
 
     let ota_fut = async {
-        let mut jobs_subscription = client
-            .subscribe::<2>(
-                Subscribe::builder()
-                    .topics(&[
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                jobs::JobTopic::NotifyNext
-                                    .format::<64>(thing_name)?
-                                    .as_str(),
-                            )
-                            .build(),
-                        SubscribeTopic::builder()
-                            .topic_path(
-                                jobs::JobTopic::DescribeAccepted("$next")
-                                    .format::<64>(thing_name)?
-                                    .as_str(),
-                            )
-                            .build(),
-                    ])
-                    .build(),
-            )
-            .await
-            .map_err(|_| ota::error::OtaError::Mqtt)?;
-
         let mqtt = Mqtt(&client);
-        Updater::check_for_job(&mqtt).await?;
+        let job_agent = JobAgent::new(&mqtt);
+
+        let mut sub = job_agent.subscribe().await?;
+        let message = sub.next_message().await.unwrap();
+        let mut owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
+        drop(message);
+        sub.unsubscribe().await.unwrap();
+
+        let execution = parse_job_message::<common::OtaJobs>(&mut owned)
+            .expect("Failed to parse OTA job document");
+
+        let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
+            execution,
+            Default::default(),
+        )?;
 
         let ota_config = ota::config::Config {
             block_size: 4096,
             ..Default::default()
         };
 
-        let message = jobs_subscription.next_message().await.unwrap();
-        let payload = message.payload().to_vec();
-        let topic = message.topic_name().to_string();
-        drop(message);
+        // This should fail with SignatureCheckFailed
+        let result =
+            Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await;
 
-        if let Some(job_ctx) = common::handle_ota::<common::file_handler::TestStatusDetails>(
-            &topic,
-            &payload,
-            Default::default(),
-        ) {
-            jobs_subscription.unsubscribe().await.unwrap();
+        // Verify the OTA failed as expected
+        assert!(
+            result.is_err(),
+            "OTA should have failed with SignatureCheckFailed"
+        );
+        log::info!("OTA failed as expected: {:?}", result.err());
 
-            // This should fail with SignatureCheckFailed
-            let result =
-                Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await;
-
-            // Verify the OTA failed as expected
-            assert!(
-                result.is_err(),
-                "OTA should have failed with SignatureCheckFailed"
-            );
-            log::info!("OTA failed as expected: {:?}", result.err());
-
-            // Platform state should still be Boot (not Swap) since we failed
-            assert_eq!(
-                file_handler.plateform_state,
-                FileHandlerState::Boot,
-                "Platform state should remain Boot after failure"
-            );
-
-            return Ok(());
-        }
+        // Platform state should still be Boot (not Swap) since we failed
+        assert_eq!(
+            file_handler.plateform_state,
+            FileHandlerState::Boot,
+            "Platform state should remain Boot after failure"
+        );
 
         Ok::<_, ota::error::OtaError>(())
     };

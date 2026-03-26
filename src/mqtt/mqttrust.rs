@@ -157,6 +157,79 @@ impl<'a, M: RawMutex> crate::mqtt::MqttClient for mqttrust::MqttClient<'a, M> {
     }
 }
 
+/// Owned copy of an MQTT message, backed by fixed-size `heapless` buffers.
+///
+/// Use this to copy a message out of the mqttrust ring buffer so the
+/// grant is released immediately. Holding a `mqttrust::Message` pins the
+/// pubsub ring buffer and prevents incoming messages from being written —
+/// this type avoids that.
+///
+/// # Type Parameters
+///
+/// * `TOPIC` — max topic length in bytes (default 256)
+/// * `PAYLOAD` — max payload length in bytes (default 2048)
+///
+/// # Example
+///
+/// ```ignore
+/// let message = subscription.next_message().await.unwrap();
+/// let owned = OwnedMessage::from_ref(&message);
+/// drop(message); // release the ring buffer grant
+///
+/// // owned implements MqttMessage — use it anywhere a message is expected
+/// let execution = parse_job_message::<MyJobs>(&mut owned);
+/// ```
+pub struct OwnedMessage<const TOPIC: usize = 256, const PAYLOAD: usize = 2048> {
+    topic: heapless::String<TOPIC>,
+    payload: heapless::Vec<u8, PAYLOAD>,
+    qos: QoS,
+    dup: bool,
+    retain: bool,
+}
+
+impl<const TOPIC: usize, const PAYLOAD: usize> OwnedMessage<TOPIC, PAYLOAD> {
+    /// Copy a mqttrust message into owned buffers, releasing the ring buffer grant.
+    ///
+    /// Returns `None` if the topic or payload exceeds the buffer capacity.
+    pub fn from_ref<M: RawMutex, B: BufferProvider>(
+        msg: &mqttrust::Message<'_, M, B>,
+    ) -> Option<Self> {
+        Some(Self {
+            topic: heapless::String::try_from(msg.topic_name()).ok()?,
+            payload: heapless::Vec::from_slice(msg.payload()).ok()?,
+            qos: from_mqttrust_qos(msg.qos_pid().qos()),
+            dup: msg.dup(),
+            retain: msg.retain(),
+        })
+    }
+}
+
+impl<const TOPIC: usize, const PAYLOAD: usize> MqttMessage for OwnedMessage<TOPIC, PAYLOAD> {
+    fn topic_name(&self) -> &str {
+        &self.topic
+    }
+
+    fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    fn payload_mut(&mut self) -> &mut [u8] {
+        &mut self.payload
+    }
+
+    fn qos(&self) -> QoS {
+        self.qos
+    }
+
+    fn dup(&self) -> bool {
+        self.dup
+    }
+
+    fn retain(&self) -> bool {
+        self.retain
+    }
+}
+
 /// Re-export mqttrust types for convenience.
 pub use mqttrust::{
     Broker, Config, DomainBroker, Error as EmbeddedMqttError, IpBroker, Message,

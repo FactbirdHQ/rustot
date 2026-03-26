@@ -1,10 +1,10 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::mqtt::{Mqtt, MqttClient, MqttMessage, QoS};
+use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
 
 use super::{
-    data_types::{DescribeJobExecutionResponse, JobExecution, NextJobExecutionChanged},
-    JobError, JobTopic, Jobs, Topic,
+    data_types::{DescribeJobExecutionResponse, JobExecution, JobStatus, NextJobExecutionChanged},
+    JobError, JobTopic, Jobs, Topic, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN,
 };
 
 /// Helper for the AWS IoT Jobs subscribe/describe lifecycle.
@@ -83,6 +83,75 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
 
         Ok(sub)
     }
+
+    /// Reject a job with a reason string.
+    ///
+    /// Publishes a `REJECTED` status update for the given job and waits for
+    /// the cloud to acknowledge. The reason is placed in `statusDetails` as
+    /// `{"reason": "<value>"}`.
+    ///
+    /// This is job-agnostic — it works for any AWS IoT Jobs execution, not
+    /// only OTA jobs.
+    pub async fn reject_job(&self, job_id: &str, reason: &str) -> Result<(), JobError> {
+        let client_id = self.mqtt.0.client_id();
+
+        // Subscribe to accepted/rejected before publishing so we can confirm
+        // the cloud processed the update.
+        let accepted_topic = JobTopic::UpdateAccepted(job_id)
+            .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(client_id)?;
+        let rejected_topic = JobTopic::UpdateRejected(job_id)
+            .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(client_id)?;
+
+        let mut sub = self
+            .mqtt
+            .0
+            .subscribe(&[
+                (accepted_topic.as_str(), QoS::AtMostOnce),
+                (rejected_topic.as_str(), QoS::AtMostOnce),
+            ])
+            .await
+            .map_err(|_| JobError::Mqtt)?;
+
+        // Publish the rejection with QoS 1
+        let topic = JobTopic::Update(job_id)
+            .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(client_id)?;
+
+        let details = RejectDetails { reason };
+        let payload = Jobs::update(JobStatus::Rejected)
+            .client_token(client_id)
+            .status_details(&details);
+
+        self.mqtt
+            .0
+            .publish_with_options(&topic, payload, PublishOptions::new().qos(QoS::AtLeastOnce))
+            .await
+            .map_err(|_| JobError::Mqtt)?;
+
+        // Wait for the cloud to accept or reject the update
+        loop {
+            let message = match embassy_time::with_timeout(
+                embassy_time::Duration::from_secs(5),
+                sub.next_message(),
+            )
+            .await
+            {
+                Ok(Some(msg)) => msg,
+                Ok(None) => return Err(JobError::Mqtt),
+                Err(_) => return Err(JobError::Timeout),
+            };
+
+            match Topic::from_str(message.topic_name()) {
+                Some(Topic::UpdateAccepted(_)) => return Ok(()),
+                Some(Topic::UpdateRejected(_)) => return Err(JobError::Mqtt),
+                _ => continue,
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct RejectDetails<'a> {
+    reason: &'a str,
 }
 
 /// Parse a job execution from an MQTT message (from `notify-next` or
