@@ -19,7 +19,7 @@ use crate::{jobs::data_types::JobStatus, ota::encoding::json::JobStatusReason};
 use self::{
     control_interface::ControlInterface,
     data_interface::{BlockProgress, BlockTransfer, DataInterface, FileBlock, RawBlock},
-    encoding::{Bitmap, FileContext},
+    encoding::{Bitmap, OtaJobContext},
     pal::{ImageState, ImageStateReason},
 };
 
@@ -28,6 +28,12 @@ pub struct JobEventData<'a> {
     pub job_name: &'a str,
     pub ota_document: encoding::json::OtaJob<'a>,
     pub status_details: Option<crate::jobs::StatusDetails<'a>>,
+}
+
+enum IngestResult {
+    Complete,
+    Ingested,
+    Duplicate,
 }
 
 pub struct Updater;
@@ -42,37 +48,32 @@ impl Updater {
     pub async fn perform_ota<C: ControlInterface, D: DataInterface, P: pal::OtaPal>(
         control: &C,
         data: &D,
-        file_ctx: FileContext,
+        job: &OtaJobContext<'_, P::StatusDetails>,
         pal: &mut P,
         config: &config::Config,
     ) -> Result<(), error::OtaError> {
         info!(
             "[OTA] Starting perform_ota for job={} stream={} size={}",
-            file_ctx.job_name,
-            file_ctx.stream_name.as_deref().unwrap_or("N/A"),
-            file_ctx.filesize
+            job.job_name,
+            job.stream_name.unwrap_or("N/A"),
+            job.filesize
         );
-        // Initialize status details, preserving self_test state if present
-        let mut initial_status = OtaStatusDetails::new();
-        if let Some(self_test) = file_ctx
-            .status_details
-            .get(&heapless::String::try_from("self_test").unwrap())
-        {
-            initial_status.set_self_test(self_test.as_str());
-        }
+
+        let block_offset = 0;
+        let bitmap = Bitmap::new(job.filesize, config.block_size, block_offset);
 
         let progress_state = Mutex::new(ProgressState {
-            total_blocks: file_ctx.filesize.div_ceil(config.block_size),
-            blocks_remaining: file_ctx.filesize.div_ceil(config.block_size),
-            block_offset: file_ctx.block_offset,
-            bitmap: file_ctx.bitmap.clone(),
-            file_size: file_ctx.filesize,
-            status_details: initial_status,
+            total_blocks: job.filesize.div_ceil(config.block_size),
+            blocks_remaining: job.filesize.div_ceil(config.block_size),
+            block_offset,
+            bitmap,
+            file_size: job.filesize,
+            status_details: job.status.clone(),
             extra_status: pal.status_details(),
         });
 
         // Create the JobUpdater
-        let mut job_updater = JobUpdater::new(&file_ctx, &progress_state, config, control);
+        let mut job_updater = JobUpdater::new(job, &progress_state, config, control);
 
         match job_updater.initialize::<D, _>(pal).await? {
             Some(()) => {}
@@ -87,7 +88,7 @@ impl Updater {
         // Spawn the data handling future
         let data_fut = async {
             // Create/Open the OTA file on the file system
-            let mut block_writer = match pal.create_file_for_rx(&file_ctx).await {
+            let mut block_writer = match pal.create_file_for_rx(job).await {
                 Ok(block_writer) => block_writer,
                 Err(e) => {
                     job_updater
@@ -97,7 +98,7 @@ impl Updater {
                         )
                         .await?;
 
-                    pal.close_file(&file_ctx).await?;
+                    pal.close_file(job).await?;
                     return Err(e.into());
                 }
             };
@@ -114,9 +115,7 @@ impl Updater {
                     }
                 };
 
-                let mut transfer = data
-                    .begin_transfer(&file_ctx, config, &block_progress)
-                    .await?;
+                let mut transfer = data.begin_transfer(job, config, &block_progress).await?;
 
                 info!("Awaiting file blocks!");
 
@@ -143,14 +142,14 @@ impl Updater {
                                         )
                                         .await
                                         {
-                                            Ok(true) => {
+                                            Ok(IngestResult::Complete) => {
                                                 // All blocks received — close file
                                                 drop(progress);
-                                                match pal.close_file(&file_ctx).await {
+                                                match pal.close_file(job).await {
                                                     Err(e) => {
                                                         return Err(e.into());
                                                     }
-                                                    Ok(_) if file_ctx.file_type == Some(0) => {
+                                                    Ok(_) if job.file_type == Some(0) => {
                                                         job_updater.signal_update(
                                                             JobStatus::InProgress,
                                                             JobStatusReason::SigCheckPassed,
@@ -166,7 +165,7 @@ impl Updater {
                                                     }
                                                 }
                                             }
-                                            Ok(false) => {
+                                            Ok(IngestResult::Ingested) => {
                                                 // Block ingested — signal status if milestone
                                                 if progress.blocks_remaining
                                                     % config.status_update_frequency as usize
@@ -181,6 +180,11 @@ impl Updater {
                                                     bitmap: progress.bitmap.clone(),
                                                     block_offset: progress.block_offset,
                                                 })
+                                            }
+                                            Ok(IngestResult::Duplicate) => {
+                                                // Don't notify transfer — bitmap unchanged,
+                                                // batch counter should not decrement
+                                                None
                                             }
                                             Err(e) if e.is_retryable() => {
                                                 error!(
@@ -248,7 +252,7 @@ impl Updater {
         // Cleanup and update the job status accordingly
         match data_res {
             Ok(()) => {
-                let event = if let Some(0) = file_ctx.file_type {
+                let event = if let Some(0) = job.file_type {
                     pal::OtaEvent::Activate
                 } else {
                     pal::OtaEvent::UpdateComplete
@@ -257,7 +261,7 @@ impl Updater {
                 // The status_update_fut was dropped when data_fut completed,
                 // so the signalled update was never sent. Send the final status
                 // directly and wait for the cloud to accept it before rebooting.
-                let (status, reason) = if let Some(0) = file_ctx.file_type {
+                let (status, reason) = if let Some(0) = job.file_type {
                     (JobStatus::InProgress, JobStatusReason::SigCheckPassed)
                 } else {
                     (JobStatus::Succeeded, JobStatusReason::Accepted)
@@ -320,7 +324,7 @@ impl Updater {
         block_writer: &mut impl NorFlash,
         config: &config::Config,
         progress: &mut ProgressState<E>,
-    ) -> Result<bool, error::OtaError> {
+    ) -> Result<IngestResult, error::OtaError> {
         if block.validate(config.block_size, progress.file_size) {
             if block.block_id < progress.block_offset as usize
                 || !progress
@@ -332,8 +336,7 @@ impl Updater {
                     block.block_id, progress.blocks_remaining
                 );
 
-                // Just return same progress as before
-                return Ok(false);
+                return Ok(IngestResult::Duplicate);
             }
 
             info!(
@@ -358,9 +361,7 @@ impl Updater {
 
             if progress.blocks_remaining == 0 {
                 info!("Received final expected block of file.");
-
-                // Return true to indicate end of file.
-                Ok(true)
+                Ok(IngestResult::Complete)
             } else {
                 if progress.bitmap.is_empty() {
                     progress.block_offset += 31;
@@ -371,7 +372,7 @@ impl Updater {
                     );
                 }
 
-                Ok(false)
+                Ok(IngestResult::Ingested)
             }
         } else {
             error!(
@@ -399,7 +400,7 @@ pub struct ProgressState<E: StatusDetailsExt = ()> {
 }
 
 pub struct JobUpdater<'a, C: ControlInterface, E: StatusDetailsExt = ()> {
-    pub file_ctx: &'a FileContext,
+    pub job: &'a OtaJobContext<'a, E>,
     pub progress_state: &'a Mutex<NoopRawMutex, ProgressState<E>>,
     pub config: &'a config::Config,
     pub control: &'a C,
@@ -408,13 +409,13 @@ pub struct JobUpdater<'a, C: ControlInterface, E: StatusDetailsExt = ()> {
 
 impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
     pub fn new(
-        file_ctx: &'a FileContext,
+        job: &'a OtaJobContext<'a, E>,
         progress_state: &'a Mutex<NoopRawMutex, ProgressState<E>>,
         config: &'a config::Config,
         control: &'a C,
     ) -> Self {
         Self {
-            file_ctx,
+            job,
             progress_state,
             config,
             control,
@@ -441,7 +442,7 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
             .await
             .is_ok_and(|i| i == pal::PalImageState::PendingCommit);
 
-        match (self.file_ctx.self_test(), platform_self_test) {
+        match (self.job.self_test(), platform_self_test) {
             (true, true) => {
                 // Run self-test!
                 self.set_image_state_with_reason(
@@ -464,7 +465,7 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
                 let mut progress = self.progress_state.lock().await;
                 self.control
                     .update_job_status(
-                        self.file_ctx,
+                        self.job,
                         &mut progress,
                         JobStatus::Succeeded,
                         JobStatusReason::Accepted,
@@ -498,8 +499,8 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
             }
         }
 
-        if !self.file_ctx.protocols.contains(&D::PROTOCOL) {
-            error!("Unable to handle current OTA job with given data interface ({:?}). Supported protocols: {:?}. Aborting current update.", D::PROTOCOL, self.file_ctx.protocols);
+        if !self.job.protocols.contains(&D::PROTOCOL) {
+            error!("Unable to handle current OTA job with given data interface ({:?}). Supported protocols: {:?}. Aborting current update.", D::PROTOCOL, self.job.protocols);
             self.set_image_state_with_reason(
                 pal,
                 ImageState::Aborted(ImageStateReason::InvalidDataProtocol),
@@ -519,7 +520,7 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
             // Update the job status based on the signal
             let mut progress = self.progress_state.lock().await;
             self.control
-                .update_job_status(self.file_ctx, &mut progress, status, reason)
+                .update_job_status(self.job, &mut progress, status, reason)
                 .await?;
 
             match status {
@@ -549,7 +550,7 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
             ImageState::Testing(_) => {
                 self.control
                     .update_job_status(
-                        self.file_ctx,
+                        self.job,
                         &mut progress,
                         JobStatus::InProgress,
                         JobStatusReason::SelfTestActive,
@@ -559,7 +560,7 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
             ImageState::Accepted => {
                 self.control
                     .update_job_status(
-                        self.file_ctx,
+                        self.job,
                         &mut progress,
                         JobStatus::Succeeded,
                         JobStatusReason::Accepted,
@@ -569,7 +570,7 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
             ImageState::Rejected(reason) => {
                 self.control
                     .update_job_status(
-                        self.file_ctx,
+                        self.job,
                         &mut progress,
                         JobStatus::Failed,
                         JobStatusReason::Rejected(Some(reason)),
@@ -579,7 +580,7 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
             ImageState::Aborted(reason) => {
                 self.control
                     .update_job_status(
-                        self.file_ctx,
+                        self.job,
                         &mut progress,
                         JobStatus::Failed,
                         JobStatusReason::Aborted(Some(reason)),
@@ -589,7 +590,7 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
             ImageState::Unknown => {
                 self.control
                     .update_job_status(
-                        self.file_ctx,
+                        self.job,
                         &mut progress,
                         JobStatus::Failed,
                         JobStatusReason::Aborted(None),
@@ -614,7 +615,7 @@ impl<'a, C: ControlInterface, E: StatusDetailsExt> JobUpdater<'a, C, E> {
         let mut progress = self.progress_state.lock().await;
 
         self.control
-            .update_job_status(self.file_ctx, &mut progress, status, reason)
+            .update_job_status(self.job, &mut progress, status, reason)
             .await?;
         Ok(())
     }

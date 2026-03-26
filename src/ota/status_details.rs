@@ -32,9 +32,21 @@ use super::pal::ImageStateReason;
 ///     }
 /// }
 /// ```
-pub trait StatusDetailsExt {
+pub trait StatusDetailsExt: Default {
     /// Serialize this type's fields into an existing map.
     fn serialize_into_map<S: SerializeMap>(&self, map: &mut S) -> Result<(), S::Error>;
+
+    /// Accept a key-value pair from incoming job status details.
+    ///
+    /// Called during `OtaJobContext` construction when converting the raw
+    /// `StatusDetails` map into typed fields. Known OTA base keys (`self_test`,
+    /// `progress`, etc.) are handled by the library; unknown keys are offered
+    /// to this method.
+    ///
+    /// Returns `true` if the key was recognized and consumed.
+    fn accept_entry(&mut self, _key: &str, _value: &str) -> bool {
+        false
+    }
 }
 
 /// Default implementation for `()` - no extra fields.
@@ -185,6 +197,7 @@ mod tests {
         );
     }
 
+    #[derive(Default)]
     struct TestContext {
         device_temp: u8,
     }

@@ -4,18 +4,21 @@ pub mod credentials;
 pub mod file_handler;
 pub mod network;
 
+use rustot::ota::StatusDetailsExt;
+
 #[allow(dead_code)]
-pub fn handle_ota(
-    message: impl rustot::mqtt::MqttMessage,
-    config: &rustot::ota::config::Config,
-) -> Option<rustot::ota::encoding::FileContext> {
+pub fn handle_ota<'a, E: StatusDetailsExt>(
+    topic: &str,
+    payload: &'a [u8],
+    extra_status: E,
+) -> Option<rustot::ota::encoding::OtaJobContext<'a, E>> {
     use rustot::{
         jobs::{
             self,
             data_types::{DescribeJobExecutionResponse, NextJobExecutionChanged},
         },
         ota::{
-            encoding::{json::OtaJob, FileContext},
+            encoding::{json::OtaJob, OtaJobContext},
             JobEventData,
         },
     };
@@ -36,20 +39,19 @@ pub fn handle_ota(
         }
     }
 
-    let topic = jobs::Topic::from_str(message.topic_name());
+    let parsed_topic = jobs::Topic::from_str(topic);
     log::debug!(
         "handle_ota: topic={:?} payload_len={}",
-        message.topic_name(),
-        message.payload().len()
+        topic,
+        payload.len()
     );
 
     // Use serde_json (std) instead of serde_json_core for test deserialization.
     // serde_json_core has a fixed-size scratch buffer that overflows on the
-    // long pre-signed S3 URLs in HTTP OTA job documents (~1000+ chars with
-    // JSON-escaped forward slashes).
-    let job = match topic {
+    // long pre-signed S3 URLs in HTTP OTA job documents.
+    let job = match parsed_topic {
         Some(jobs::Topic::NotifyNext) => {
-            match serde_json::from_slice::<NextJobExecutionChanged<Jobs>>(message.payload()) {
+            match serde_json::from_slice::<NextJobExecutionChanged<Jobs>>(payload) {
                 Ok(execution_changed) => execution_changed.execution?,
                 Err(e) => {
                     log::error!("handle_ota: failed to deserialize NotifyNext: {:?}", e);
@@ -58,7 +60,7 @@ pub fn handle_ota(
             }
         }
         Some(jobs::Topic::DescribeAccepted(_)) => {
-            match serde_json::from_slice::<DescribeJobExecutionResponse<Jobs>>(message.payload()) {
+            match serde_json::from_slice::<DescribeJobExecutionResponse<Jobs>>(payload) {
                 Ok(execution_changed) => {
                     if execution_changed.execution.is_none() {
                         if std::env::var("CI").is_ok() {
@@ -78,7 +80,7 @@ pub fn handle_ota(
             }
         }
         _ => {
-            log::warn!("handle_ota: unexpected topic: {:?}", message.topic_name());
+            log::warn!("handle_ota: unexpected topic: {:?}", topic);
             return None;
         }
     };
@@ -97,18 +99,18 @@ pub fn handle_ota(
         }
     };
 
-    match FileContext::new_from(
+    match OtaJobContext::new_from(
         JobEventData {
             job_name: job.job_id,
             ota_document: ota_job,
             status_details: job.status_details,
         },
         0,
-        config,
+        extra_status,
     ) {
         Ok(ctx) => Some(ctx),
         Err(e) => {
-            log::error!("handle_ota: FileContext::new_from failed: {:?}", e);
+            log::error!("handle_ota: OtaJobContext::new_from failed: {:?}", e);
             None
         }
     }

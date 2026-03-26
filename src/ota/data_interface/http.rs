@@ -117,7 +117,8 @@ mod transfer {
     use crate::ota::{
         config::Config,
         data_interface::{BlockProgress, DataInterface, Protocol},
-        encoding::{Bitmap, FileContext},
+        encoding::{Bitmap, OtaJobContext},
+        status_details::StatusDetailsExt,
     };
 
     use super::super::BlockTransfer;
@@ -134,7 +135,7 @@ mod transfer {
 
     pub struct HttpTransfer<C> {
         client: C,
-        url: heapless::String<2048>,
+        url: alloc::string::String,
         file_id: u8,
         block_size: usize,
         file_size: usize,
@@ -197,29 +198,25 @@ mod transfer {
 
         async fn begin_transfer(
             &self,
-            file_ctx: &FileContext,
+            job: &OtaJobContext<'_, impl StatusDetailsExt>,
             config: &Config,
             progress: &BlockProgress,
         ) -> Result<Self::Transfer<'_>, OtaError> {
-            let url = file_ctx
-                .update_data_url
-                .as_ref()
-                .ok_or(OtaError::InvalidFile)?
-                .clone();
+            let url = job.update_data_url.ok_or(OtaError::InvalidFile)?;
 
             info!(
                 "[OTA-HTTP] Beginning transfer: url_len={} block_size={} file_size={}",
                 url.len(),
                 config.block_size,
-                file_ctx.filesize
+                job.filesize
             );
 
             Ok(HttpTransfer {
                 client: &self.client,
-                url,
-                file_id: file_ctx.fileid,
+                url: alloc::string::String::from(url),
+                file_id: job.fileid,
                 block_size: config.block_size,
-                file_size: file_ctx.filesize,
+                file_size: job.filesize,
                 bitmap: progress.bitmap.clone(),
                 block_offset: progress.block_offset,
                 buf: vec![0u8; config.block_size],

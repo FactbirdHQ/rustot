@@ -6,8 +6,9 @@ pub mod mqtt;
 use serde::Deserialize;
 
 use crate::ota::config::Config;
+use crate::ota::status_details::StatusDetailsExt;
 
-use super::{encoding::FileContext, error::OtaError};
+use super::{encoding::OtaJobContext, error::OtaError};
 
 use super::encoding::Bitmap;
 
@@ -96,7 +97,7 @@ pub trait DataInterface {
     /// For HTTP: validates the pre-signed URL and prepares the range fetcher.
     async fn begin_transfer(
         &self,
-        file_ctx: &FileContext,
+        job: &OtaJobContext<'_, impl StatusDetailsExt>,
         config: &Config,
         progress: &BlockProgress,
     ) -> Result<Self::Transfer<'_>, OtaError>;

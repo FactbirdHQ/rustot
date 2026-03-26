@@ -128,38 +128,40 @@ async fn run_ota_happy_path() -> Result<(), ota::error::OtaError> {
 
         let message = jobs_subscription.next_message().await.unwrap();
 
-        if let Some(mut file_ctx) = common::handle_ota(message, &ota_config) {
-            // Nested subscriptions are a problem for mqttrust, so unsubscribe here
-            jobs_subscription.unsubscribe().await.unwrap();
+        // Copy payload to owned buffer so we can drop the MQTT message
+        // and borrow from the buffer for OtaJobContext
+        let payload = message.payload().to_vec();
+        let topic = message.topic_name().to_string();
+        drop(message);
 
-            // We have an OTA job, leeeets go!
-            Updater::perform_ota(
-                &mqtt,
-                &mqtt,
-                file_ctx.clone(),
-                &mut file_handler,
-                &ota_config,
-            )
-            .await?;
+        let job_ctx = common::handle_ota::<common::file_handler::TestStatusDetails>(
+            &topic,
+            &payload,
+            Default::default(),
+        )
+        .expect("Failed to parse OTA job document");
 
-            assert_eq!(file_handler.plateform_state, FileHandlerState::Swap);
+        // Nested subscriptions are a problem for mqttrust, so unsubscribe here
+        jobs_subscription.unsubscribe().await.unwrap();
 
-            log::info!("Running OTA handler second time to verify state match...");
+        // We have an OTA job, leeeets go!
+        Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await?;
 
-            // Run it twice in this particular integration test, in order to
-            // simulate image commit after bootloader swap
-            file_ctx
-                .status_details
-                .insert(
-                    heapless::String::try_from("self_test").unwrap(),
-                    heapless::String::try_from("active").unwrap(),
-                )
-                .unwrap();
+        assert_eq!(file_handler.plateform_state, FileHandlerState::Swap);
 
-            Updater::perform_ota(&mqtt, &mqtt, file_ctx, &mut file_handler, &ota_config).await?;
+        log::info!("Running OTA handler second time to verify state match...");
 
-            return Ok(());
-        }
+        // Run it twice in this particular integration test, in order to
+        // simulate image commit after bootloader swap.
+        // Construct a new context with self_test set to "active".
+        let mut status = rustot::ota::OtaStatusDetails::new();
+        status.set_self_test("active");
+        let job_ctx2 = rustot::ota::encoding::OtaJobContext {
+            status,
+            ..job_ctx.clone()
+        };
+
+        Updater::perform_ota(&mqtt, &mqtt, &job_ctx2, &mut file_handler, &ota_config).await?;
 
         Ok::<_, ota::error::OtaError>(())
     };
@@ -366,13 +368,20 @@ async fn run_ota_cancel(
         };
 
         let message = jobs_subscription.next_message().await.unwrap();
+        let payload = message.payload().to_vec();
+        let topic = message.topic_name().to_string();
+        drop(message);
 
-        if let Some(file_ctx) = common::handle_ota(message, &ota_config) {
+        if let Some(job_ctx) = common::handle_ota::<common::file_handler::TestStatusDetails>(
+            &topic,
+            &payload,
+            Default::default(),
+        ) {
             jobs_subscription.unsubscribe().await.unwrap();
 
             // Run OTA and cancel concurrently
             let ota_future =
-                Updater::perform_ota(&mqtt, &mqtt, file_ctx, &mut file_handler, &ota_config);
+                Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config);
 
             let cancel_future = async {
                 // Wait for download to start, then force-cancel
@@ -496,13 +505,20 @@ async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
         };
 
         let message = jobs_subscription.next_message().await.unwrap();
+        let payload = message.payload().to_vec();
+        let topic = message.topic_name().to_string();
+        drop(message);
 
-        if let Some(file_ctx) = common::handle_ota(message, &ota_config) {
+        if let Some(job_ctx) = common::handle_ota::<common::file_handler::TestStatusDetails>(
+            &topic,
+            &payload,
+            Default::default(),
+        ) {
             jobs_subscription.unsubscribe().await.unwrap();
 
             // This should fail with SignatureCheckFailed
             let result =
-                Updater::perform_ota(&mqtt, &mqtt, file_ctx, &mut file_handler, &ota_config).await;
+                Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await;
 
             // Verify the OTA failed as expected
             assert!(

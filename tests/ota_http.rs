@@ -8,7 +8,7 @@ use common::file_handler::{FileHandler, State as FileHandlerState};
 use serial_test::serial;
 
 use rustot::{
-    mqtt::{rumqttc::RumqttcClient, Mqtt, MqttClient, MqttSubscription},
+    mqtt::{rumqttc::RumqttcClient, Mqtt, MqttClient, MqttMessage, MqttSubscription},
     ota::{
         self,
         data_interface::http::{HttpInterface, ReqwestClient},
@@ -118,8 +118,17 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
 
     let message = jobs_subscription.next_message().await.unwrap();
 
-    let mut file_ctx = common::handle_ota(message, &ota_config)
-        .expect("Failed to parse OTA job document — check logs for details");
+    // Copy payload to owned buffer, drop message, borrow from buffer
+    let payload = message.payload().to_vec();
+    let topic = message.topic_name().to_string();
+    drop(message);
+
+    let job_ctx = common::handle_ota::<common::file_handler::TestStatusDetails>(
+        &topic,
+        &payload,
+        Default::default(),
+    )
+    .expect("Failed to parse OTA job document — check logs for details");
 
     jobs_subscription
         .unsubscribe()
@@ -128,8 +137,8 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
 
     log::info!(
         "OTA job received! Protocols: {:?}, update_data_url present: {}",
-        file_ctx.protocols,
-        file_ctx.update_data_url.is_some()
+        job_ctx.protocols,
+        job_ctx.update_data_url.is_some()
     );
 
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
@@ -142,7 +151,7 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
     Updater::perform_ota(
         &mqtt,
         &http_interface,
-        file_ctx.clone(),
+        &job_ctx,
         &mut file_handler,
         &ota_config,
     )
@@ -152,19 +161,19 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
 
     log::info!("Running OTA handler second time to verify state match...");
 
-    // Run it twice to simulate image commit after bootloader swap
-    file_ctx
-        .status_details
-        .insert(
-            heapless::String::try_from("self_test").unwrap(),
-            heapless::String::try_from("active").unwrap(),
-        )
-        .unwrap();
+    // Simulate image commit after bootloader swap — construct new context
+    // with self_test set to "active"
+    let mut status = rustot::ota::OtaStatusDetails::new();
+    status.set_self_test("active");
+    let job_ctx2 = rustot::ota::encoding::OtaJobContext {
+        status,
+        ..job_ctx.clone()
+    };
 
     Updater::perform_ota(
         &mqtt,
         &http_interface,
-        file_ctx,
+        &job_ctx2,
         &mut file_handler,
         &ota_config,
     )

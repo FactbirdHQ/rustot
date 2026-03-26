@@ -13,7 +13,7 @@ use std::{
 };
 
 /// Custom status details to test StatusDetailsExt integration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TestStatusDetails {
     pub firmware_version: &'static str,
 }
@@ -108,14 +108,14 @@ impl OtaPal for FileHandler {
 
     async fn abort(
         &mut self,
-        _file: &rustot::ota::encoding::FileContext,
+        _file: &rustot::ota::encoding::OtaJobContext<'_, impl rustot::ota::StatusDetailsExt>,
     ) -> Result<(), OtaPalError> {
         Ok(())
     }
 
     async fn create_file_for_rx(
         &mut self,
-        file: &rustot::ota::encoding::FileContext,
+        file: &rustot::ota::encoding::OtaJobContext<'_, impl rustot::ota::StatusDetailsExt>,
     ) -> Result<&mut Self::BlockWriter, OtaPalError> {
         Ok(self.filebuf.get_or_insert(BlockFile {
             filebuf: Cursor::new(Vec::with_capacity(file.filesize)),
@@ -146,7 +146,7 @@ impl OtaPal for FileHandler {
 
     async fn close_file(
         &mut self,
-        file: &rustot::ota::encoding::FileContext,
+        file: &rustot::ota::encoding::OtaJobContext<'_, impl rustot::ota::StatusDetailsExt>,
     ) -> Result<(), OtaPalError> {
         // Check for configured failure
         if let Some(error) = self.fail_close_with {
@@ -159,7 +159,7 @@ impl OtaPal for FileHandler {
                 "Closing completed file. Len: {}/{} -> {}",
                 buf.filebuf.get_ref().len(),
                 file.filesize,
-                file.filepath.as_str()
+                file.filepath
             );
 
             let expected_data = std::fs::read(self.compare_file_path.as_str()).unwrap();
@@ -170,7 +170,7 @@ impl OtaPal for FileHandler {
             log::info!(
                 "Comparing {:?} with {:?}",
                 self.compare_file_path,
-                file.filepath.as_str()
+                file.filepath
             );
             assert_eq!(buf.filebuf.get_ref().len(), file.filesize);
 
@@ -179,9 +179,9 @@ impl OtaPal for FileHandler {
             assert_eq!(hasher.finalize().deref(), expected_hash.deref());
 
             // Check file signature
-            let signature = match file.signature.as_ref() {
-                Some(json::Signature::Sha256Ecdsa(ref s)) => s.as_str(),
-                sig => panic!("Unexpected signature format! {:?}", sig),
+            let signature = match file.signature {
+                Some(json::Signature::Sha256Ecdsa(s)) => s,
+                ref sig => panic!("Unexpected signature format! {:?}", sig),
             };
 
             assert_eq!(signature, "This is my custom signature");
