@@ -1,7 +1,8 @@
 //! Platform abstraction trait for OTA updates
 use embedded_storage_async::nor_flash::NorFlash;
 
-use super::encoding::FileContext;
+use super::encoding::OtaJobContext;
+use super::StatusDetailsExt;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -162,7 +163,10 @@ pub trait OtaPal {
     /// aborted.
     ///
     /// - `file`: [`FileContext`] File description of the job being aborted
-    async fn abort(&mut self, file: &FileContext) -> Result<(), OtaPalError>;
+    async fn abort(
+        &mut self,
+        file: &OtaJobContext<'_, impl StatusDetailsExt>,
+    ) -> Result<(), OtaPalError>;
 
     /// Activate the newest MCU image received via OTA.
     ///
@@ -187,7 +191,7 @@ pub trait OtaPal {
     /// - `file`: [`FileContext`] File description of the job being aborted
     async fn create_file_for_rx(
         &mut self,
-        file: &FileContext,
+        file: &OtaJobContext<'_, impl StatusDetailsExt>,
     ) -> Result<&mut Self::BlockWriter, OtaPalError>;
 
     /// Get the state of the OTA update image.
@@ -243,7 +247,10 @@ pub trait OtaPal {
     ///
     /// **return** The OTA PAL layer error code combined with the MCU specific
     /// error code.
-    async fn close_file(&mut self, file: &FileContext) -> Result<(), OtaPalError>;
+    async fn close_file(
+        &mut self,
+        file: &OtaJobContext<'_, impl StatusDetailsExt>,
+    ) -> Result<(), OtaPalError>;
 
     /// OTA update complete.
     ///

@@ -5,13 +5,11 @@ pub mod json;
 use core::ops::{Deref, DerefMut};
 use serde::{Serialize, Serializer};
 
-use crate::jobs::StatusDetailsOwned;
-
 use self::json::{JobStatusReason, Signature};
 
-use super::config::Config;
 use super::data_interface::Protocol;
 use super::error::OtaError;
+use super::status_details::{OtaStatusDetails, StatusDetailsExt};
 use super::JobEventData;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,107 +50,81 @@ impl Serialize for Bitmap {
     }
 }
 
-/// A `FileContext` denotes an active context of a single file. An ota job can
-/// contain multiple files, each with their own `FileContext` built from a
-/// corresponding `FileDescription`.
+/// Context for an active OTA job. Borrows all string data from the caller's
+/// payload buffer — zero string copies, no `heapless::String` sizing decisions.
+///
+/// `E` is the user's [`StatusDetailsExt`] type, the same type used by the PAL
+/// for outgoing status serialization. During construction, incoming status
+/// details are routed: known OTA keys → [`OtaStatusDetails`], unknown keys →
+/// `E::accept_entry()`.
 #[derive(Clone)]
-pub struct FileContext {
-    pub filepath: heapless::String<64>,
+pub struct OtaJobContext<'a, E: StatusDetailsExt = ()> {
+    pub job_name: &'a str,
+    pub filepath: &'a str,
     pub filesize: usize,
     pub fileid: u8,
-    pub certfile: Option<heapless::String<64>>,
-    #[cfg(feature = "ota_http_data")]
-    pub update_data_url: Option<heapless::String<2048>>,
-    #[cfg(not(feature = "ota_http_data"))]
-    pub update_data_url: Option<heapless::String<64>>,
-    pub auth_scheme: Option<heapless::String<64>>,
-    pub signature: Option<Signature>,
+    pub certfile: Option<&'a str>,
+    pub update_data_url: Option<&'a str>,
+    pub auth_scheme: Option<&'a str>,
+    pub signature: Option<Signature<'a>>,
     pub file_type: Option<u32>,
     pub protocols: heapless::Vec<Protocol, 2>,
-
-    pub status_details: StatusDetailsOwned,
-    pub block_offset: u32,
-    pub blocks_remaining: usize,
-    pub job_name: heapless::String<64>,
-    pub stream_name: Option<heapless::String<64>>,
-    pub bitmap: Bitmap,
+    pub stream_name: Option<&'a str>,
+    pub status: OtaStatusDetails,
+    pub extra_status: E,
 }
 
-impl FileContext {
+impl<'a, E: StatusDetailsExt> OtaJobContext<'a, E> {
     pub fn new_from(
-        job_data: JobEventData<'_>,
+        job_data: JobEventData<'a>,
         file_idx: usize,
-        config: &Config,
+        mut extra_status: E,
     ) -> Result<Self, OtaError> {
-        if job_data
-            .ota_document
-            .files
-            .get(file_idx)
-            .map(|f| f.filesize)
-            .unwrap_or_default()
-            == 0
-        {
-            return Err(OtaError::ZeroFileSize);
-        }
-
         let file_desc = job_data
             .ota_document
             .files
             .get(file_idx)
-            .ok_or(OtaError::InvalidFile)?
-            .clone();
+            .ok_or(OtaError::InvalidFile)?;
 
-        let signature = file_desc.signature();
+        if file_desc.filesize == 0 {
+            return Err(OtaError::ZeroFileSize);
+        }
 
-        let block_offset = 0;
-        let bitmap = Bitmap::new(file_desc.filesize, config.block_size, block_offset);
+        let mut status = OtaStatusDetails::new();
+        if let Some(ref details) = job_data.status_details {
+            for (&key, &value) in details.iter() {
+                match key {
+                    "self_test" => status.set_self_test(value),
+                    // progress, reason, error_code are recomputed during OTA
+                    "progress" | "reason" | "error_code" => {}
+                    _ => {
+                        extra_status.accept_entry(key, value);
+                    }
+                }
+            }
+        }
 
-        Ok(FileContext {
-            filepath: heapless::String::try_from(file_desc.filepath).unwrap(),
+        Ok(OtaJobContext {
+            job_name: job_data.job_name,
+            filepath: file_desc.filepath,
             filesize: file_desc.filesize,
-            protocols: job_data.ota_document.protocols,
             fileid: file_desc.fileid,
-            certfile: file_desc
-                .certfile
-                .map(|cert| heapless::String::try_from(cert).unwrap()),
-            update_data_url: match file_desc.update_data_url {
-                Some(s) => Some(heapless::String::try_from(s).map_err(|_| OtaError::Overflow)?),
-                None => None,
-            },
-            auth_scheme: file_desc
-                .auth_scheme
-                .map(|s| heapless::String::try_from(s).unwrap()),
-            signature,
+            certfile: file_desc.certfile,
+            update_data_url: file_desc.update_data_url,
+            auth_scheme: file_desc.auth_scheme,
+            signature: file_desc.signature(),
             file_type: file_desc.file_type,
-
-            status_details: job_data
-                .status_details
-                .map(|s| {
-                    s.iter()
-                        .map(|(&k, &v)| {
-                            (
-                                heapless::String::try_from(k).unwrap(),
-                                heapless::String::try_from(v).unwrap(),
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-
-            job_name: heapless::String::try_from(job_data.job_name).unwrap(),
-            block_offset,
-            blocks_remaining: file_desc.filesize.div_ceil(config.block_size),
-            stream_name: job_data
-                .ota_document
-                .streamname
-                .map(|s| heapless::String::try_from(s).unwrap()),
-            bitmap,
+            protocols: job_data.ota_document.protocols,
+            stream_name: job_data.ota_document.streamname,
+            status,
+            extra_status,
         })
     }
 
     pub fn self_test(&self) -> bool {
-        self.status_details
-            .get(&heapless::String::try_from("self_test").unwrap())
+        self.status
+            .self_test
+            .as_ref()
             .and_then(|f| f.parse().ok())
             .map(|reason: JobStatusReason| {
                 reason == JobStatusReason::SigCheckPassed

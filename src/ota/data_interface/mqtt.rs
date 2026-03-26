@@ -7,12 +7,13 @@ use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOption
 
 use crate::jobs::JobTopic;
 use crate::ota::error::OtaError;
+use crate::ota::status_details::StatusDetailsExt;
 use crate::{
     jobs::{MAX_STREAM_ID_LEN, MAX_THING_NAME_LEN},
     ota::{
         config::Config,
         data_interface::{BlockProgress, DataInterface, FileBlock, Protocol, RawBlock},
-        encoding::{cbor, Bitmap, FileContext},
+        encoding::{cbor, Bitmap, OtaJobContext},
     },
 };
 
@@ -168,10 +169,10 @@ impl<'t, S, C: MqttClient> MqttTransfer<'t, S, C> {
         let blocks_to_request = blocks_available.min(self.max_blocks_per_request);
         self.batch_remaining = blocks_to_request;
 
-        let topic = OtaTopic::Get(Encoding::Cbor, self.stream_name.as_str()).format::<{
+        let topic = OtaTopic::Get(Encoding::Cbor, &self.stream_name).format::<{
             MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30
         }>(
-            self.client.client_id(),
+            self.client.client_id()
         )?;
 
         let mut buf = [0u8; 256];
@@ -286,10 +287,10 @@ impl<'t, S: MqttSubscription, C: MqttClient> BlockTransfer for MqttTransfer<'t, 
                     let blocks_to_request = blocks_available.min(*max_blocks_per_request);
                     *batch_remaining = blocks_to_request;
 
-                    let topic = OtaTopic::Get(Encoding::Cbor, stream_name.as_str()).format::<{
+                    let topic = OtaTopic::Get(Encoding::Cbor, stream_name).format::<{
                         MAX_STREAM_ID_LEN + MAX_THING_NAME_LEN + 30
                     }>(
-                        client.client_id(),
+                        client.client_id()
                     )?;
 
                     let mut buf = [0u8; 256];
@@ -355,14 +356,14 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
     /// the initial block request.
     async fn begin_transfer(
         &self,
-        file_ctx: &FileContext,
+        job: &OtaJobContext<'_, impl StatusDetailsExt>,
         config: &Config,
         progress: &BlockProgress,
     ) -> Result<Self::Transfer<'_>, OtaError> {
-        let stream_name = file_ctx.stream_name.as_ref().ok_or(OtaError::InvalidFile)?;
+        let stream_name = job.stream_name.ok_or(OtaError::InvalidFile)?;
 
-        let data_topic = OtaTopic::Data(Encoding::Cbor, stream_name.as_str())
-            .format::<256>(self.0.client_id())?;
+        let data_topic =
+            OtaTopic::Data(Encoding::Cbor, stream_name).format::<256>(self.0.client_id())?;
 
         let notify_topic: heapless::String<256> = JobTopic::NotifyNext
             .format::<256>(self.0.client_id())
@@ -385,9 +386,9 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
         let mut transfer = MqttTransfer {
             sub,
             client: self.0,
-            job_name: file_ctx.job_name.clone(),
-            stream_name: stream_name.clone(),
-            file_id: file_ctx.fileid,
+            job_name: heapless::String::try_from(job.job_name).map_err(|_| OtaError::Overflow)?,
+            stream_name: heapless::String::try_from(stream_name).map_err(|_| OtaError::Overflow)?,
+            file_id: job.fileid,
             block_size: config.block_size,
             batch_remaining: 0,
             max_blocks_per_request: config.max_blocks_per_request,

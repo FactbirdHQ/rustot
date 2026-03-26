@@ -101,6 +101,7 @@ pub mod data_types;
 pub mod describe;
 pub mod get_pending;
 pub mod start_next;
+pub mod stream;
 pub mod subscribe;
 pub mod update;
 
@@ -120,8 +121,7 @@ pub const MAX_STREAM_ID_LEN: usize = MAX_JOB_ID_LEN;
 pub const MAX_PENDING_JOBS: usize = 1;
 pub const MAX_RUNNING_JOBS: usize = 1;
 
-pub type StatusDetails<'a> = heapless::LinearMap<&'a str, &'a str, 4>;
-pub type StatusDetailsOwned = heapless::LinearMap<heapless::String<15>, heapless::String<11>, 4>;
+pub type StatusDetails<'a> = heapless::LinearMap<&'a str, &'a str, 8>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobError {

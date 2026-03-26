@@ -13,16 +13,12 @@ pub struct OtaJob<'a> {
     pub files: heapless::Vec<FileDescription<'a>, 1>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub enum Signature {
-    #[serde(rename = "sig-sha1-rsa")]
-    Sha1Rsa(heapless::String<64>),
-    #[serde(rename = "sig-sha256-rsa")]
-    Sha256Rsa(heapless::String<64>),
-    #[serde(rename = "sig-sha1-ecdsa")]
-    Sha1Ecdsa(heapless::String<64>),
-    #[serde(rename = "sig-sha256-ecdsa")]
-    Sha256Ecdsa(heapless::String<64>),
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Signature<'a> {
+    Sha1Rsa(&'a str),
+    Sha256Rsa(&'a str),
+    Sha1Ecdsa(&'a str),
+    Sha256Ecdsa(&'a str),
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
@@ -61,25 +57,19 @@ pub struct FileDescription<'a> {
     pub file_type: Option<u32>,
 }
 
-impl FileDescription<'_> {
-    pub fn signature(&self) -> Option<Signature> {
+impl<'a> FileDescription<'a> {
+    pub fn signature(&self) -> Option<Signature<'a>> {
         if let Some(sig) = self.sha1_rsa {
-            return Some(Signature::Sha1Rsa(heapless::String::try_from(sig).unwrap()));
+            return Some(Signature::Sha1Rsa(sig));
         }
         if let Some(sig) = self.sha256_rsa {
-            return Some(Signature::Sha256Rsa(
-                heapless::String::try_from(sig).unwrap(),
-            ));
+            return Some(Signature::Sha256Rsa(sig));
         }
         if let Some(sig) = self.sha1_ecdsa {
-            return Some(Signature::Sha1Ecdsa(
-                heapless::String::try_from(sig).unwrap(),
-            ));
+            return Some(Signature::Sha1Ecdsa(sig));
         }
         if let Some(sig) = self.sha256_ecdsa {
-            return Some(Signature::Sha256Ecdsa(
-                heapless::String::try_from(sig).unwrap(),
-            ));
+            return Some(Signature::Sha256Ecdsa(sig));
         }
         None
     }

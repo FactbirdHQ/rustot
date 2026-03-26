@@ -3,7 +3,7 @@ use crate::jobs::data_types::{ErrorResponse, JobStatus};
 use crate::jobs::{self, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
 use crate::ota::encoding::json::JobStatusReason;
-use crate::ota::encoding::FileContext;
+use crate::ota::encoding::OtaJobContext;
 use crate::ota::error::OtaError;
 use crate::ota::status_details::StatusDetailsExt;
 use crate::ota::ProgressState;
@@ -24,7 +24,7 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
     /// Update the job status on the service side.
     async fn update_job_status<E: StatusDetailsExt>(
         &self,
-        file_ctx: &FileContext,
+        job: &OtaJobContext<'_, E>,
         progress_state: &mut ProgressState<E>,
         status: JobStatus,
         reason: JobStatusReason,
@@ -64,7 +64,7 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
             QoS::AtLeastOnce
         };
 
-        let job_name = file_ctx.job_name.as_str();
+        let job_name = job.job_name;
 
         // For QoS 1 updates, subscribe to accepted/rejected before publishing
         // so we can verify the cloud processed the update. Critical for the
