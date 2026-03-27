@@ -1,6 +1,6 @@
 //! ShadowNode implementations for opaque/leaf types.
 //!
-//! This module provides the `impl_opaque!` macro and ShadowNode implementations
+//! This module provides the [`impl_opaque!`] macro and ShadowNode implementations
 //! for all primitive types.
 //!
 //! ## Why This Exists
@@ -13,25 +13,36 @@
 //! it works transparently for both primitives and nested `ShadowNode` types,
 //! eliminating the need for `is_primitive()` checks in the derive macro.
 
-/// Implement ShadowNode for opaque/leaf types.
+/// Implement `ShadowNode`, `ReportedUnionFields`, and (with `shadows_kv_persist`)
+/// `KVPersist` for opaque/leaf types.
 ///
-/// This macro generates ShadowNode implementations where:
-/// - `Delta = Self` (the type is its own delta)
-/// - `Reported = Self` (the type is its own reported form)
-/// - `SCHEMA_HASH = fnv1a_hash(type_name)` (type identity)
-///
-/// With `shadows_kv_persist` feature, also generates KVPersist impl:
-/// - `MAX_KEY_LEN = 0` (no sub-keys)
-/// - `ValueBuf = [u8; POSTCARD_MAX_SIZE]` (serialization buffer)
-///
-/// # Example
+/// # Forms
 ///
 /// ```ignore
-/// impl_opaque!(MyCustomType);
+/// // Infer KVPersist buffer size from postcard::MaxSize (type must implement it)
+/// impl_opaque!(u32, bool, f64);
+///
+/// // Explicit buffer size — for types without postcard::MaxSize
+/// impl_opaque!(core::time::Duration => 15);
 /// ```
+///
+/// When no size is given, the `shadows_kv_persist` impl uses
+/// `<T as postcard::MaxSize>::POSTCARD_MAX_SIZE` for the `ValueBuf`.
+/// When a size is given, it is used directly.
 #[macro_export]
 macro_rules! impl_opaque {
-    ($($ty:ty),* $(,)?) => {$(
+    // Multiple types without explicit size (comma-separated list)
+    ($($ty:ty),+ $(,)?) => {
+        $($crate::impl_opaque!(@single $ty, <$ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE);)+
+    };
+
+    // Single type with explicit buffer size
+    ($ty:ty => $size:expr) => {
+        $crate::impl_opaque!(@single $ty, $size);
+    };
+
+    // Internal: generate all impls for a single type with a resolved size expression
+    (@single $ty:ty, $size:expr) => {
         impl $crate::shadows::ShadowNode for $ty {
             type Delta = $ty;
             type Reported = $ty;
@@ -74,11 +85,17 @@ macro_rules! impl_opaque {
             }
         }
 
+        impl $crate::shadows::ReportedDiff for $ty {
+            fn diff(&mut self, old: &Self) -> bool {
+                *self != *old
+            }
+        }
+
         #[cfg(feature = "shadows_kv_persist")]
         impl $crate::shadows::KVPersist for $ty {
             const MAX_KEY_LEN: usize = 0;
-            type ValueBuf = [u8; <$ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE];
-            fn zero_value_buf() -> Self::ValueBuf { [0u8; <$ty as ::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE] }
+            type ValueBuf = [u8; $size];
+            fn zero_value_buf() -> Self::ValueBuf { [0u8; $size] }
 
             fn migration_sources(_field_path: &str) -> &'static [$crate::shadows::MigrationSource] {
                 &[]
@@ -153,7 +170,7 @@ macro_rules! impl_opaque {
                 rel_key.is_empty()
             }
         }
-    )*};
+    };
 }
 
 // =============================================================================
@@ -164,132 +181,32 @@ impl_opaque!((), bool, char);
 impl_opaque!(u8, u16, u32, u64, u128, usize);
 impl_opaque!(i8, i16, i32, i64, i128, isize);
 impl_opaque!(f32, f64);
-// core::time::Duration — manual impl because it lacks postcard::MaxSize.
-// Serialized as (u64, u32) = secs + nanos, max postcard size = 10 + 5 = 15 bytes.
+// postcard: u64 varint (max 10) + u32 varint (max 5) = 15 bytes
+impl_opaque!(core::time::Duration => 15);
 
-impl crate::shadows::ShadowNode for core::time::Duration {
-    type Delta = core::time::Duration;
-    type Reported = core::time::Duration;
-
-    const SCHEMA_HASH: u64 = crate::shadows::fnv1a_hash(b"core::time::Duration");
-
-    async fn parse_delta<R: crate::shadows::VariantResolver>(
-        json: &[u8],
-        _path: &str,
-        _resolver: &R,
-    ) -> Result<Self::Delta, crate::shadows::ParseError> {
-        ::serde_json_core::from_slice(json)
-            .map(|(v, _)| v)
-            .map_err(|_| crate::shadows::ParseError::Deserialize)
-    }
-
-    fn apply_delta(&mut self, delta: &Self::Delta) {
-        *self = *delta;
-    }
-
-    fn into_reported(&self) -> Self::Reported {
-        *self
-    }
-
-    fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
-        *self
-    }
-}
-
-impl crate::shadows::ReportedUnionFields for core::time::Duration {
-    const FIELD_NAMES: &'static [&'static str] = &[];
-
-    fn serialize_into_map<S: ::serde::ser::SerializeMap>(
-        &self,
-        _map: &mut S,
-    ) -> Result<(), S::Error> {
-        Ok(())
-    }
-}
-
-#[cfg(feature = "shadows_kv_persist")]
-impl crate::shadows::KVPersist for core::time::Duration {
-    const MAX_KEY_LEN: usize = 0;
-    // postcard: u64 varint (max 10) + u32 varint (max 5) = 15 bytes
-    type ValueBuf = [u8; 15];
-    fn zero_value_buf() -> Self::ValueBuf {
-        [0u8; 15]
-    }
-
-    fn migration_sources(_field_path: &str) -> &'static [crate::shadows::MigrationSource] {
-        &[]
-    }
-
-    fn all_migration_keys() -> impl Iterator<Item = &'static str> {
-        core::iter::empty()
-    }
-
-    fn apply_field_default(&mut self, _field_path: &str) -> bool {
-        false
-    }
-
-    async fn load_from_kv<K: crate::shadows::KVStore, const KEY_LEN: usize>(
-        &mut self,
-        key_buf: &mut heapless::String<KEY_LEN>,
-        kv: &K,
-    ) -> Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>> {
-        let mut result = crate::shadows::LoadFieldResult::default();
-        let mut buf = Self::zero_value_buf();
-        match kv
-            .fetch(key_buf.as_str(), buf.as_mut())
-            .await
-            .map_err(crate::shadows::KvError::Kv)?
-        {
-            Some(data) => {
-                *self = ::postcard::from_bytes(data)
-                    .map_err(|_| crate::shadows::KvError::Serialization)?;
-                result.loaded += 1;
-            }
-            None => result.defaulted += 1,
+impl<T: crate::shadows::ReportedDiff> crate::shadows::ReportedDiff for Option<T> {
+    fn diff(&mut self, old: &Self) -> bool {
+        match (self, old) {
+            (Some(new_val), Some(old_val)) => new_val.diff(old_val),
+            (None, None) => false,
+            _ => true,
         }
-        Ok(result)
-    }
-
-    async fn load_from_kv_with_migration<K: crate::shadows::KVStore, const KEY_LEN: usize>(
-        &mut self,
-        key_buf: &mut heapless::String<KEY_LEN>,
-        kv: &K,
-    ) -> Result<crate::shadows::LoadFieldResult, crate::shadows::KvError<K::Error>> {
-        self.load_from_kv::<K, KEY_LEN>(key_buf, kv).await
-    }
-
-    async fn persist_to_kv<K: crate::shadows::KVStore, const KEY_LEN: usize>(
-        &self,
-        key_buf: &mut heapless::String<KEY_LEN>,
-        kv: &K,
-    ) -> Result<(), crate::shadows::KvError<K::Error>> {
-        let mut buf = Self::zero_value_buf();
-        let bytes = ::postcard::to_slice(self, buf.as_mut())
-            .map_err(|_| crate::shadows::KvError::Serialization)?;
-        kv.store(key_buf.as_str(), bytes)
-            .await
-            .map_err(crate::shadows::KvError::Kv)
-    }
-
-    async fn persist_delta<K: crate::shadows::KVStore, const KEY_LEN: usize>(
-        delta: &Self::Delta,
-        kv: &K,
-        key_buf: &mut heapless::String<KEY_LEN>,
-    ) -> Result<(), crate::shadows::KvError<K::Error>> {
-        let mut buf = Self::zero_value_buf();
-        let bytes = ::postcard::to_slice(delta, buf.as_mut())
-            .map_err(|_| crate::shadows::KvError::Serialization)?;
-        kv.store(key_buf.as_str(), bytes)
-            .await
-            .map_err(crate::shadows::KvError::Kv)
-    }
-
-    const FIELD_COUNT: usize = 1;
-
-    fn is_valid_key(rel_key: &str) -> bool {
-        rel_key.is_empty()
     }
 }
+
+// core::net types — postcard sizes based on non-human-readable serde encoding:
+// Ipv4Addr: newtype([u8; 4]) = 4
+// Ipv6Addr: newtype([u8; 16]) = 16
+// IpAddr: enum(1) + Ipv6Addr(16) = 17
+// SocketAddrV4: Ipv4Addr(4) + u16 varint(3) = 7
+// SocketAddrV6: Ipv6Addr(16) + u16(3) + u32(5) + u32(5) = 29
+// SocketAddr: enum(1) + SocketAddrV6(29) = 30
+impl_opaque!(core::net::Ipv4Addr => 4);
+impl_opaque!(core::net::Ipv6Addr => 16);
+impl_opaque!(core::net::IpAddr => 17);
+impl_opaque!(core::net::SocketAddrV4 => 7);
+impl_opaque!(core::net::SocketAddrV6 => 29);
+impl_opaque!(core::net::SocketAddr => 30);
 
 #[cfg(test)]
 mod tests {

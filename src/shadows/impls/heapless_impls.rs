@@ -59,6 +59,12 @@ impl<const N: usize> ReportedUnionFields for heapless::String<N> {
     }
 }
 
+impl<const N: usize> crate::shadows::ReportedDiff for heapless::String<N> {
+    fn diff(&mut self, old: &Self) -> bool {
+        *self != *old
+    }
+}
+
 #[cfg(feature = "shadows_kv_persist")]
 #[allow(incomplete_features)]
 impl<const N: usize> KVPersist for heapless::String<N>
@@ -186,6 +192,12 @@ where
     }
 }
 
+impl<T: PartialEq, const N: usize> crate::shadows::ReportedDiff for heapless::Vec<T, N> {
+    fn diff(&mut self, old: &Self) -> bool {
+        *self != *old
+    }
+}
+
 /// `heapless::Vec<T, N>` is stored as an atomic blob value because AWS IoT Shadows
 /// treat arrays as normal values — an update to an array replaces the whole array,
 /// and it is not possible to update part of an array. This is why `Delta = Self`
@@ -298,16 +310,16 @@ where
 /// for JSON parsing to support value types with adjacently-tagged enums
 /// (which require alloc for serde Deserialize).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-pub struct LinearMapDelta<K: Eq, D, const N: usize>(
+pub struct DeltaLinearMap<K: Eq, D, const N: usize>(
     pub Option<heapless::LinearMap<K, Patch<D>, N>>,
 );
 
 /// Reported type for `heapless::LinearMap`-based shadow fields.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-pub struct LinearMapReported<K: Eq, R, const N: usize>(pub heapless::LinearMap<K, R, N>);
+pub struct ReportedLinearMap<K: Eq, R, const N: usize>(pub heapless::LinearMap<K, R, N>);
 
 impl<K: Eq + serde::Serialize, R: serde::Serialize, const N: usize> ReportedUnionFields
-    for LinearMapReported<K, R, N>
+    for ReportedLinearMap<K, R, N>
 {
     const FIELD_NAMES: &'static [&'static str] = &[];
 
@@ -316,13 +328,35 @@ impl<K: Eq + serde::Serialize, R: serde::Serialize, const N: usize> ReportedUnio
     }
 }
 
+impl<K: Eq + Clone, R: crate::shadows::ReportedDiff, const N: usize> crate::shadows::ReportedDiff
+    for ReportedLinearMap<K, R, N>
+{
+    fn diff(&mut self, old: &Self) -> bool {
+        // Collect keys to remove (unchanged entries)
+        let remove_keys: heapless::Vec<K, N> = self
+            .0
+            .iter_mut()
+            .filter_map(|(k, v)| match old.0.get(k) {
+                Some(old_v) if !v.diff(old_v) => Some(k.clone()),
+                _ => None,
+            })
+            .collect();
+
+        for k in &remove_keys {
+            self.0.remove(k);
+        }
+
+        !self.0.is_empty()
+    }
+}
+
 impl<K, V, const N: usize> ShadowNode for heapless::LinearMap<K, V, N>
 where
     K: Clone + Eq + Default + serde::Serialize + serde::de::DeserializeOwned + core::fmt::Display,
-    V: ShadowNode,
+    V: ShadowNode + Default,
 {
-    type Delta = LinearMapDelta<K, V::Delta, N>;
-    type Reported = LinearMapReported<K, V::Reported, N>;
+    type Delta = DeltaLinearMap<K, V::Delta, N>;
+    type Reported = ReportedLinearMap<K, V::Reported, N>;
 
     const SCHEMA_HASH: u64 = fnv1a_hash(b"heapless::LinearMap");
 
@@ -335,7 +369,7 @@ where
 
         // Check for null (no changes)
         if ObjectScanner::is_null_or_empty(json) {
-            return Ok(LinearMapDelta(None));
+            return Ok(DeltaLinearMap(None));
         }
 
         let mut scanner = ObjectScanner::new(json).map_err(|_| ParseError::Deserialize)?;
@@ -371,7 +405,7 @@ where
             let _ = result.insert(key, patch);
         }
 
-        Ok(LinearMapDelta(Some(result)))
+        Ok(DeltaLinearMap(Some(result)))
     }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
@@ -400,7 +434,7 @@ where
         for (key, value) in self.iter() {
             let _ = reported.insert(key.clone(), value.into_reported());
         }
-        LinearMapReported(reported)
+        ReportedLinearMap(reported)
     }
 
     fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {
@@ -416,13 +450,13 @@ where
                         }
                     }
                     Patch::Unset => {
-                        // Unset entries cannot be represented in LinearMapReported
+                        // Unset entries cannot be represented in ReportedLinearMap
                         // The user must handle explicit null reporting separately
                     }
                 }
             }
         }
-        LinearMapReported(reported)
+        ReportedLinearMap(reported)
     }
 
     fn desired_cleanup(&self, delta: &Self::Delta) -> Option<Self::Delta> {
@@ -442,7 +476,7 @@ where
             }
 
             if has_cleanup {
-                Some(LinearMapDelta(Some(result)))
+                Some(DeltaLinearMap(Some(result)))
             } else {
                 None
             }
@@ -467,7 +501,7 @@ where
 impl<K, V, const N: usize> KVPersist for heapless::LinearMap<K, V, N>
 where
     K: MapKey + Default + Serialize + DeserializeOwned,
-    V: KVPersist,
+    V: KVPersist + Default,
 {
     // "/{key}" + sub-key length
     const MAX_KEY_LEN: usize = 1 + K::MAX_KEY_DISPLAY_LEN + V::MAX_KEY_LEN;
@@ -883,7 +917,7 @@ mod tests {
 
         let mut patches = heapless::LinearMap::new();
         let _ = patches.insert(heapless::String::try_from("a").unwrap(), Patch::Set(42u32));
-        let delta = LinearMapDelta(Some(patches));
+        let delta = DeltaLinearMap(Some(patches));
 
         map.apply_delta(&delta);
         assert_eq!(
@@ -902,7 +936,7 @@ mod tests {
             heapless::String::try_from("a").unwrap(),
             Patch::<u32>::Unset,
         );
-        let delta = LinearMapDelta(Some(patches));
+        let delta = DeltaLinearMap(Some(patches));
 
         map.apply_delta(&delta);
         assert!(map
@@ -915,7 +949,7 @@ mod tests {
         let mut map: heapless::LinearMap<heapless::String<4>, u32, 4> = heapless::LinearMap::new();
         let _ = map.insert(heapless::String::try_from("a").unwrap(), 42);
 
-        let delta = LinearMapDelta::<heapless::String<4>, u32, 4>(None);
+        let delta = DeltaLinearMap::<heapless::String<4>, u32, 4>(None);
         map.apply_delta(&delta);
         assert_eq!(
             map.get(&heapless::String::<4>::try_from("a").unwrap()),
@@ -987,7 +1021,7 @@ mod tests {
                 heapless::String::try_from("a").unwrap(),
                 Patch::<u32>::Unset,
             );
-            let delta = LinearMapDelta(Some(patches));
+            let delta = DeltaLinearMap(Some(patches));
 
             let mut key_buf = heapless::String::<128>::new();
             let _ = key_buf.push_str("test");

@@ -138,6 +138,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
     // For async parse_delta config arms (uses parse_delta instead of serde)
     let mut parse_delta_config_arms: Vec<TokenStream> = Vec::new();
+    let mut reported_diff_arms: Vec<TokenStream> = Vec::new();
 
     for variant in variants {
         let variant_ident = &variant.ident;
@@ -178,6 +179,11 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 // into_partial_reported: unit variant has no inner state
                 into_partial_reported_arms.push(quote! {
                     Self::#variant_ident => Self::Reported::#variant_ident,
+                });
+
+                // reported_diff: unit variants with same discriminant → no change
+                reported_diff_arms.push(quote! {
+                    (#reported_name::#variant_ident, #reported_name::#variant_ident) => false,
                 });
 
                 // Schema hash for unit variant
@@ -238,6 +244,13 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         };
                         Self::Reported::#variant_ident(inner.into_partial_reported(&inner_delta))
                     }
+                });
+
+                // reported_diff: same newtype variant → recurse into inner
+                reported_diff_arms.push(quote! {
+                    (#reported_name::#variant_ident(ref mut new_inner), #reported_name::#variant_ident(ref old_inner)) => {
+                        #krate::shadows::ReportedDiff::diff(new_inner, old_inner)
+                    },
                 });
 
                 // For flat union serialize - use ReportedUnionFields
@@ -1014,6 +1027,18 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             ) -> Result<(), S::Error> {
                 // Adjacently-tagged enums serialize via their custom Serialize impl
                 Ok(())
+            }
+        }
+
+        impl #krate::shadows::ReportedDiff for #reported_name {
+            fn diff(&mut self, old: &Self) -> bool {
+                if ::core::mem::discriminant(self) != ::core::mem::discriminant(old) {
+                    return true;
+                }
+                match (self, old) {
+                    #(#reported_diff_arms)*
+                    _ => false,
+                }
             }
         }
     };

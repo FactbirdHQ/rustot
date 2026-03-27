@@ -266,6 +266,29 @@ pub trait ReportedUnionFields: Serialize {
     fn serialize_into_map<S: serde::ser::SerializeMap>(&self, map: &mut S) -> Result<(), S::Error>;
 }
 
+/// Trait for diffing Reported types in-place.
+///
+/// Nulls out fields that haven't changed compared to `old`, leaving only the
+/// delta to report. This enables efficient partial updates — only changed fields
+/// are serialized and sent to the cloud.
+///
+/// ## Usage
+///
+/// ```ignore
+/// let mut reported = ShadowNode::into_reported(&new_state);
+/// reported.diff(&old_reported);
+/// shadow.update_reported(reported).await?;
+/// ```
+///
+/// ## Return Value
+///
+/// Returns `true` if any changes remain after diffing, `false` if the reported
+/// value is now empty (all fields `None`).
+pub trait ReportedDiff {
+    /// Retain only changed fields compared to `old`.
+    fn diff(&mut self, old: &Self) -> bool;
+}
+
 /// Helper to serialize null values for inactive variant fields.
 ///
 /// When serializing an adjacently-tagged enum's Reported type, inactive variants'
@@ -352,7 +375,7 @@ impl VariantResolver for NullResolver {
 ///
 /// This ensures that changes to nested types propagate to parent hashes.
 /// Only the top-level `ShadowRoot::SCHEMA_HASH` is actually stored.
-pub trait ShadowNode: Default + Clone + Sized {
+pub trait ShadowNode: Clone + Sized {
     /// Delta type for partial updates (fields wrapped in Option).
     ///
     /// ## Trait Bounds
@@ -385,7 +408,7 @@ pub trait ShadowNode: Default + Clone + Sized {
     ///     Sio(DeltaSioConfig),
     /// }
     /// ```
-    type Delta: Default + Serialize;
+    type Delta: Serialize;
 
     /// Reported type for serialization to cloud.
     ///

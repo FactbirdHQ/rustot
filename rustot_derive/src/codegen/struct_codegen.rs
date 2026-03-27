@@ -96,6 +96,9 @@ struct FieldCodegen {
     reported_builder_param: TokenStream,
     /// Builder field assignment for reported()
     reported_builder_assign: TokenStream,
+
+    /// ReportedDiff::diff() arm for this field
+    reported_diff_arm: TokenStream,
 }
 
 /// Process a single struct field and generate all code fragments.
@@ -338,6 +341,40 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
 
     let reported_builder_assign = quote! { #field_name, };
 
+    // --- ReportedDiff arm ---
+    let reported_diff_arm = if is_leaf {
+        // Leaf fields use PartialEq directly — no ReportedDiff bound needed
+        quote! {
+            {
+                let changed = match (&self.#field_name, &old.#field_name) {
+                    (Some(a), Some(b)) => a != b,
+                    (Some(_), _) => true,
+                    _ => false,
+                };
+                if changed {
+                    has_changes = true;
+                } else {
+                    self.#field_name = None;
+                }
+            }
+        }
+    } else {
+        // Nested fields use ReportedDiff for recursive diff
+        quote! {
+            match (&mut self.#field_name, &old.#field_name) {
+                (Some(new_val), Some(old_val)) => {
+                    if #krate::shadows::ReportedDiff::diff(new_val, old_val) {
+                        has_changes = true;
+                    } else {
+                        self.#field_name = None;
+                    }
+                }
+                (Some(_), _) => has_changes = true,
+                _ => {}
+            }
+        }
+    };
+
     FieldCodegen {
         serde_name,
         delta_field,
@@ -355,6 +392,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         desired_builder_assign,
         reported_builder_param,
         reported_builder_assign,
+        reported_diff_arm,
     }
 }
 
@@ -437,6 +475,10 @@ pub(crate) fn generate_struct_code(
     let desired_cleanup_arms: Vec<_> = field_codegens
         .iter()
         .filter_map(|f| f.desired_cleanup_arm.clone())
+        .collect();
+    let reported_diff_arms: Vec<_> = field_codegens
+        .iter()
+        .map(|f| f.reported_diff_arm.clone())
         .collect();
 
     // Generate Delta type - always use FieldScanner, no Deserialize needed
@@ -834,6 +876,14 @@ pub(crate) fn generate_struct_code(
             ) -> Result<(), S::Error> {
                 #(#reported_serialize_arms)*
                 Ok(())
+            }
+        }
+
+        impl #krate::shadows::ReportedDiff for #reported_name {
+            fn diff(&mut self, old: &Self) -> bool {
+                let mut has_changes = false;
+                #(#reported_diff_arms)*
+                has_changes
             }
         }
     };
