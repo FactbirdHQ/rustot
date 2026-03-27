@@ -57,6 +57,12 @@ impl ReportedUnionFields for String {
     }
 }
 
+impl crate::shadows::ReportedDiff for String {
+    fn diff(&mut self, old: &Self) -> bool {
+        *self != *old
+    }
+}
+
 #[cfg(feature = "shadows_kv_persist")]
 impl KVPersist for String {
     const MAX_KEY_LEN: usize = 0;
@@ -180,6 +186,12 @@ where
     }
 }
 
+impl<T: PartialEq> crate::shadows::ReportedDiff for Vec<T> {
+    fn diff(&mut self, old: &Self) -> bool {
+        *self != *old
+    }
+}
+
 /// `std::Vec<T>` is stored as an atomic blob value because AWS IoT Shadows
 /// treat arrays as normal values — an update to an array replaces the whole array,
 /// and it is not possible to update part of an array. This is why `Delta = Self`
@@ -280,19 +292,31 @@ where
 /// `None` means "no changes to the map" (the map field itself was absent
 /// from the delta). `Some(map)` contains per-entry patches.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct HashMapDelta<K: Eq + Hash, D>(pub Option<HashMap<K, Patch<D>>>);
+pub struct DeltaHashMap<K: Eq + Hash, D>(pub Option<HashMap<K, Patch<D>>>);
 
 /// Reported type for `HashMap`-based shadow fields.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-pub struct HashMapReported<K: Eq + Hash, R>(pub HashMap<K, R>);
+pub struct ReportedHashMap<K: Eq + Hash, R>(pub HashMap<K, R>);
 
 impl<K: Eq + Hash + serde::Serialize, R: serde::Serialize> ReportedUnionFields
-    for HashMapReported<K, R>
+    for ReportedHashMap<K, R>
 {
     const FIELD_NAMES: &'static [&'static str] = &[];
 
     fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
         Ok(())
+    }
+}
+
+impl<K: Eq + Hash, R: crate::shadows::ReportedDiff> crate::shadows::ReportedDiff
+    for ReportedHashMap<K, R>
+{
+    fn diff(&mut self, old: &Self) -> bool {
+        self.0.retain(|k, v| match old.0.get(k) {
+            Some(old_v) => v.diff(old_v),
+            None => true,
+        });
+        !self.0.is_empty()
     }
 }
 
@@ -305,10 +329,10 @@ where
         + serde::Serialize
         + serde::de::DeserializeOwned
         + core::fmt::Display,
-    V: ShadowNode,
+    V: ShadowNode + Default,
 {
-    type Delta = HashMapDelta<K, V::Delta>;
-    type Reported = HashMapReported<K, V::Reported>;
+    type Delta = DeltaHashMap<K, V::Delta>;
+    type Reported = ReportedHashMap<K, V::Reported>;
 
     const SCHEMA_HASH: u64 = fnv1a_hash(b"HashMap");
 
@@ -321,7 +345,7 @@ where
 
         // Check for null (no changes)
         if ObjectScanner::is_null_or_empty(json) {
-            return Ok(HashMapDelta(None));
+            return Ok(DeltaHashMap(None));
         }
 
         let mut scanner = ObjectScanner::new(json).map_err(|_| ParseError::Deserialize)?;
@@ -350,7 +374,7 @@ where
             result.insert(key, patch);
         }
 
-        Ok(HashMapDelta(Some(result)))
+        Ok(DeltaHashMap(Some(result)))
     }
 
     fn apply_delta(&mut self, delta: &Self::Delta) {
@@ -379,7 +403,7 @@ where
         for (key, value) in self.iter() {
             reported.insert(key.clone(), value.into_reported());
         }
-        HashMapReported(reported)
+        ReportedHashMap(reported)
     }
 
     fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {
@@ -394,13 +418,13 @@ where
                         }
                     }
                     Patch::Unset => {
-                        // Unset entries cannot be represented in HashMapReported
+                        // Unset entries cannot be represented in ReportedHashMap
                         // The user must handle explicit null reporting separately
                     }
                 }
             }
         }
-        HashMapReported(reported)
+        ReportedHashMap(reported)
     }
 
     fn desired_cleanup(&self, delta: &Self::Delta) -> Option<Self::Delta> {
@@ -420,7 +444,7 @@ where
             }
 
             if has_cleanup {
-                Some(HashMapDelta(Some(result)))
+                Some(DeltaHashMap(Some(result)))
             } else {
                 None
             }
@@ -434,7 +458,7 @@ where
 impl<K, V> KVPersist for HashMap<K, V>
 where
     K: MapKey + Default + Hash,
-    V: KVPersist,
+    V: KVPersist + Default,
 {
     // "/{key}" + sub-key length
     const MAX_KEY_LEN: usize = 1 + K::MAX_KEY_DISPLAY_LEN + V::MAX_KEY_LEN;
@@ -624,7 +648,7 @@ mod tests {
 
         let mut patches = HashMap::new();
         patches.insert("a".to_string(), Patch::Set(42u32));
-        let delta = HashMapDelta(Some(patches));
+        let delta = DeltaHashMap(Some(patches));
 
         map.apply_delta(&delta);
         assert_eq!(map.get("a"), Some(&42));
@@ -637,7 +661,7 @@ mod tests {
 
         let mut patches = HashMap::new();
         patches.insert("a".to_string(), Patch::<u32>::Unset);
-        let delta = HashMapDelta(Some(patches));
+        let delta = DeltaHashMap(Some(patches));
 
         map.apply_delta(&delta);
         assert!(map.get("a").is_none());
@@ -648,7 +672,7 @@ mod tests {
         let mut map: HashMap<String, u32> = HashMap::new();
         map.insert("a".to_string(), 42);
 
-        let delta = HashMapDelta::<String, u32>(None);
+        let delta = DeltaHashMap::<String, u32>(None);
         map.apply_delta(&delta);
         assert_eq!(map.get("a"), Some(&42));
     }
@@ -708,7 +732,7 @@ mod tests {
             let mut patches = HashMap::new();
             patches.insert("b".to_string(), Patch::Set(2u32));
             patches.insert("a".to_string(), Patch::<u32>::Unset);
-            let delta = HashMapDelta(Some(patches));
+            let delta = DeltaHashMap(Some(patches));
 
             let mut key_buf = heapless::String::<128>::new();
             let _ = key_buf.push_str("test");

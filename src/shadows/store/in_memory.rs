@@ -63,7 +63,7 @@ impl<S: Default> Default for InMemory<S> {
     }
 }
 
-impl<S: ShadowNode> StateStore<S> for InMemory<S> {
+impl<S: ShadowNode + Default> StateStore<S> for InMemory<S> {
     type Error = core::convert::Infallible;
 
     async fn get_state(&self, _prefix: &str) -> Result<S, Self::Error> {

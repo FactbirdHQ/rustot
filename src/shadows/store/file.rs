@@ -237,7 +237,7 @@ impl KVStore for FileKVStore {
 // StateStore Implementation (state-level operations)
 // =============================================================================
 
-impl<St: KVPersist> StateStore<St> for FileKVStore {
+impl<St: KVPersist + Default> StateStore<St> for FileKVStore {
     type Error = FileKVStoreError;
 
     async fn get_state(&self, prefix: &str) -> Result<St, Self::Error> {

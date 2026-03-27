@@ -127,6 +127,7 @@ pub(crate) fn generate_simple_enum_code(
     let mut into_reported_arms = Vec::new();
     let mut into_partial_reported_arms = Vec::new();
     let mut schema_hash_code = Vec::new();
+    let mut reported_diff_arms = Vec::new();
 
     for variant in variants {
         let variant_ident = &variant.ident;
@@ -169,6 +170,11 @@ pub(crate) fn generate_simple_enum_code(
                 let variant_bytes = serde_name.as_bytes();
                 schema_hash_code.push(quote! {
                     h = #krate::shadows::fnv1a_bytes(h, &[#(#variant_bytes),*]);
+                });
+
+                // reported_diff: unit variants with same discriminant → no change
+                reported_diff_arms.push(quote! {
+                    (#reported_name::#variant_ident, #reported_name::#variant_ident) => false,
                 });
 
                 // parse_delta arm for unit variant
@@ -231,6 +237,13 @@ pub(crate) fn generate_simple_enum_code(
                             }
                         }
                     }
+                });
+
+                // reported_diff: same newtype variant → recurse into inner
+                reported_diff_arms.push(quote! {
+                    (#reported_name::#variant_ident(ref mut new_inner), #reported_name::#variant_ident(ref old_inner)) => {
+                        #krate::shadows::ReportedDiff::diff(new_inner, old_inner)
+                    },
                 });
 
                 // Schema hash for newtype variant
@@ -738,6 +751,18 @@ pub(crate) fn generate_simple_enum_code(
             ) -> Result<(), S::Error> {
                 // Enums serialize their variant directly, not as individual fields
                 Ok(())
+            }
+        }
+
+        impl #krate::shadows::ReportedDiff for #reported_name {
+            fn diff(&mut self, old: &Self) -> bool {
+                if ::core::mem::discriminant(self) != ::core::mem::discriminant(old) {
+                    return true;
+                }
+                match (self, old) {
+                    #(#reported_diff_arms)*
+                    _ => false,
+                }
             }
         }
     };

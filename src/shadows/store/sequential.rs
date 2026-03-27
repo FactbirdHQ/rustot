@@ -255,7 +255,7 @@ impl<
 // =============================================================================
 
 impl<
-        St: KVPersist,
+        St: KVPersist + Default,
         S: NorFlash + MultiwriteNorFlash,
         M: RawMutex,
         C: KeyCacheImpl<String<MAX_KEY_LEN>>,

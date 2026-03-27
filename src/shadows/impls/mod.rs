@@ -1,6 +1,6 @@
 //! ShadowNode implementations for built-in types.
 //!
-//! - `opaque`: Primitive types via `impl_opaque!` macro
+//! - `opaque`: Primitive types via `impl_opaque!` macro (with optional explicit buffer size)
 //! - `heapless`: `heapless::String<N>`, `heapless::Vec<T, N>`, `heapless::LinearMap<K, V, N>`
 //! - `std`: `String`, `Vec<T>`, `HashMap<K, V>` (behind `std` feature)
 
@@ -12,7 +12,7 @@ mod heapless_impls;
 mod std_impls;
 
 // Re-export wrapper types for map collections
-pub use heapless_impls::{LinearMapDelta, LinearMapReported};
+pub use heapless_impls::{DeltaLinearMap, ReportedLinearMap};
 
 #[cfg(feature = "std")]
-pub use std_impls::{HashMapDelta, HashMapReported};
+pub use std_impls::{DeltaHashMap, ReportedHashMap};
