@@ -75,11 +75,7 @@ pub struct OtaJobContext<'a, E: StatusDetailsExt = ()> {
 }
 
 impl<'a, E: StatusDetailsExt> OtaJobContext<'a, E> {
-    pub fn new_from(
-        job_data: JobEventData<'a>,
-        file_idx: usize,
-        mut extra_status: E,
-    ) -> Result<Self, OtaError> {
+    pub fn new_from(job_data: JobEventData<'a>, file_idx: usize) -> Result<Self, OtaError> {
         let file_desc = job_data
             .ota_document
             .files
@@ -90,6 +86,7 @@ impl<'a, E: StatusDetailsExt> OtaJobContext<'a, E> {
             return Err(OtaError::ZeroFileSize);
         }
 
+        let mut extra_status = E::default();
         let mut status = OtaStatusDetails::new();
         if let Some(ref details) = job_data.status_details {
             for (&key, &value) in details.iter() {
