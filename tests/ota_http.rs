@@ -98,10 +98,8 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
     let execution = parse_job_message::<common::OtaJobs>(&mut message)
         .expect("Failed to parse OTA job document — check logs for details");
 
-    let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
-        execution,
-        Default::default(),
-    )?;
+    let job_ctx =
+        common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(execution)?;
 
     log::info!(
         "OTA job received! Protocols: {:?}, update_data_url present: {}",

@@ -108,7 +108,6 @@ async fn run_ota_happy_path() -> Result<(), ota::error::OtaError> {
 
         let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
             execution,
-            Default::default(),
         )?;
 
         let ota_config = ota::config::Config {
@@ -315,7 +314,6 @@ async fn run_ota_cancel(
 
         let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
             execution,
-            Default::default(),
         )?;
 
         // Use small block_size + max_blocks_per_request=1 to slow down the
@@ -551,7 +549,6 @@ async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
 
         let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
             execution,
-            Default::default(),
         )?;
 
         let ota_config = ota::config::Config {

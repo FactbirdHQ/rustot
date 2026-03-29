@@ -28,7 +28,6 @@ pub enum OtaJobs<'a> {
 #[allow(dead_code)]
 pub fn ota_context_from_execution<'a, E: StatusDetailsExt>(
     execution: JobExecution<'a, OtaJobs<'a>>,
-    extra_status: E,
 ) -> Result<OtaJobContext<'a, E>, OtaError> {
     let ota_doc = match execution.job_document {
         Some(OtaJobs::Ota(doc)) => doc,
@@ -42,6 +41,5 @@ pub fn ota_context_from_execution<'a, E: StatusDetailsExt>(
             status_details: execution.status_details,
         },
         0,
-        extra_status,
     )
 }
