@@ -6,14 +6,14 @@ use embassy_time::Duration;
 use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
 
 use crate::jobs::JobTopic;
-use crate::ota::error::OtaError;
-use crate::ota::status_details::StatusDetailsExt;
+use crate::transfer::error::TransferError;
+use crate::transfer::status_details::StatusDetailsExt;
 use crate::{
     jobs::{MAX_STREAM_ID_LEN, MAX_THING_NAME_LEN},
-    ota::{
+    transfer::{
         config::Config,
         data_interface::{BlockProgress, DataInterface, FileBlock, Protocol, RawBlock},
-        encoding::{cbor, Bitmap, OtaJobContext},
+        encoding::{cbor, Bitmap, JobContext},
     },
 };
 
@@ -118,10 +118,13 @@ impl OtaTopic<'_> {
         }
     }
 
-    pub fn format<const L: usize>(&self, client_id: &str) -> Result<heapless::String<L>, OtaError> {
+    pub fn format<const L: usize>(
+        &self,
+        client_id: &str,
+    ) -> Result<heapless::String<L>, TransferError> {
         let mut topic_path = heapless::String::new();
         self.format_inner(client_id, &mut topic_path)
-            .map_err(|_| OtaError::Overflow)?;
+            .map_err(|_| TransferError::Overflow)?;
         Ok(topic_path)
     }
 }
@@ -134,10 +137,10 @@ pub struct MqttRawBlock<M> {
 }
 
 impl<M: MqttMessage> RawBlock for MqttRawBlock<M> {
-    fn decode(&mut self) -> Result<FileBlock<'_>, OtaError> {
+    fn decode(&mut self) -> Result<FileBlock<'_>, TransferError> {
         Ok(
             minicbor_serde::from_slice::<cbor::GetStreamResponse>(self.message.payload_mut())
-                .map_err(|_| OtaError::Encoding)?
+                .map_err(|_| TransferError::Encoding)?
                 .into(),
         )
     }
@@ -164,7 +167,7 @@ pub struct MqttTransfer<'t, S, C: MqttClient> {
 
 impl<'t, S, C: MqttClient> MqttTransfer<'t, S, C> {
     /// Publish a CBOR-encoded GetStreamRequest to request file blocks.
-    async fn publish_block_request(&mut self) -> Result<(), OtaError> {
+    async fn publish_block_request(&mut self) -> Result<(), TransferError> {
         let blocks_available = self.bitmap.len() as u32;
         let blocks_to_request = blocks_available.min(self.max_blocks_per_request);
         self.batch_remaining = blocks_to_request;
@@ -188,7 +191,7 @@ impl<'t, S, C: MqttClient> MqttTransfer<'t, S, C> {
             },
             &mut buf,
         )
-        .map_err(|_| OtaError::Encoding)?;
+        .map_err(|_| TransferError::Encoding)?;
 
         debug!(
             "Requesting {} file blocks (of {} remaining)",
@@ -202,7 +205,7 @@ impl<'t, S, C: MqttClient> MqttTransfer<'t, S, C> {
                 PublishOptions::new().qos(QoS::AtMostOnce),
             )
             .await
-            .map_err(|_| OtaError::Mqtt)
+            .map_err(|_| TransferError::Mqtt)
     }
 }
 
@@ -212,7 +215,7 @@ impl<'t, S: MqttSubscription, C: MqttClient> BlockTransfer for MqttTransfer<'t, 
     where
         Self: 'b;
 
-    async fn next_block(&mut self) -> Result<Option<Self::RawBlock<'_>>, OtaError> {
+    async fn next_block(&mut self) -> Result<Option<Self::RawBlock<'_>>, TransferError> {
         // Destructure for split borrows: the message branch borrows `sub`,
         // while the timer branch borrows `client` and other fields. Without
         // destructuring the compiler treats all field access as &mut self.
@@ -262,7 +265,7 @@ impl<'t, S: MqttSubscription, C: MqttClient> BlockTransfer for MqttTransfer<'t, 
                     debug!("Ignoring notify-next status update for current job");
                     Ok(None)
                 } else {
-                    Err(OtaError::UserAbort)
+                    Err(TransferError::UserAbort)
                 }
             }
 
@@ -275,7 +278,7 @@ impl<'t, S: MqttSubscription, C: MqttClient> BlockTransfer for MqttTransfer<'t, 
 
                 if *momentum <= 1 {
                     // Grace period — just retry
-                    return Err(OtaError::Momentum);
+                    return Err(TransferError::Momentum);
                 }
 
                 if *momentum <= *max_momentum {
@@ -306,7 +309,7 @@ impl<'t, S: MqttSubscription, C: MqttClient> BlockTransfer for MqttTransfer<'t, 
                         },
                         &mut buf,
                     )
-                    .map_err(|_| OtaError::Encoding)?;
+                    .map_err(|_| TransferError::Encoding)?;
 
                     debug!(
                         "Requesting {} file blocks (of {} remaining)",
@@ -320,17 +323,17 @@ impl<'t, S: MqttSubscription, C: MqttClient> BlockTransfer for MqttTransfer<'t, 
                             PublishOptions::new().qos(QoS::AtMostOnce),
                         )
                         .await
-                        .map_err(|_| OtaError::Mqtt)?;
+                        .map_err(|_| TransferError::Mqtt)?;
 
-                    Err(OtaError::Momentum)
+                    Err(TransferError::Momentum)
                 } else {
-                    Err(OtaError::MomentumAbort)
+                    Err(TransferError::MomentumAbort)
                 }
             }
         }
     }
 
-    async fn on_block_written(&mut self, progress: &BlockProgress) -> Result<(), OtaError> {
+    async fn on_block_written(&mut self, progress: &BlockProgress) -> Result<(), TransferError> {
         // Update internal state from orchestrator's progress
         self.bitmap = progress.bitmap.clone();
         self.block_offset = progress.block_offset;
@@ -356,18 +359,18 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
     /// the initial block request.
     async fn begin_transfer(
         &self,
-        job: &OtaJobContext<'_, impl StatusDetailsExt>,
+        job: &JobContext<'_, impl StatusDetailsExt>,
         config: &Config,
         progress: &BlockProgress,
-    ) -> Result<Self::Transfer<'_>, OtaError> {
-        let stream_name = job.stream_name.ok_or(OtaError::InvalidFile)?;
+    ) -> Result<Self::Transfer<'_>, TransferError> {
+        let stream_name = job.stream_name.ok_or(TransferError::InvalidFile)?;
 
         let data_topic =
             OtaTopic::Data(Encoding::Cbor, stream_name).format::<256>(self.0.client_id())?;
 
         let notify_topic: heapless::String<256> = JobTopic::NotifyNext
             .format::<256>(self.0.client_id())
-            .map_err(|_| OtaError::Overflow)?;
+            .map_err(|_| TransferError::Overflow)?;
 
         debug!(
             "Subscribing to: [{:?}] and [{:?}]",
@@ -381,13 +384,15 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
                 (notify_topic.as_str(), QoS::AtMostOnce),
             ])
             .await
-            .map_err(|_| OtaError::Mqtt)?;
+            .map_err(|_| TransferError::Mqtt)?;
 
         let mut transfer = MqttTransfer {
             sub,
             client: self.0,
-            job_name: heapless::String::try_from(job.job_name).map_err(|_| OtaError::Overflow)?,
-            stream_name: heapless::String::try_from(stream_name).map_err(|_| OtaError::Overflow)?,
+            job_name: heapless::String::try_from(job.job_name)
+                .map_err(|_| TransferError::Overflow)?,
+            stream_name: heapless::String::try_from(stream_name)
+                .map_err(|_| TransferError::Overflow)?,
             file_id: job.fileid,
             block_size: config.block_size,
             batch_remaining: 0,

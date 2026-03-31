@@ -1,7 +1,7 @@
 use core::ops::Deref;
-use rustot::ota::{
+use rustot::transfer::{
     encoding::json,
-    pal::{BlockWriter, OtaPal, OtaPalError, PalImageState},
+    pal::{BlockWriter, OtaPal, PalError, PalImageState, TransferPal},
     StatusDetailsExt,
 };
 use serde::ser::SerializeMap;
@@ -58,7 +58,7 @@ pub struct FileHandler {
     compare_file_path: String,
     pub plateform_state: State,
     /// If set, `close_file` will return this error instead of succeeding
-    pub fail_close_with: Option<OtaPalError>,
+    pub fail_close_with: Option<PalError>,
     pub extra_status: TestStatusDetails,
 }
 
@@ -78,13 +78,13 @@ impl FileHandler {
 
     /// Configure the handler to fail on close_file with the given error
     #[allow(dead_code)]
-    pub fn with_close_failure(mut self, error: OtaPalError) -> Self {
+    pub fn with_close_failure(mut self, error: PalError) -> Self {
         self.fail_close_with = Some(error);
         self
     }
 }
 
-impl OtaPal for FileHandler {
+impl TransferPal for FileHandler {
     type BlockWriter = MemWriter;
     type StatusDetails = TestStatusDetails;
 
@@ -94,44 +94,22 @@ impl OtaPal for FileHandler {
 
     async fn abort(
         &mut self,
-        _file: &rustot::ota::encoding::OtaJobContext<'_, impl rustot::ota::StatusDetailsExt>,
-    ) -> Result<(), OtaPalError> {
+        _file: &rustot::transfer::encoding::JobContext<'_, impl rustot::transfer::StatusDetailsExt>,
+    ) -> Result<(), PalError> {
         Ok(())
     }
 
     async fn create_file_for_rx(
         &mut self,
-        file: &rustot::ota::encoding::OtaJobContext<'_, impl rustot::ota::StatusDetailsExt>,
-    ) -> Result<&mut Self::BlockWriter, OtaPalError> {
+        file: &rustot::transfer::encoding::JobContext<'_, impl rustot::transfer::StatusDetailsExt>,
+    ) -> Result<&mut Self::BlockWriter, PalError> {
         Ok(self.writer.get_or_insert(MemWriter::new(file.filesize)))
-    }
-
-    async fn get_platform_image_state(&mut self) -> Result<PalImageState, OtaPalError> {
-        Ok(match self.plateform_state {
-            State::Swap => PalImageState::PendingCommit,
-            State::Boot => PalImageState::Valid,
-        })
-    }
-
-    async fn set_platform_image_state(
-        &mut self,
-        image_state: rustot::ota::pal::ImageState,
-    ) -> Result<(), OtaPalError> {
-        if matches!(image_state, rustot::ota::pal::ImageState::Accepted) {
-            self.plateform_state = State::Boot;
-        }
-
-        Ok(())
-    }
-
-    async fn reset_device(&mut self) -> Result<(), OtaPalError> {
-        Ok(())
     }
 
     async fn close_file(
         &mut self,
-        file: &rustot::ota::encoding::OtaJobContext<'_, impl rustot::ota::StatusDetailsExt>,
-    ) -> Result<(), OtaPalError> {
+        file: &rustot::transfer::encoding::JobContext<'_, impl rustot::transfer::StatusDetailsExt>,
+    ) -> Result<(), PalError> {
         // Check for configured failure
         if let Some(error) = self.fail_close_with {
             log::info!("Simulating close_file failure: {:?}", error);
@@ -174,7 +152,31 @@ impl OtaPal for FileHandler {
 
             Ok(())
         } else {
-            Err(OtaPalError::BadFileHandle)
+            Err(PalError::BadFileHandle)
         }
+    }
+}
+
+impl OtaPal for FileHandler {
+    async fn get_platform_image_state(&mut self) -> Result<PalImageState, PalError> {
+        Ok(match self.plateform_state {
+            State::Swap => PalImageState::PendingCommit,
+            State::Boot => PalImageState::Valid,
+        })
+    }
+
+    async fn set_platform_image_state(
+        &mut self,
+        image_state: rustot::transfer::pal::ImageState,
+    ) -> Result<(), PalError> {
+        if matches!(image_state, rustot::transfer::pal::ImageState::Accepted) {
+            self.plateform_state = State::Boot;
+        }
+
+        Ok(())
+    }
+
+    async fn reset_device(&mut self) -> Result<(), PalError> {
+        Ok(())
     }
 }

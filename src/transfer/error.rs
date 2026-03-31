@@ -1,10 +1,10 @@
 use crate::jobs::{data_types::ErrorCode, JobError};
 
-use super::pal::OtaPalError;
+use super::pal::PalError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum OtaError {
+pub enum TransferError {
     NoActiveJob,
     Momentum,
     MomentumAbort,
@@ -19,27 +19,27 @@ pub enum OtaError {
     UpdateRejected(ErrorCode),
     WriteFailed,
     Mqtt,
-    #[cfg(feature = "ota_http_data")]
+    #[cfg(feature = "transfer_http")]
     Http,
     Encoding,
-    Pal(OtaPalError),
+    Pal(PalError),
     Timeout,
     UserAbort,
 }
 
-impl OtaError {
+impl TransferError {
     pub fn is_retryable(&self) -> bool {
         matches!(self, Self::Encoding | Self::Timeout | Self::Momentum)
     }
 }
 
-impl From<OtaPalError> for OtaError {
-    fn from(e: OtaPalError) -> Self {
+impl From<PalError> for TransferError {
+    fn from(e: PalError) -> Self {
         Self::Pal(e)
     }
 }
 
-impl From<JobError> for OtaError {
+impl From<JobError> for TransferError {
     fn from(e: JobError) -> Self {
         match e {
             JobError::Overflow => Self::Overflow,

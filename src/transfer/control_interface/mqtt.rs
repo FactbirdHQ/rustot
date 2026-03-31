@@ -2,33 +2,33 @@ use super::ControlInterface;
 use crate::jobs::data_types::{ErrorResponse, JobStatus};
 use crate::jobs::{self, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
-use crate::ota::encoding::json::JobStatusReason;
-use crate::ota::encoding::OtaJobContext;
-use crate::ota::error::OtaError;
-use crate::ota::status_details::StatusDetailsExt;
-use crate::ota::ProgressState;
+use crate::transfer::encoding::json::JobStatusReason;
+use crate::transfer::encoding::JobContext;
+use crate::transfer::error::TransferError;
+use crate::transfer::status_details::StatusDetailsExt;
+use crate::transfer::ProgressState;
 
 impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
     /// Check for next available OTA job from the job service by publishing a
     /// "get next job" message to the job service.
-    async fn request_job(&self) -> Result<(), OtaError> {
+    async fn request_job(&self) -> Result<(), TransferError> {
         let describe = Jobs::describe();
         let topic = describe.topic(self.0.client_id())?;
 
         self.0
             .publish(&topic, describe)
             .await
-            .map_err(|_| OtaError::Mqtt)
+            .map_err(|_| TransferError::Mqtt)
     }
 
     /// Update the job status on the service side.
     async fn update_job_status<E: StatusDetailsExt>(
         &self,
-        job: &OtaJobContext<'_, E>,
+        job: &JobContext<'_, E>,
         progress_state: &mut ProgressState<E>,
         status: JobStatus,
         reason: JobStatusReason,
-    ) -> Result<(), OtaError> {
+    ) -> Result<(), TransferError> {
         // Set the self_test status field
         progress_state.status_details.set_self_test(reason.as_str());
 
@@ -47,7 +47,9 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
 
         // Add failure detail if present (for Rejected/Aborted reasons)
         if let Some(detail) = reason.detail() {
-            progress_state.status_details.set_failure(detail);
+            progress_state
+                .status_details
+                .set_failure(detail.as_reason_str(), detail.error_code());
         } else {
             // Clear any previous failure details for non-failure reasons
             progress_state.status_details.clear_failure();
@@ -84,7 +86,7 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
                         (rejected_topic.as_str(), QoS::AtMostOnce),
                     ])
                     .await
-                    .map_err(|_| OtaError::Mqtt)?,
+                    .map_err(|_| TransferError::Mqtt)?,
             )
         } else {
             None
@@ -105,7 +107,7 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
         self.0
             .publish_with_options(&topic, payload, PublishOptions::new().qos(qos))
             .await
-            .map_err(|_| OtaError::Mqtt)?;
+            .map_err(|_| TransferError::Mqtt)?;
 
         // For QoS 1: wait for accepted/rejected response
         if let Some(ref mut sub) = sub {
@@ -117,10 +119,10 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
                 .await
                 {
                     Ok(Some(msg)) => msg,
-                    Ok(None) => return Err(OtaError::Mqtt),
+                    Ok(None) => return Err(TransferError::Mqtt),
                     Err(_) => {
                         warn!("Timeout waiting for job update accepted/rejected");
-                        return Err(OtaError::Timeout);
+                        return Err(TransferError::Timeout);
                     }
                 };
 
@@ -131,10 +133,10 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
                     Some(jobs::Topic::UpdateRejected(_)) => {
                         let (error_response, _) =
                             serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                                .map_err(|_| OtaError::Mqtt)?;
+                                .map_err(|_| TransferError::Mqtt)?;
 
                         error!("Job update rejected: {:?}", error_response.message);
-                        return Err(OtaError::UpdateRejected(error_response.code));
+                        return Err(TransferError::UpdateRejected(error_response.code));
                     }
                     _ => {
                         // Not our topic, keep waiting

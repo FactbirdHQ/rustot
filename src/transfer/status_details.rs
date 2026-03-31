@@ -1,4 +1,4 @@
-//! OTA status details types for job status reporting.
+//! Status details types for job status reporting.
 //!
 //! This module provides types for building status details payloads that are
 //! sent to AWS IoT Jobs when updating job execution status. The design allows
@@ -7,8 +7,6 @@
 use core::fmt::Write;
 
 use serde::{ser::SerializeMap, Serialize, Serializer};
-
-use super::pal::ImageStateReason;
 
 /// Trait for types that can contribute fields to status details.
 ///
@@ -38,7 +36,7 @@ pub trait StatusDetailsExt: Default {
 
     /// Accept a key-value pair from incoming job status details.
     ///
-    /// Called during `OtaJobContext` construction when converting the raw
+    /// Called during `JobContext` construction when converting the raw
     /// `StatusDetails` map into typed fields. Known OTA base keys (`self_test`,
     /// `progress`, etc.) are handled by the library; unknown keys are offered
     /// to this method.
@@ -65,7 +63,7 @@ impl StatusDetailsExt for () {
 /// - `reason`: Failure reason string for rejected/aborted states
 /// - `error_code`: Numeric error code for failures
 #[derive(Debug, Clone, Default)]
-pub struct OtaStatusDetails {
+pub struct StatusDetails {
     /// Current self-test state (e.g., "receiving", "ready", "active", "accepted")
     pub self_test: Option<heapless::String<12>>,
     /// Download progress as "received/total" blocks
@@ -76,7 +74,7 @@ pub struct OtaStatusDetails {
     pub error_code: Option<u16>,
 }
 
-impl OtaStatusDetails {
+impl StatusDetails {
     /// Create a new empty status details.
     pub fn new() -> Self {
         Default::default()
@@ -94,12 +92,11 @@ impl OtaStatusDetails {
         self.progress = Some(s);
     }
 
-    /// Set failure details from an ImageStateReason.
-    pub fn set_failure(&mut self, reason: ImageStateReason) {
-        self.reason = heapless::String::try_from(reason.as_reason_str()).ok();
-        let code = reason.error_code();
-        if code != 0 {
-            self.error_code = Some(code);
+    /// Set failure details from a reason string and error code.
+    pub fn set_failure(&mut self, reason_str: &str, error_code: u16) {
+        self.reason = heapless::String::try_from(reason_str).ok();
+        if error_code != 0 {
+            self.error_code = Some(error_code);
         }
     }
 
@@ -138,8 +135,8 @@ impl OtaStatusDetails {
     }
 }
 
-/// Standalone serialization for OtaStatusDetails (when no extra context).
-impl Serialize for OtaStatusDetails {
+/// Standalone serialization for StatusDetails (when no extra context).
+impl Serialize for StatusDetails {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
         self.serialize_into_map(&mut map)?;
@@ -149,10 +146,10 @@ impl Serialize for OtaStatusDetails {
 
 /// Combined status details (base OTA fields + user context).
 ///
-/// This type serializes both the base [`OtaStatusDetails`] fields and the
+/// This type serializes both the base [`StatusDetails`] fields and the
 /// user-provided extra context into a single flat JSON object.
 pub struct CombinedStatusDetails<'a, E: StatusDetailsExt> {
-    base: &'a OtaStatusDetails,
+    base: &'a StatusDetails,
     extra: &'a E,
 }
 
@@ -171,7 +168,7 @@ mod tests {
 
     #[test]
     fn serialize_basic_status() {
-        let mut status = OtaStatusDetails::new();
+        let mut status = StatusDetails::new();
         status.set_self_test("receiving");
         status.set_progress(10, 100);
 
@@ -184,11 +181,9 @@ mod tests {
 
     #[test]
     fn serialize_with_failure() {
-        let mut status = OtaStatusDetails::new();
+        let mut status = StatusDetails::new();
         status.set_self_test("rejected");
-        status.set_failure(ImageStateReason::Pal(
-            super::super::pal::OtaPalError::SignatureCheckFailed,
-        ));
+        status.set_failure("sig_check_failed", 1001);
 
         let json = serde_json_core::to_string::<_, 128>(&status).unwrap();
         assert_eq!(
@@ -211,7 +206,7 @@ mod tests {
 
     #[test]
     fn serialize_with_extra_context() {
-        let mut status = OtaStatusDetails::new();
+        let mut status = StatusDetails::new();
         status.set_self_test("active");
 
         let extra = TestContext { device_temp: 42 };
@@ -223,7 +218,7 @@ mod tests {
 
     #[test]
     fn serialize_with_unit_context() {
-        let mut status = OtaStatusDetails::new();
+        let mut status = StatusDetails::new();
         status.set_self_test("accepted");
 
         let combined = status.with_extra(&());

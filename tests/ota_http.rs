@@ -1,4 +1,4 @@
-#![cfg(all(feature = "ota_http_reqwest", feature = "mqtt_rumqttc"))]
+#![cfg(all(feature = "transfer_http_reqwest", feature = "mqtt_rumqttc"))]
 #![allow(async_fn_in_trait)]
 
 mod common;
@@ -10,10 +10,10 @@ use serial_test::serial;
 use rustot::{
     jobs::stream::{parse_job_message, JobAgent},
     mqtt::{rumqttc::RumqttcClient, Mqtt, MqttClient, MqttSubscription},
-    ota::{
+    transfer::{
         self,
         data_interface::http::{HttpInterface, ReqwestClient},
-        Updater,
+        Transfer,
     },
 };
 
@@ -71,7 +71,7 @@ async fn test_http_ota() {
     }
 }
 
-async fn run_ota_http() -> Result<(), ota::error::OtaError> {
+async fn run_ota_http() -> Result<(), transfer::error::TransferError> {
     let thing_name = option_env!("THING_NAME").unwrap_or("rustot-test");
     let hostname = credentials::HOSTNAME.unwrap();
     let pw = std::env::var("IDENTITY_PASSWORD").unwrap_or_default();
@@ -109,7 +109,7 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
 
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
 
-    let ota_config = ota::config::Config {
+    let ota_config = transfer::config::Config {
         block_size: 4096,
         ..Default::default()
     };
@@ -119,7 +119,7 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
     let http_interface = HttpInterface::new(http_client);
 
     // MQTT (rumqttc) for control, HTTP (reqwest) for data
-    Updater::perform_ota(
+    Transfer::perform_ota(
         &mqtt,
         &http_interface,
         &job_ctx,
@@ -134,14 +134,14 @@ async fn run_ota_http() -> Result<(), ota::error::OtaError> {
 
     // Simulate image commit after bootloader swap — construct new context
     // with self_test set to "active"
-    let mut status = rustot::ota::OtaStatusDetails::new();
+    let mut status = rustot::transfer::StatusDetails::new();
     status.set_self_test("active");
-    let job_ctx2 = rustot::ota::encoding::OtaJobContext {
+    let job_ctx2 = rustot::transfer::encoding::JobContext {
         status,
         ..job_ctx.clone()
     };
 
-    Updater::perform_ota(
+    Transfer::perform_ota(
         &mqtt,
         &http_interface,
         &job_ctx2,

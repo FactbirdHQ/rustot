@@ -1,8 +1,8 @@
 use core::fmt::Debug;
 
-use crate::ota::{
+use crate::transfer::{
     data_interface::{FileBlock, RawBlock},
-    error::OtaError,
+    error::TransferError,
 };
 
 /// Minimal HTTP client trait for OTA Range-based downloads.
@@ -48,7 +48,7 @@ pub struct HttpRawBlock<'a> {
 }
 
 impl RawBlock for HttpRawBlock<'_> {
-    fn decode(&mut self) -> Result<FileBlock<'_>, OtaError> {
+    fn decode(&mut self) -> Result<FileBlock<'_>, TransferError> {
         Ok(FileBlock {
             client_token: None,
             file_id: self.file_id,
@@ -61,7 +61,7 @@ impl RawBlock for HttpRawBlock<'_> {
 
 // --- reqwest implementation (requires std) ---
 
-#[cfg(feature = "ota_http_reqwest")]
+#[cfg(feature = "transfer_http_reqwest")]
 mod reqwest_impl {
     use super::*;
 
@@ -101,7 +101,7 @@ mod reqwest_impl {
     }
 }
 
-#[cfg(feature = "ota_http_reqwest")]
+#[cfg(feature = "transfer_http_reqwest")]
 pub use reqwest_impl::ReqwestClient;
 
 // --- Concrete transfer implementation (requires std for Vec) ---
@@ -114,10 +114,10 @@ mod transfer {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::ota::{
+    use crate::transfer::{
         config::Config,
         data_interface::{BlockProgress, DataInterface, Protocol},
-        encoding::{Bitmap, OtaJobContext},
+        encoding::{Bitmap, JobContext},
         status_details::StatusDetailsExt,
     };
 
@@ -150,7 +150,7 @@ mod transfer {
         where
             Self: 'b;
 
-        async fn next_block(&mut self) -> Result<Option<Self::RawBlock<'_>>, OtaError> {
+        async fn next_block(&mut self) -> Result<Option<Self::RawBlock<'_>>, TransferError> {
             // Find the next block we need from the bitmap
             let local_id = match self.bitmap.first_index() {
                 Some(id) => id,
@@ -171,7 +171,7 @@ mod transfer {
                 .await
                 .map_err(|e| {
                     error!("HTTP range request failed: {:?}", e);
-                    OtaError::Http
+                    TransferError::Http
                 })?;
 
             Ok(Some(HttpRawBlock {
@@ -181,7 +181,10 @@ mod transfer {
             }))
         }
 
-        async fn on_block_written(&mut self, progress: &BlockProgress) -> Result<(), OtaError> {
+        async fn on_block_written(
+            &mut self,
+            progress: &BlockProgress,
+        ) -> Result<(), TransferError> {
             self.bitmap = progress.bitmap.clone();
             self.block_offset = progress.block_offset;
             Ok(())
@@ -198,11 +201,11 @@ mod transfer {
 
         async fn begin_transfer(
             &self,
-            job: &OtaJobContext<'_, impl StatusDetailsExt>,
+            job: &JobContext<'_, impl StatusDetailsExt>,
             config: &Config,
             progress: &BlockProgress,
-        ) -> Result<Self::Transfer<'_>, OtaError> {
-            let url = job.update_data_url.ok_or(OtaError::InvalidFile)?;
+        ) -> Result<Self::Transfer<'_>, TransferError> {
+            let url = job.update_data_url.ok_or(TransferError::InvalidFile)?;
 
             info!(
                 "[OTA-HTTP] Beginning transfer: url_len={} block_size={} file_size={}",

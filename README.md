@@ -6,9 +6,10 @@ This crate aims to provide a pure-Rust implementation of essential AWS IoT featu
 
 ## Features
 
-- **OTA Updates:** ([`ota`] module)
-  - Download and apply firmware updates securely over MQTT or HTTP.
-  - Supports both CBOR and raw binary firmware formats.
+- **File Transfer & OTA Updates:** ([`transfer`] module)
+  - Download files from AWS IoT Jobs over MQTT or HTTP.
+  - Generic file transfers via `Transfer::perform`.
+  - OTA firmware updates via `Transfer::perform_ota` with self-test and image state management.
 - **Device Shadow:** ([`shadows`] module)
   - Synchronize device state with the cloud using AWS IoT Device Shadow service.
   - Get, update, and delete device shadows.

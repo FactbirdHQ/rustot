@@ -1,4 +1,4 @@
-#![cfg(feature = "ota_mqtt_data")]
+#![cfg(feature = "transfer_mqtt")]
 #![allow(async_fn_in_trait)]
 #![feature(type_alias_impl_trait)]
 
@@ -18,7 +18,7 @@ use aws_credential_types::provider::SharedCredentialsProvider;
 use rustot::{
     jobs::stream::{parse_job_message, JobAgent},
     mqtt::{Mqtt, OwnedMessage},
-    ota::{self, pal::OtaPalError, Updater},
+    transfer::{self, pal::PalError, Transfer},
 };
 
 #[tokio::test(flavor = "current_thread")]
@@ -72,7 +72,7 @@ async fn test_mqtt_ota() {
     }
 }
 
-async fn run_ota_happy_path() -> Result<(), ota::error::OtaError> {
+async fn run_ota_happy_path() -> Result<(), transfer::error::TransferError> {
     let (thing_name, identity) = credentials::identity();
 
     let hostname = credentials::HOSTNAME.unwrap();
@@ -110,13 +110,13 @@ async fn run_ota_happy_path() -> Result<(), ota::error::OtaError> {
             execution,
         )?;
 
-        let ota_config = ota::config::Config {
+        let ota_config = transfer::config::Config {
             block_size: 4096,
             ..Default::default()
         };
 
         // We have an OTA job, leeeets go!
-        Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await?;
+        Transfer::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await?;
 
         assert_eq!(file_handler.plateform_state, FileHandlerState::Swap);
 
@@ -125,16 +125,16 @@ async fn run_ota_happy_path() -> Result<(), ota::error::OtaError> {
         // Run it twice in this particular integration test, in order to
         // simulate image commit after bootloader swap.
         // Construct a new context with self_test set to "active".
-        let mut status = rustot::ota::OtaStatusDetails::new();
+        let mut status = rustot::transfer::StatusDetails::new();
         status.set_self_test("active");
-        let job_ctx2 = rustot::ota::encoding::OtaJobContext {
+        let job_ctx2 = rustot::transfer::encoding::JobContext {
             status,
             ..job_ctx.clone()
         };
 
-        Updater::perform_ota(&mqtt, &mqtt, &job_ctx2, &mut file_handler, &ota_config).await?;
+        Transfer::perform_ota(&mqtt, &mqtt, &job_ctx2, &mut file_handler, &ota_config).await?;
 
-        Ok::<_, ota::error::OtaError>(())
+        Ok::<_, transfer::error::TransferError>(())
     };
 
     let mut transport = NalTransport::new(network, broker);
@@ -277,7 +277,7 @@ async fn run_ota_cancel(
     job_id: String,
     iot_creds: SharedCredentialsProvider,
     region: aws_config::Region,
-) -> Result<(), ota::error::OtaError> {
+) -> Result<(), transfer::error::TransferError> {
     let (thing_name, identity) = credentials::identity();
 
     let hostname = credentials::HOSTNAME.unwrap();
@@ -321,7 +321,7 @@ async fn run_ota_cancel(
         // mid-transfer. With block_size=1024 the 386KB file needs ~378 blocks
         // (~29s at 1 block/request), so cancelling at 3s leaves plenty of
         // blocks remaining for the device to detect the cancellation.
-        let ota_config = ota::config::Config {
+        let ota_config = transfer::config::Config {
             block_size: 1024,
             max_blocks_per_request: 1,
             ..Default::default()
@@ -329,7 +329,7 @@ async fn run_ota_cancel(
 
         // Run OTA and cancel concurrently
         let ota_future =
-            Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config);
+            Transfer::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config);
 
         let cancel_future = async {
             // Wait for download to start, then force-cancel
@@ -371,7 +371,7 @@ async fn run_ota_cancel(
             }
         }
 
-        Ok::<_, ota::error::OtaError>(())
+        Ok::<_, transfer::error::TransferError>(())
     };
 
     let mut transport = NalTransport::new(network, broker);
@@ -454,7 +454,7 @@ async fn test_mqtt_job_reject() {
     }
 }
 
-async fn run_job_reject() -> Result<(), ota::error::OtaError> {
+async fn run_job_reject() -> Result<(), transfer::error::TransferError> {
     let (thing_name, identity) = credentials::identity();
 
     let hostname = credentials::HOSTNAME.unwrap();
@@ -489,7 +489,7 @@ async fn run_job_reject() -> Result<(), ota::error::OtaError> {
             .reject_job(execution.job_id, "unsupported job type")
             .await?;
 
-        Ok::<_, ota::error::OtaError>(())
+        Ok::<_, transfer::error::TransferError>(())
     };
 
     let mut transport = NalTransport::new(network, broker);
@@ -510,7 +510,7 @@ async fn run_job_reject() -> Result<(), ota::error::OtaError> {
     Ok(())
 }
 
-async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
+async fn run_ota_signature_failure() -> Result<(), transfer::error::TransferError> {
     let (thing_name, identity) = credentials::identity();
 
     let hostname = credentials::HOSTNAME.unwrap();
@@ -532,7 +532,7 @@ async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
 
     // Configure file handler to fail with SignatureCheckFailed
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned())
-        .with_close_failure(OtaPalError::SignatureCheckFailed);
+        .with_close_failure(PalError::SignatureCheckFailed);
 
     let ota_fut = async {
         let mqtt = Mqtt(&client);
@@ -551,14 +551,14 @@ async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
             execution,
         )?;
 
-        let ota_config = ota::config::Config {
+        let ota_config = transfer::config::Config {
             block_size: 4096,
             ..Default::default()
         };
 
         // This should fail with SignatureCheckFailed
         let result =
-            Updater::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await;
+            Transfer::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await;
 
         // Verify the OTA failed as expected
         assert!(
@@ -574,7 +574,7 @@ async fn run_ota_signature_failure() -> Result<(), ota::error::OtaError> {
             "Platform state should remain Boot after failure"
         );
 
-        Ok::<_, ota::error::OtaError>(())
+        Ok::<_, transfer::error::TransferError>(())
     };
 
     let mut transport = NalTransport::new(network, broker);
