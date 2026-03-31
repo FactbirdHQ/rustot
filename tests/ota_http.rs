@@ -115,7 +115,7 @@ async fn run_ota_http() -> Result<(), transfer::error::TransferError> {
     };
 
     // HTTP for data interface (file download via Range requests)
-    let http_client = ReqwestClient::new(reqwest::Client::new());
+    let http_client = ReqwestClient::new();
     let http_interface = HttpInterface::new(http_client);
 
     // MQTT (rumqttc) for control, HTTP (reqwest) for data

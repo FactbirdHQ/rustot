@@ -4,6 +4,7 @@ use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOption
 
 use super::{
     data_types::{DescribeJobExecutionResponse, JobExecution, JobStatus, NextJobExecutionChanged},
+    update::Update,
     JobError, JobTopic, Jobs, Topic, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN,
 };
 
@@ -84,6 +85,78 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
         Ok(sub)
     }
 
+    /// Report progress on a job.
+    ///
+    /// Publishes an `IN_PROGRESS` status update for the given job. The
+    /// `status_details` can be any serializable type describing current
+    /// progress.
+    ///
+    /// Progress updates use QoS 0 (fire-and-forget) since they are
+    /// non-critical and frequent.
+    pub async fn report_progress<S: Serialize>(
+        &self,
+        job_id: &str,
+        status_details: &S,
+    ) -> Result<(), JobError> {
+        let client_id = self.mqtt.0.client_id();
+
+        let topic = JobTopic::Update(job_id)
+            .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(client_id)?;
+
+        let payload = Jobs::update(JobStatus::InProgress)
+            .client_token(client_id)
+            .status_details(status_details);
+
+        self.mqtt
+            .0
+            .publish(&topic, payload)
+            .await
+            .map_err(|_| JobError::Mqtt)
+    }
+
+    /// Mark a job as successfully completed.
+    ///
+    /// Publishes a `SUCCEEDED` status update and waits for the cloud to
+    /// acknowledge. Optional `status_details` can carry final result
+    /// information.
+    pub async fn succeed_job<S: Serialize>(
+        &self,
+        job_id: &str,
+        status_details: Option<&S>,
+    ) -> Result<(), JobError> {
+        match status_details {
+            Some(details) => {
+                let payload = Jobs::update(JobStatus::Succeeded).status_details(details);
+                self.publish_and_wait(job_id, payload).await
+            }
+            None => {
+                let payload = Jobs::update(JobStatus::Succeeded);
+                self.publish_and_wait(job_id, payload).await
+            }
+        }
+    }
+
+    /// Mark a job as failed.
+    ///
+    /// Publishes a `FAILED` status update and waits for the cloud to
+    /// acknowledge. Optional `status_details` can carry failure information.
+    pub async fn fail_job<S: Serialize>(
+        &self,
+        job_id: &str,
+        status_details: Option<&S>,
+    ) -> Result<(), JobError> {
+        match status_details {
+            Some(details) => {
+                let payload = Jobs::update(JobStatus::Failed).status_details(details);
+                self.publish_and_wait(job_id, payload).await
+            }
+            None => {
+                let payload = Jobs::update(JobStatus::Failed);
+                self.publish_and_wait(job_id, payload).await
+            }
+        }
+    }
+
     /// Reject a job with a reason string.
     ///
     /// Publishes a `REJECTED` status update for the given job and waits for
@@ -93,10 +166,20 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
     /// This is job-agnostic — it works for any AWS IoT Jobs execution, not
     /// only OTA jobs.
     pub async fn reject_job(&self, job_id: &str, reason: &str) -> Result<(), JobError> {
+        let details = RejectDetails { reason };
+        let payload = Jobs::update(JobStatus::Rejected)
+            .status_details(&details);
+        self.publish_and_wait(job_id, payload).await
+    }
+
+    /// Publish a job update with QoS 1 and wait for the cloud to acknowledge.
+    async fn publish_and_wait<S: Serialize>(
+        &self,
+        job_id: &str,
+        payload: Update<'_, S>,
+    ) -> Result<(), JobError> {
         let client_id = self.mqtt.0.client_id();
 
-        // Subscribe to accepted/rejected before publishing so we can confirm
-        // the cloud processed the update.
         let accepted_topic = JobTopic::UpdateAccepted(job_id)
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(client_id)?;
         let rejected_topic = JobTopic::UpdateRejected(job_id)
@@ -112,14 +195,10 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
             .await
             .map_err(|_| JobError::Mqtt)?;
 
-        // Publish the rejection with QoS 1
         let topic = JobTopic::Update(job_id)
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(client_id)?;
 
-        let details = RejectDetails { reason };
-        let payload = Jobs::update(JobStatus::Rejected)
-            .client_token(client_id)
-            .status_details(&details);
+        let payload = payload.client_token(client_id);
 
         self.mqtt
             .0
@@ -127,7 +206,6 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
             .await
             .map_err(|_| JobError::Mqtt)?;
 
-        // Wait for the cloud to accept or reject the update
         loop {
             let message = match embassy_time::with_timeout(
                 embassy_time::Duration::from_secs(5),

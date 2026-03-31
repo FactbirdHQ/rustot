@@ -70,8 +70,20 @@ mod reqwest_impl {
     }
 
     impl ReqwestClient {
-        pub fn new(client: reqwest::Client) -> Self {
+        pub fn new() -> Self {
+            Self {
+                client: reqwest::Client::new(),
+            }
+        }
+
+        pub fn new_from_client(client: reqwest::Client) -> Self {
             Self { client }
+        }
+    }
+
+    impl Default for ReqwestClient {
+        fn default() -> Self {
+            Self::new()
         }
     }
 
