@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
 
 use super::{
+    JobError, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN, Topic,
     data_types::{DescribeJobExecutionResponse, JobExecution, JobStatus, NextJobExecutionChanged},
     update::Update,
-    JobError, JobTopic, Jobs, Topic, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN,
 };
 
 /// Helper for the AWS IoT Jobs subscribe/describe lifecycle.

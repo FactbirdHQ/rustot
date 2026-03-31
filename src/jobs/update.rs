@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::jobs::{data_types::JobStatus, MAX_CLIENT_TOKEN_LEN};
+use crate::jobs::{MAX_CLIENT_TOKEN_LEN, data_types::JobStatus};
 use crate::mqtt::{PayloadError, ToPayload};
 
 /// Updates the status of a job execution. You can optionally create a step

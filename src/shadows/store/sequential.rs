@@ -124,11 +124,11 @@ impl<S: NorFlash, M: RawMutex, C: KeyCacheImpl<String<MAX_KEY_LEN>>, const MAX_K
 // =============================================================================
 
 impl<
-        S: NorFlash + MultiwriteNorFlash,
-        M: RawMutex,
-        C: KeyCacheImpl<String<MAX_KEY_LEN>>,
-        const MAX_KEY_LEN: usize,
-    > KVStore for SequentialKVStore<S, M, C, MAX_KEY_LEN>
+    S: NorFlash + MultiwriteNorFlash,
+    M: RawMutex,
+    C: KeyCacheImpl<String<MAX_KEY_LEN>>,
+    const MAX_KEY_LEN: usize,
+> KVStore for SequentialKVStore<S, M, C, MAX_KEY_LEN>
 {
     type Error = SequentialKVStoreError<S::Error>;
 
@@ -255,12 +255,12 @@ impl<
 // =============================================================================
 
 impl<
-        St: KVPersist + Default,
-        S: NorFlash + MultiwriteNorFlash,
-        M: RawMutex,
-        C: KeyCacheImpl<String<MAX_KEY_LEN>>,
-        const MAX_KEY_LEN: usize,
-    > StateStore<St> for SequentialKVStore<S, M, C, MAX_KEY_LEN>
+    St: KVPersist + Default,
+    S: NorFlash + MultiwriteNorFlash,
+    M: RawMutex,
+    C: KeyCacheImpl<String<MAX_KEY_LEN>>,
+    const MAX_KEY_LEN: usize,
+> StateStore<St> for SequentialKVStore<S, M, C, MAX_KEY_LEN>
 {
     type Error = SequentialKVStoreError<S::Error>;
 

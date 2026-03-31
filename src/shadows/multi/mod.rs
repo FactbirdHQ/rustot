@@ -61,8 +61,8 @@ mod manager;
 pub use error::{MultiShadowError, MultiShadowResult};
 pub use manager::MultiShadowManager;
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use super::ShadowNode;
 

@@ -6,7 +6,7 @@
 
 use core::fmt::Write;
 
-use serde::{ser::SerializeMap, Serialize, Serializer};
+use serde::{Serialize, Serializer, ser::SerializeMap};
 
 /// Trait for types that can contribute fields to status details.
 ///

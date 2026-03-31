@@ -4,7 +4,7 @@
 //! - `Vec<T>` — opaque leaf type
 //! - `HashMap<K, V>` — map collection with per-entry Patch deltas
 
-use crate::shadows::{fnv1a_hash, ParseError, ReportedUnionFields, ShadowNode, VariantResolver};
+use crate::shadows::{ParseError, ReportedUnionFields, ShadowNode, VariantResolver, fnv1a_hash};
 use serde::ser::SerializeMap;
 use std::collections::HashMap;
 use std::string::String;
@@ -13,7 +13,7 @@ use std::vec::Vec;
 #[cfg(feature = "shadows_kv_persist")]
 use crate::shadows::{KVPersist, KVStore, KvError, LoadFieldResult, MapKey, MigrationSource};
 #[cfg(feature = "shadows_kv_persist")]
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::shadows::data_types::Patch;
 use std::hash::Hash;

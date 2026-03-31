@@ -6,7 +6,7 @@
 //!
 //! All implementations are strictly no_std / no_alloc.
 
-use crate::shadows::{fnv1a_hash, ParseError, ReportedUnionFields, ShadowNode, VariantResolver};
+use crate::shadows::{ParseError, ReportedUnionFields, ShadowNode, VariantResolver, fnv1a_hash};
 use serde::ser::SerializeMap;
 
 #[cfg(feature = "shadows_kv_persist")]
@@ -14,7 +14,7 @@ use crate::shadows::{KVPersist, KVStore, KvError, LoadFieldResult, MapKey, Migra
 #[cfg(feature = "shadows_kv_persist")]
 use postcard::experimental::max_size::MaxSize;
 #[cfg(feature = "shadows_kv_persist")]
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::shadows::data_types::Patch;
 
@@ -465,13 +465,12 @@ where
             let mut has_cleanup = false;
 
             for (key, patch) in patches.iter() {
-                if let Patch::Set(inner_delta) = patch {
-                    if let Some(v) = self.get(key) {
-                        if let Some(inner_cleanup) = v.desired_cleanup(inner_delta) {
-                            let _ = result.insert(key.clone(), Patch::Set(inner_cleanup));
-                            has_cleanup = true;
-                        }
-                    }
+                if let Patch::Set(inner_delta) = patch
+                    && let Some(v) = self.get(key)
+                    && let Some(inner_cleanup) = v.desired_cleanup(inner_delta)
+                {
+                    let _ = result.insert(key.clone(), Patch::Set(inner_cleanup));
+                    has_cleanup = true;
                 }
             }
 
@@ -668,10 +667,9 @@ where
                     .fetch(key_buf.as_str(), kb.as_mut())
                     .await
                     .map_err(KvError::Kv)?
+                    && let Ok(key) = postcard::from_bytes::<K>(data)
                 {
-                    if let Ok(key) = postcard::from_bytes::<K>(data) {
-                        let _ = current_keys.push(key);
-                    }
+                    let _ = current_keys.push(key);
                 }
                 key_buf.truncate(__saved_len);
             }
@@ -939,9 +937,10 @@ mod tests {
         let delta = DeltaLinearMap(Some(patches));
 
         map.apply_delta(&delta);
-        assert!(map
-            .get(&heapless::String::<4>::try_from("a").unwrap())
-            .is_none());
+        assert!(
+            map.get(&heapless::String::<4>::try_from("a").unwrap())
+                .is_none()
+        );
     }
 
     #[test]
@@ -1041,9 +1040,11 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(loaded
-                .get(&heapless::String::<4>::try_from("a").unwrap())
-                .is_none());
+            assert!(
+                loaded
+                    .get(&heapless::String::<4>::try_from("a").unwrap())
+                    .is_none()
+            );
             assert_eq!(
                 loaded.get(&heapless::String::<4>::try_from("b").unwrap()),
                 Some(&2)

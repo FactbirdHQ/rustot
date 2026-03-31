@@ -8,12 +8,11 @@ use common::file_handler::{FileHandler, State as FileHandlerState};
 use serial_test::serial;
 
 use rustot::{
-    jobs::stream::{parse_job_message, JobAgent},
-    mqtt::{rumqttc::RumqttcClient, Mqtt, MqttClient, MqttSubscription},
+    jobs::stream::{JobAgent, parse_job_message},
+    mqtt::{Mqtt, MqttClient, MqttSubscription, rumqttc::RumqttcClient},
     transfer::{
-        self,
+        self, Transfer,
         data_interface::http::{HttpInterface, ReqwestClient},
-        Transfer,
     },
 };
 

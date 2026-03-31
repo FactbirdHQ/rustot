@@ -64,7 +64,7 @@ impl LoadFieldResult {
 }
 
 // Re-export hash functions (for derive macro use)
-pub use hash::{fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64, FNV1A_INIT};
+pub use hash::{FNV1A_INIT, fnv1a_byte, fnv1a_bytes, fnv1a_hash, fnv1a_u64};
 
 // Re-export tag scanner for adjacently-tagged enum deserialization
 pub use tag_scanner::{FieldScanner, ScanError, TaggedJsonScan};

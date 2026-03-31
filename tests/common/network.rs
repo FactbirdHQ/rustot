@@ -45,10 +45,10 @@ impl Dns for Network {
         for ip in tokio::net::lookup_host(format!("{}:0", host)).await? {
             match (&addr_type, ip) {
                 (AddrType::IPv4 | AddrType::Either, SocketAddr::V4(ip)) => {
-                    return Ok(IpAddr::V4(Ipv4Addr::from(ip.ip().octets())))
+                    return Ok(IpAddr::V4(Ipv4Addr::from(ip.ip().octets())));
                 }
                 (AddrType::IPv6 | AddrType::Either, SocketAddr::V6(ip)) => {
-                    return Ok(IpAddr::V6(Ipv6Addr::from(ip.ip().octets())))
+                    return Ok(IpAddr::V6(Ipv6Addr::from(ip.ip().octets())));
                 }
                 (_, _) => {}
             }
@@ -122,10 +122,10 @@ impl Dns for TlsNetwork {
 
             match (&addr_type, ip) {
                 (AddrType::IPv4 | AddrType::Either, SocketAddr::V4(ip)) => {
-                    return Ok(IpAddr::V4(Ipv4Addr::from(ip.ip().octets())))
+                    return Ok(IpAddr::V4(Ipv4Addr::from(ip.ip().octets())));
                 }
                 (AddrType::IPv6 | AddrType::Either, SocketAddr::V6(ip)) => {
-                    return Ok(IpAddr::V6(Ipv6Addr::from(ip.ip().octets())))
+                    return Ok(IpAddr::V6(Ipv6Addr::from(ip.ip().octets())));
                 }
                 (_, _) => {}
             }

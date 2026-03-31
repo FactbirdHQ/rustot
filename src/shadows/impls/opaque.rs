@@ -210,7 +210,7 @@ impl_opaque!(core::net::SocketAddr => 30);
 
 #[cfg(test)]
 mod tests {
-    use crate::shadows::{fnv1a_hash, ShadowNode};
+    use crate::shadows::{ShadowNode, fnv1a_hash};
 
     #[test]
     fn test_primitive_delta_types() {

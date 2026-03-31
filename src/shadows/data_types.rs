@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{tag_scanner::FieldScanner, ParseError, ShadowNode, VariantResolver};
+use super::{ParseError, ShadowNode, VariantResolver, tag_scanner::FieldScanner};
 
 #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]

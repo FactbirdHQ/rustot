@@ -7,9 +7,9 @@ pub mod network;
 use rustot::{
     jobs::data_types::JobExecution,
     transfer::{
-        encoding::{afr_ota::OtaJob, JobContext},
-        error::TransferError,
         StatusDetailsExt,
+        encoding::{JobContext, afr_ota::OtaJob},
+        error::TransferError,
     },
 };
 use serde::Deserialize;

@@ -121,13 +121,13 @@ impl FileKVStore {
 
     /// Encode a key to a filesystem-safe filename.
     fn encode_key(key: &str) -> String {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         URL_SAFE_NO_PAD.encode(key.as_bytes())
     }
 
     /// Decode a filename back to a key.
     fn decode_key(filename: &str) -> Option<String> {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         URL_SAFE_NO_PAD
             .decode(filename)
             .ok()

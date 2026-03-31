@@ -1,6 +1,6 @@
 //! Platform abstraction traits for file transfers and OTA updates.
-use super::encoding::JobContext;
 use super::StatusDetailsExt;
+use super::encoding::JobContext;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -249,7 +249,7 @@ pub trait TransferPal {
     /// Called when a transfer fails or is cancelled. Use this to delete
     /// partially written files, release file handles, etc.
     async fn abort(&mut self, file: &JobContext<'_, impl StatusDetailsExt>)
-        -> Result<(), PalError>;
+    -> Result<(), PalError>;
 }
 
 /// Platform abstraction for OTA firmware updates.

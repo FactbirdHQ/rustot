@@ -2,9 +2,9 @@ use crate::jobs::data_types::JobStatus;
 use crate::transfer::status_details::StatusDetailsExt;
 
 use super::{
-    encoding::{json::JobStatusReason, JobContext},
-    error::TransferError,
     ProgressState,
+    encoding::{JobContext, json::JobStatusReason},
+    error::TransferError,
 };
 
 pub mod mqtt;

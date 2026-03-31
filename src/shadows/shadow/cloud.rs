@@ -9,13 +9,13 @@ use crate::mqtt::{
 };
 
 use crate::shadows::{
+    ShadowRoot,
     data_types::{
         AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
     },
     error::{Error, ShadowError},
     store::StateStore,
-    topics::{max_topic_len, Topic},
-    ShadowRoot,
+    topics::{Topic, max_topic_len},
 };
 
 use super::Shadow;

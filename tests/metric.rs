@@ -20,10 +20,10 @@ use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use heapless::LinearMap;
-use mqttrust::{self, transport::embedded_nal::NalTransport, Config, DomainBroker, State};
+use mqttrust::{self, Config, DomainBroker, State, transport::embedded_nal::NalTransport};
 use rustot::defender_metrics::{
-    data_types::{CustomMetric, Metric},
     MetricHandler,
+    data_types::{CustomMetric, Metric},
 };
 use static_cell::StaticCell;
 

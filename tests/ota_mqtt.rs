@@ -16,9 +16,9 @@ use static_cell::StaticCell;
 
 use aws_credential_types::provider::SharedCredentialsProvider;
 use rustot::{
-    jobs::stream::{parse_job_message, JobAgent},
+    jobs::stream::{JobAgent, parse_job_message},
     mqtt::{Mqtt, OwnedMessage},
-    transfer::{self, pal::PalError, Transfer},
+    transfer::{self, Transfer, pal::PalError},
 };
 
 #[tokio::test(flavor = "current_thread")]
@@ -170,7 +170,9 @@ async fn test_mqtt_ota_signature_failure() {
     let ctx = match common::aws_ota::setup().await {
         Some(ctx) => ctx,
         None => {
-            log::info!("Skipping OTA signature failure test: no valid AWS credentials or role assumption failed");
+            log::info!(
+                "Skipping OTA signature failure test: no valid AWS credentials or role assumption failed"
+            );
             return;
         }
     };

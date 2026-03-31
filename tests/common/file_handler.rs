@@ -1,8 +1,8 @@
 use core::ops::Deref;
 use rustot::transfer::{
+    StatusDetailsExt,
     encoding::json,
     pal::{BlockWriter, OtaPal, PalError, PalImageState, TransferPal},
-    StatusDetailsExt,
 };
 use serde::ser::SerializeMap;
 use sha2::{Digest, Sha256};

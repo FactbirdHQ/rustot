@@ -12,8 +12,8 @@ use crate::shadows::data_types::{
 use crate::shadows::store::StateStore;
 use crate::shadows::topics::Topic;
 
-use super::error::{MultiShadowError, MultiShadowResult};
 use super::MultiShadowRoot;
+use super::error::{MultiShadowError, MultiShadowResult};
 
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;

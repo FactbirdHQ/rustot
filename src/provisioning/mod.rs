@@ -5,7 +5,7 @@ pub mod topics;
 use core::future::Future;
 
 use crate::mqtt::{DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub use error::Error;
 
