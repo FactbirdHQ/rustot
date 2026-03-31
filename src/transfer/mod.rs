@@ -533,8 +533,8 @@ impl Transfer {
                     block.block_payload,
                 )
                 .await
-                .map_err(|e| {
-                    error!("Block write failed: {:?}", e);
+                .map_err(|_| {
+                    error!("Block write failed");
                     error::TransferError::WriteFailed
                 })?;
 
