@@ -13,7 +13,7 @@ use crate::{
     transfer::{
         config::Config,
         data_interface::{BlockProgress, DataInterface, FileBlock, Protocol, RawBlock},
-        encoding::{cbor, Bitmap, JobContext},
+        encoding::{Bitmap, JobContext, cbor},
     },
 };
 

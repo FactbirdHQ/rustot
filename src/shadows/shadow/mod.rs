@@ -21,7 +21,7 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use crate::mqtt::MqttClient;
 
 use crate::shadows::{
-    commit::CommitStats, error::KvError, migration::LoadResult, store::StateStore, ShadowRoot,
+    ShadowRoot, commit::CommitStats, error::KvError, migration::LoadResult, store::StateStore,
 };
 
 /// A shadow instance managing state persistence via StateStore with MQTT cloud connectivity.

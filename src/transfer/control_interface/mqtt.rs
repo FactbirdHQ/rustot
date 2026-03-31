@@ -2,11 +2,11 @@ use super::ControlInterface;
 use crate::jobs::data_types::{ErrorResponse, JobStatus};
 use crate::jobs::{self, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
 use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
-use crate::transfer::encoding::json::JobStatusReason;
+use crate::transfer::ProgressState;
 use crate::transfer::encoding::JobContext;
+use crate::transfer::encoding::json::JobStatusReason;
 use crate::transfer::error::TransferError;
 use crate::transfer::status_details::StatusDetailsExt;
-use crate::transfer::ProgressState;
 
 impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
     /// Check for next available OTA job from the job service by publishing a

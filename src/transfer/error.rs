@@ -1,4 +1,4 @@
-use crate::jobs::{data_types::ErrorCode, JobError};
+use crate::jobs::{JobError, data_types::ErrorCode};
 
 use super::pal::PalError;
 

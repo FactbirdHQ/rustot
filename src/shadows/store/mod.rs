@@ -29,8 +29,8 @@ pub use sequential::SequentialKVStore;
 pub use file::FileKVStore;
 
 use crate::shadows::{
-    commit::CommitStats, error::KvError, migration::LoadResult, ParseError, ShadowNode,
-    VariantResolver,
+    ParseError, ShadowNode, VariantResolver, commit::CommitStats, error::KvError,
+    migration::LoadResult,
 };
 use core::fmt::Debug;
 

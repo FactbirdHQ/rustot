@@ -6,7 +6,7 @@ use errors::{ErrorResponse, MetricError};
 #[cfg(feature = "metric_cbor")]
 use serde::Deserialize;
 use serde::Serialize;
-use topics::{Topic, MAX_DEFENDER_TOPIC_LEN};
+use topics::{MAX_DEFENDER_TOPIC_LEN, Topic};
 
 pub mod aws_types;
 pub mod data_types;
@@ -139,7 +139,7 @@ mod tests {
 
     use super::data_types::*;
 
-    use serde::{ser::SerializeStruct, Serialize};
+    use serde::{Serialize, ser::SerializeStruct};
     use serde_json_core::heapless::{LinearMap, String};
 
     #[test]
@@ -299,7 +299,10 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"MyMetricOfType_Number\":[{\"number\":23}]}}", payload.as_str())
+        assert_eq!(
+            "{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"MyMetricOfType_Number\":[{\"number\":23}]}}",
+            payload.as_str()
+        )
     }
     #[test]
     fn custom_serialization_string_list() {
@@ -345,7 +348,10 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"cell_type\":[{\"string_list\":[\"gsm\"]}]}}", payload.as_str())
+        assert_eq!(
+            "{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"cell_type\":[{\"string_list\":[\"gsm\"]}]}}",
+            payload.as_str()
+        )
     }
     #[test]
     fn number() {
@@ -367,7 +373,10 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"myMetric\":[{\"number\":23}]}}", payload.as_str())
+        assert_eq!(
+            "{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"myMetric\":[{\"number\":23}]}}",
+            payload.as_str()
+        )
     }
 
     #[test]
@@ -391,7 +400,10 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"my_number_list\":[{\"number_list\":[123,456,789]}]}}", payload.as_str())
+        assert_eq!(
+            "{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"my_number_list\":[{\"number_list\":[123,456,789]}]}}",
+            payload.as_str()
+        )
     }
 
     #[test]
@@ -418,7 +430,10 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"my_string_list\":[{\"string_list\":[\"value_1\",\"value_2\"]}]}}", payload.as_str())
+        assert_eq!(
+            "{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"my_string_list\":[{\"string_list\":[\"value_1\",\"value_2\"]}]}}",
+            payload.as_str()
+        )
     }
 
     #[test]
@@ -461,6 +476,9 @@ mod tests {
 
         let payload: String<4000> = serde_json_core::to_string(&metric).unwrap();
 
-        assert_eq!("{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"MyMetricOfType_Number\":[{\"number\":1}],\"MyMetricOfType_NumberList\":[{\"number_list\":[1,2,3]}],\"MyMetricOfType_StringList\":[{\"string_list\":[\"value_1\",\"value_2\"]}],\"MyMetricOfType_IpList\":[{\"ip_list\":[\"172.0.0.0\",\"172.0.0.10\"]}]}}", payload.as_str())
+        assert_eq!(
+            "{\"hed\":{\"rid\":0,\"v\":\"1.0\"},\"met\":null,\"cmet\":{\"MyMetricOfType_Number\":[{\"number\":1}],\"MyMetricOfType_NumberList\":[{\"number_list\":[1,2,3]}],\"MyMetricOfType_StringList\":[{\"string_list\":[\"value_1\",\"value_2\"]}],\"MyMetricOfType_IpList\":[{\"ip_list\":[\"172.0.0.0\",\"172.0.0.10\"]}]}}",
+            payload.as_str()
+        )
     }
 }

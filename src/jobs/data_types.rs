@@ -1,7 +1,7 @@
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 
-use super::{StatusDetails, MAX_JOB_ID_LEN, MAX_PENDING_JOBS, MAX_RUNNING_JOBS};
+use super::{MAX_JOB_ID_LEN, MAX_PENDING_JOBS, MAX_RUNNING_JOBS, StatusDetails};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

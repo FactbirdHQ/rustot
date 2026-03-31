@@ -529,7 +529,7 @@ impl<'a> Scanner<'a> {
                 return Err(ScanError::Expected {
                     expected: b'0',
                     found: self.peek(),
-                })
+                });
             }
         }
 
@@ -591,7 +591,7 @@ impl<'a> Scanner<'a> {
                     return Err(ScanError::Expected {
                         expected: b'}',
                         found,
-                    })
+                    });
                 }
             }
         }
@@ -621,7 +621,7 @@ impl<'a> Scanner<'a> {
                     return Err(ScanError::Expected {
                         expected: b']',
                         found,
-                    })
+                    });
                 }
             }
         }
@@ -676,7 +676,7 @@ impl<'a> Scanner<'a> {
                     return Err(ScanError::Expected {
                         expected: b'}',
                         found,
-                    })
+                    });
                 }
             }
         }
@@ -730,7 +730,7 @@ impl<'a> Scanner<'a> {
                     return Err(ScanError::Expected {
                         expected: b'}',
                         found,
-                    })
+                    });
                 }
             }
         }

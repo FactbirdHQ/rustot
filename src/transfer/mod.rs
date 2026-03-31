@@ -79,7 +79,11 @@ impl Transfer {
         );
 
         if !job.protocols.contains(&D::PROTOCOL) {
-            error!("Unable to handle current job with given data interface ({:?}). Supported protocols: {:?}.", D::PROTOCOL, job.protocols);
+            error!(
+                "Unable to handle current job with given data interface ({:?}). Supported protocols: {:?}.",
+                D::PROTOCOL,
+                job.protocols
+            );
             return Err(error::TransferError::InvalidInterface);
         }
 
@@ -168,7 +172,11 @@ impl Transfer {
 
         // Protocol check with image state reporting
         if !job.protocols.contains(&D::PROTOCOL) {
-            error!("Unable to handle current OTA job with given data interface ({:?}). Supported protocols: {:?}. Aborting current update.", D::PROTOCOL, job.protocols);
+            error!(
+                "Unable to handle current OTA job with given data interface ({:?}). Supported protocols: {:?}. Aborting current update.",
+                D::PROTOCOL,
+                job.protocols
+            );
             Self::set_image_state_with_reason(
                 pal,
                 &job_updater,
@@ -344,7 +352,9 @@ impl Transfer {
                                 }
                             }
                             Ok(None) => {
-                                warn!("Data stream ended (clean session/disconnect). Re-establishing and resuming...");
+                                warn!(
+                                    "Data stream ended (clean session/disconnect). Re-establishing and resuming..."
+                                );
                                 // Break inner loop to trigger re-establishment
                                 break;
                             }
@@ -426,12 +436,16 @@ impl Transfer {
             }
             (false, false) => Ok(Some(())),
             (false, true) => {
-                error!("Rejecting new image and rebooting: The platform is in the self-test state while the job is not.");
+                error!(
+                    "Rejecting new image and rebooting: The platform is in the self-test state while the job is not."
+                );
                 pal.reset_device().await?;
                 Err(error::TransferError::ResetFailed)
             }
             (true, false) => {
-                error!("Rejecting new image and rebooting: the job is in the self-test state while the platform is not.");
+                error!(
+                    "Rejecting new image and rebooting: the job is in the self-test state while the platform is not."
+                );
                 Self::set_image_state_with_reason(
                     pal,
                     job_updater,
