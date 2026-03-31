@@ -345,14 +345,6 @@ impl Transfer {
                             }
                             Ok(None) => {
                                 warn!("Data stream ended (clean session/disconnect). Re-establishing and resuming...");
-
-                                let blocks_remaining = {
-                                    let progress = progress_state.lock().await;
-                                    progress.blocks_remaining
-                                };
-
-                                info!("Resuming transfer: {} blocks remaining", blocks_remaining);
-
                                 // Break inner loop to trigger re-establishment
                                 break;
                             }
@@ -371,6 +363,15 @@ impl Transfer {
                         transfer.on_block_written(&bp).await?;
                     }
                 }
+
+                // Stream disconnected — close the transfer before re-establishing
+                let _ = transfer.close().await;
+
+                let blocks_remaining = {
+                    let progress = progress_state.lock().await;
+                    progress.blocks_remaining
+                };
+                info!("Resuming transfer: {} blocks remaining", blocks_remaining);
             }
         };
 

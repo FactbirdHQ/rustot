@@ -2,13 +2,14 @@
 //!
 //! This module provides an std/tokio-based MQTT client using `greengrass-ipc-rust`.
 //! Greengrass IPC natively supports single-topic subscriptions; multi-topic
-//! subscriptions are implemented by merging individual streams via `SelectAll`.
+//! subscriptions are implemented by polling individual streams.
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
 
 use bytes::Bytes;
-use futures::stream::SelectAll;
-use futures::StreamExt;
+use futures::Stream;
 
 use crate::mqtt::{MqttMessage, MqttSubscription, PublishOptions, QoS, ToPayload};
 
@@ -115,7 +116,7 @@ impl crate::mqtt::MqttClient for GreengrassClient {
         let client = self.client.clone();
         let topics_owned: [(&str, QoS); N] = *topics;
         async move {
-            let mut merged = SelectAll::new();
+            let mut streams = Vec::with_capacity(N);
             for (topic, qos) in &topics_owned {
                 let stream = client
                     .subscribe_to_iot_core(greengrass_ipc_rust::SubscribeToIoTCoreRequest {
@@ -123,17 +124,39 @@ impl crate::mqtt::MqttClient for GreengrassClient {
                         qos: to_gg_qos(*qos),
                     })
                     .await?;
-                merged.push(stream);
+                streams.push(stream);
             }
 
-            Ok(GreengrassSubscription { merged })
+            Ok(GreengrassSubscription { streams })
         }
     }
 }
 
 /// Subscription wrapper for Greengrass.
+///
+/// Holds the underlying IPC stream operations. Call [`close()`](Self::close)
+/// to deterministically terminate all streams before dropping. If `close()` is
+/// not called, `Drop` on each [`StreamOperation`] performs best-effort cleanup
+/// via fire-and-forget async tasks.
 pub struct GreengrassSubscription {
-    merged: SelectAll<greengrass_ipc_rust::StreamOperation<greengrass_ipc_rust::IoTCoreMessage>>,
+    streams: Vec<greengrass_ipc_rust::StreamOperation<greengrass_ipc_rust::IoTCoreMessage>>,
+}
+
+impl GreengrassSubscription {
+    /// Explicitly close all underlying IPC streams, awaiting each termination.
+    ///
+    /// Mirrors [`StreamOperation::close()`] — each stream sends
+    /// `TERMINATE_STREAM` and unregisters its handler synchronously (awaited).
+    /// Because the handler is removed before `Drop` runs, the `Drop` impl on
+    /// each `StreamOperation` becomes a no-op (it cannot find the stream in
+    /// the map).
+    pub async fn close(self) -> Result<(), greengrass_ipc_rust::Error> {
+        for stream in self.streams {
+            // Errors are non-fatal: the stream may already be closed server-side.
+            let _ = stream.close().await;
+        }
+        Ok(())
+    }
 }
 
 impl MqttSubscription for GreengrassSubscription {
@@ -144,14 +167,30 @@ impl MqttSubscription for GreengrassSubscription {
     type Error = greengrass_ipc_rust::Error;
 
     async fn next_message(&mut self) -> Option<Self::Message<'_>> {
-        self.merged.next().await.map(|iot_msg| GreengrassMessage {
-            inner: iot_msg.message,
+        futures::future::poll_fn(|cx| {
+            let mut all_done = true;
+            for stream in self.streams.iter_mut() {
+                match Pin::new(stream).poll_next(cx) {
+                    Poll::Ready(Some(msg)) => {
+                        return Poll::Ready(Some(GreengrassMessage { inner: msg.message }));
+                    }
+                    Poll::Ready(None) => continue,
+                    Poll::Pending => {
+                        all_done = false;
+                    }
+                }
+            }
+            if all_done {
+                Poll::Ready(None)
+            } else {
+                Poll::Pending
+            }
         })
+        .await
     }
 
     async fn unsubscribe(self) -> Result<(), Self::Error> {
-        drop(self.merged);
-        Ok(())
+        self.close().await
     }
 }
 

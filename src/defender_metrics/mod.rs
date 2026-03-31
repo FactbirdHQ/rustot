@@ -62,7 +62,9 @@ impl<'m, C: MqttClient> MetricHandler<'m, C> {
             .await
             .map_err(|_| MetricError::PublishSubscribe)?;
 
-        self.await_metric_response(&mut subscription).await
+        let result = self.await_metric_response(&mut subscription).await;
+        let _ = subscription.unsubscribe().await;
+        result
     }
 
     async fn await_metric_response(

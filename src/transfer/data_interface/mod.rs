@@ -81,6 +81,16 @@ pub trait BlockTransfer {
     /// Passes the updated progress so the transfer can request more blocks
     /// when a batch is exhausted (MQTT) or advance its internal cursor (HTTP).
     async fn on_block_written(&mut self, progress: &BlockProgress) -> Result<(), TransferError>;
+
+    /// Explicitly close the transfer session, releasing any subscriptions.
+    ///
+    /// If not called, cleanup is best-effort via `Drop`.
+    async fn close(self) -> Result<(), TransferError>
+    where
+        Self: Sized,
+    {
+        Ok(())
+    }
 }
 
 pub trait DataInterface {

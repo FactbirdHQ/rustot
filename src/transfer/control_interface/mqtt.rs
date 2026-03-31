@@ -71,7 +71,7 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
         // For QoS 1 updates, subscribe to accepted/rejected before publishing
         // so we can verify the cloud processed the update. Critical for the
         // final Succeeded update before reboot.
-        let mut sub = if qos == QoS::AtLeastOnce {
+        let sub = if qos == QoS::AtLeastOnce {
             let accepted_topic =
                 JobTopic::UpdateAccepted(job_name)
                     .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
@@ -110,8 +110,8 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
             .map_err(|_| TransferError::Mqtt)?;
 
         // For QoS 1: wait for accepted/rejected response
-        if let Some(ref mut sub) = sub {
-            loop {
+        if let Some(mut sub) = sub {
+            let result = loop {
                 let message = match embassy_time::with_timeout(
                     embassy_time::Duration::from_secs(5),
                     sub.next_message(),
@@ -119,16 +119,16 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
                 .await
                 {
                     Ok(Some(msg)) => msg,
-                    Ok(None) => return Err(TransferError::Mqtt),
+                    Ok(None) => break Err(TransferError::Mqtt),
                     Err(_) => {
                         warn!("Timeout waiting for job update accepted/rejected");
-                        return Err(TransferError::Timeout);
+                        break Err(TransferError::Timeout);
                     }
                 };
 
                 match jobs::Topic::from_str(message.topic_name()) {
                     Some(jobs::Topic::UpdateAccepted(_)) => {
-                        return Ok(());
+                        break Ok(());
                     }
                     Some(jobs::Topic::UpdateRejected(_)) => {
                         let (error_response, _) =
@@ -136,14 +136,17 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
                                 .map_err(|_| TransferError::Mqtt)?;
 
                         error!("Job update rejected: {:?}", error_response.message);
-                        return Err(TransferError::UpdateRejected(error_response.code));
+                        break Err(TransferError::UpdateRejected(error_response.code));
                     }
                     _ => {
                         // Not our topic, keep waiting
                         continue;
                     }
                 }
-            }
+            };
+
+            let _ = sub.unsubscribe().await;
+            return result;
         }
 
         Ok(())

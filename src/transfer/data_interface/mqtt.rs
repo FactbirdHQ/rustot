@@ -344,6 +344,13 @@ impl<'t, S: MqttSubscription, C: MqttClient> BlockTransfer for MqttTransfer<'t, 
         }
         Ok(())
     }
+
+    async fn close(self) -> Result<(), TransferError> {
+        self.sub
+            .unsubscribe()
+            .await
+            .map_err(|_| TransferError::Mqtt)
+    }
 }
 
 impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {

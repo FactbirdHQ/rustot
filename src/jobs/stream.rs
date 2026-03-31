@@ -205,7 +205,7 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
             .await
             .map_err(|_| JobError::Mqtt)?;
 
-        loop {
+        let result = loop {
             let message = match embassy_time::with_timeout(
                 embassy_time::Duration::from_secs(5),
                 sub.next_message(),
@@ -213,16 +213,19 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
             .await
             {
                 Ok(Some(msg)) => msg,
-                Ok(None) => return Err(JobError::Mqtt),
-                Err(_) => return Err(JobError::Timeout),
+                Ok(None) => break Err(JobError::Mqtt),
+                Err(_) => break Err(JobError::Timeout),
             };
 
             match Topic::from_str(message.topic_name()) {
-                Some(Topic::UpdateAccepted(_)) => return Ok(()),
-                Some(Topic::UpdateRejected(_)) => return Err(JobError::Mqtt),
+                Some(Topic::UpdateAccepted(_)) => break Ok(()),
+                Some(Topic::UpdateRejected(_)) => break Err(JobError::Mqtt),
                 _ => continue,
             }
-        }
+        };
+
+        let _ = sub.unsubscribe().await;
+        result
     }
 }
 
