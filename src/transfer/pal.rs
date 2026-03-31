@@ -159,6 +159,7 @@ pub trait BlockWriter {
 }
 
 /// Blanket implementation: any [`NorFlash`] is a [`BlockWriter`].
+#[cfg(feature = "sequential_storage")]
 impl<T: embedded_storage_async::nor_flash::NorFlash> BlockWriter for T {
     type Error = T::Error;
 

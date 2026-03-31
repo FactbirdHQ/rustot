@@ -364,7 +364,9 @@ where
             .await
             .map_err(|e| MultiShadowError::Mqtt(format!("{:?}", e)))?;
 
-        let delta_state = self.wait_for_response(&shadow_name, &mut sub, None).await?;
+        let result = self.wait_for_response(&shadow_name, &mut sub, None).await;
+        let _ = sub.unsubscribe().await;
+        let delta_state = result?;
 
         let prefix = Self::shadow_name(id);
         let mut state: T =
@@ -529,6 +531,8 @@ where
         })
         .await;
 
+        let _ = sub.unsubscribe().await;
+
         match result {
             Ok(Ok(())) | Err(_) => {
                 let prefix = Self::shadow_name(id);
@@ -645,8 +649,11 @@ where
             .await
             .map_err(|e| MultiShadowError::Mqtt(format!("{:?}", e)))?;
 
-        self.wait_for_response(shadow_name, &mut sub, client_token)
-            .await
+        let result = self
+            .wait_for_response(shadow_name, &mut sub, client_token)
+            .await;
+        let _ = sub.unsubscribe().await;
+        result
     }
 
     /// Wait for accepted/rejected response on a merged subscription.

@@ -155,7 +155,7 @@ where
         //*** WAIT RESPONSE ***/
         debug!("Wait for Accepted or Rejected");
 
-        loop {
+        let result = loop {
             let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
             match Topic::from_str(S::PREFIX, message.topic_name()) {
@@ -169,7 +169,7 @@ where
                         continue;
                     }
 
-                    return Ok(response.state);
+                    break Ok(response.state);
                 }
                 Some((Topic::UpdateRejected, _, _)) => {
                     let mut buf = [0u8; 64];
@@ -183,16 +183,19 @@ where
                         continue;
                     }
 
-                    return Err(Error::ShadowError(
+                    break Err(Error::ShadowError(
                         error_response.try_into().unwrap_or(ShadowError::NotFound),
                     ));
                 }
                 _ => {
                     error!("Expected Topic name GetRejected or GetAccepted but got something else");
-                    return Err(Error::WrongShadowName);
+                    break Err(Error::WrongShadowName);
                 }
             }
-        }
+        };
+
+        let _ = sub.unsubscribe().await;
+        result
     }
 
     /// Fetch the shadow state from the cloud.
@@ -202,46 +205,56 @@ where
 
         let mut sub = self.publish_and_subscribe(Topic::Get, b"").await?;
 
-        let get_message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+        // Scope the message so it's dropped before we unsubscribe.
+        // Returns Ok(Some(state)) on success, Ok(None) on 404 (needs create),
+        // or Err on other failures.
+        let result = {
+            let get_message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
-        // Check if topic is GetAccepted
-        // Deserialize message
-        // Persist shadow and return new shadow
-        match Topic::from_str(S::PREFIX, get_message.topic_name()) {
-            Some((Topic::GetAccepted, _, _)) => {
-                let resolver = self.store.resolver(Self::prefix());
-                let response = AcceptedResponse::parse::<S, _>(get_message.payload(), &resolver)
-                    .await
-                    .map_err(|_| Error::InvalidPayload)?;
+            match Topic::from_str(S::PREFIX, get_message.topic_name()) {
+                Some((Topic::GetAccepted, _, _)) => {
+                    let resolver = self.store.resolver(Self::prefix());
+                    let response =
+                        AcceptedResponse::parse::<S, _>(get_message.payload(), &resolver)
+                            .await
+                            .map_err(|_| Error::InvalidPayload)?;
 
-                Ok(response.state)
-            }
-            Some((Topic::GetRejected, _, _)) => {
-                let mut buf = [0u8; 64];
-                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
-                    get_message.payload(),
-                    &mut buf,
-                )
-                .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
-
-                if error_response.code == 404 {
-                    debug!(
-                        "[{:?}] Thing has no shadow document. Creating with defaults...",
-                        S::NAME.unwrap_or(CLASSIC_SHADOW)
-                    );
-                    return self.create_shadow().await;
+                    Ok(Some(response.state))
                 }
+                Some((Topic::GetRejected, _, _)) => {
+                    let mut buf = [0u8; 64];
+                    let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
+                        get_message.payload(),
+                        &mut buf,
+                    )
+                    .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
 
-                Err(Error::ShadowError(
-                    error_response.try_into().unwrap_or(ShadowError::NotFound),
-                ))
+                    if error_response.code == 404 {
+                        debug!(
+                            "[{:?}] Thing has no shadow document. Creating with defaults...",
+                            S::NAME.unwrap_or(CLASSIC_SHADOW)
+                        );
+                        Ok(None)
+                    } else {
+                        Err(Error::ShadowError(
+                            error_response.try_into().unwrap_or(ShadowError::NotFound),
+                        ))
+                    }
+                }
+                _ => {
+                    error!(
+                        "Expected topic name to be GetRejected or GetAccepted but got something else"
+                    );
+                    Err(Error::WrongShadowName)
+                }
             }
-            _ => {
-                error!(
-                    "Expected topic name to be GetRejected or GetAccepted but got something else"
-                );
-                Err(Error::WrongShadowName)
-            }
+        };
+
+        let _ = sub.unsubscribe().await;
+
+        match result? {
+            Some(state) => Ok(state),
+            None => self.create_shadow().await,
         }
     }
 
@@ -511,29 +524,34 @@ where
 
         let mut sub = self.publish_and_subscribe(Topic::Delete, b"").await?;
 
-        let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+        let result = {
+            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
 
-        match Topic::from_str(S::PREFIX, message.topic_name()) {
-            Some((Topic::DeleteAccepted, _, _)) => {}
-            Some((Topic::DeleteRejected, _, _)) => {
-                let mut buf = [0u8; 64];
-                let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
-                    message.payload(),
-                    &mut buf,
-                )
-                .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
+            match Topic::from_str(S::PREFIX, message.topic_name()) {
+                Some((Topic::DeleteAccepted, _, _)) => Ok(()),
+                Some((Topic::DeleteRejected, _, _)) => {
+                    let mut buf = [0u8; 64];
+                    let (error_response, _) = serde_json_core::from_slice_escaped::<ErrorResponse>(
+                        message.payload(),
+                        &mut buf,
+                    )
+                    .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
 
-                return Err(Error::ShadowError(
-                    error_response.try_into().unwrap_or(ShadowError::NotFound),
-                ));
+                    Err(Error::ShadowError(
+                        error_response.try_into().unwrap_or(ShadowError::NotFound),
+                    ))
+                }
+                _ => {
+                    error!(
+                        "Expected Topic name DeleteRejected or DeleteAccepted but got something else"
+                    );
+                    Err(Error::WrongShadowName)
+                }
             }
-            _ => {
-                error!(
-                    "Expected Topic name DeleteRejected or DeleteAccepted but got something else"
-                );
-                return Err(Error::WrongShadowName);
-            }
-        }
+        };
+
+        let _ = sub.unsubscribe().await;
+        result?;
 
         self.store
             .delete_state(Self::prefix())
