@@ -6,10 +6,10 @@ pub mod network;
 
 use rustot::{
     jobs::data_types::JobExecution,
-    ota::{
-        encoding::{json::OtaJob, OtaJobContext},
-        error::OtaError,
-        JobEventData, StatusDetailsExt,
+    transfer::{
+        encoding::{afr_ota::OtaJob, JobContext},
+        error::TransferError,
+        StatusDetailsExt,
     },
 };
 use serde::Deserialize;
@@ -21,25 +21,23 @@ pub enum OtaJobs<'a> {
     Ota(OtaJob<'a>),
 }
 
-/// Convert a parsed [`JobExecution`] into an [`OtaJobContext`].
+/// Convert a parsed [`JobExecution`] into a [`JobContext`].
 ///
 /// Extracts the OTA document from the job execution and constructs the
-/// context needed by [`Updater::perform_ota`].
+/// context needed by [`Transfer::perform_ota`].
 #[allow(dead_code)]
 pub fn ota_context_from_execution<'a, E: StatusDetailsExt>(
     execution: JobExecution<'a, OtaJobs<'a>>,
-) -> Result<OtaJobContext<'a, E>, OtaError> {
+) -> Result<JobContext<'a, E>, TransferError> {
     let ota_doc = match execution.job_document {
         Some(OtaJobs::Ota(doc)) => doc,
-        None => return Err(OtaError::NoActiveJob),
+        None => return Err(TransferError::NoActiveJob),
     };
 
-    OtaJobContext::new_from(
-        JobEventData {
-            job_name: execution.job_id,
-            ota_document: ota_doc,
-            status_details: execution.status_details,
-        },
+    JobContext::new(
+        &ota_doc,
+        execution.job_id,
         0,
+        execution.status_details.as_ref(),
     )
 }

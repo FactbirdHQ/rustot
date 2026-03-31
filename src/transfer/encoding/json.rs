@@ -1,17 +1,5 @@
-use crate::ota::data_interface::Protocol;
-use crate::ota::pal::ImageStateReason;
+use crate::transfer::pal::ImageStateReason;
 use core::str::FromStr;
-use serde::Deserialize;
-
-/// OTA job document, compatible with FreeRTOS OTA process
-#[derive(Debug, PartialEq, Deserialize)]
-#[serde(rename = "afr_ota")]
-pub struct OtaJob<'a> {
-    pub protocols: heapless::Vec<Protocol, 2>,
-    #[serde(default)]
-    pub streamname: Option<&'a str>,
-    pub files: heapless::Vec<FileDescription<'a>, 1>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Signature<'a> {
@@ -19,60 +7,6 @@ pub enum Signature<'a> {
     Sha256Rsa(&'a str),
     Sha1Ecdsa(&'a str),
     Sha256Ecdsa(&'a str),
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct FileDescription<'a> {
-    #[serde(rename = "filepath")]
-    pub filepath: &'a str,
-    #[serde(rename = "filesize")]
-    pub filesize: usize,
-    #[serde(rename = "fileid")]
-    pub fileid: u8,
-    #[serde(rename = "certfile")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub certfile: Option<&'a str>,
-    #[serde(rename = "update_data_url")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub update_data_url: Option<&'a str>,
-    #[serde(rename = "auth_scheme")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_scheme: Option<&'a str>,
-
-    #[serde(rename = "sig-sha1-rsa")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha1_rsa: Option<&'a str>,
-    #[serde(rename = "sig-sha256-rsa")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha256_rsa: Option<&'a str>,
-    #[serde(rename = "sig-sha1-ecdsa")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha1_ecdsa: Option<&'a str>,
-    #[serde(rename = "sig-sha256-ecdsa")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha256_ecdsa: Option<&'a str>,
-
-    #[serde(rename = "fileType")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_type: Option<u32>,
-}
-
-impl<'a> FileDescription<'a> {
-    pub fn signature(&self) -> Option<Signature<'a>> {
-        if let Some(sig) = self.sha1_rsa {
-            return Some(Signature::Sha1Rsa(sig));
-        }
-        if let Some(sig) = self.sha256_rsa {
-            return Some(Signature::Sha256Rsa(sig));
-        }
-        if let Some(sig) = self.sha1_ecdsa {
-            return Some(Signature::Sha1Ecdsa(sig));
-        }
-        if let Some(sig) = self.sha256_ecdsa {
-            return Some(Signature::Sha256Ecdsa(sig));
-        }
-        None
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -156,7 +90,7 @@ mod tests {
 
     #[test]
     fn job_status_reason_detail() {
-        use crate::ota::pal::OtaPalError;
+        use crate::transfer::pal::PalError;
 
         // Reasons without detail
         assert!(JobStatusReason::Receiving.detail().is_none());
@@ -168,7 +102,7 @@ mod tests {
         assert!(JobStatusReason::Aborted(None).detail().is_none());
 
         // Rejected/Aborted with detail
-        let reason = ImageStateReason::Pal(OtaPalError::SignatureCheckFailed);
+        let reason = ImageStateReason::Pal(PalError::SignatureCheckFailed);
         assert_eq!(
             JobStatusReason::Rejected(Some(reason)).detail(),
             Some(reason)
@@ -177,29 +111,5 @@ mod tests {
             JobStatusReason::Aborted(Some(ImageStateReason::MomentumAbort)).detail(),
             Some(ImageStateReason::MomentumAbort)
         );
-    }
-
-    #[test]
-    fn deserializ() {
-        let data = r#"{
-            "protocols": [
-            "MQTT"
-            ],
-            "streamname": "AFR_OTA-d11032e9-38d5-4dca-8c7c-1e6f24533ede",
-            "files": [
-            {
-                "filepath": "3.8.4",
-                "filesize": 537600,
-                "fileid": 0,
-                "certfile": null,
-                "fileType": 0,
-                "update_data_url": null,
-                "auth_scheme": null,
-                "sig--": null
-            }
-            ]
-        }"#;
-
-        serde_json_core::from_str::<OtaJob>(data).unwrap();
     }
 }

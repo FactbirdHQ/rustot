@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ota::data_interface::FileBlock;
+use crate::transfer::data_interface::FileBlock;
 
 use super::Bitmap;
 

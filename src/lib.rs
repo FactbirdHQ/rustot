@@ -10,10 +10,10 @@ pub(crate) mod fmt;
 pub mod defender_metrics;
 pub mod jobs;
 pub mod mqtt;
-#[cfg(any(feature = "ota_mqtt_data", feature = "ota_http_data"))]
-pub mod ota;
 pub mod provisioning;
 pub mod shadows;
+#[cfg(any(feature = "transfer_mqtt", feature = "transfer_http"))]
+pub mod transfer;
 
 /// Re-exports for derive macro generated code. Not part of the public API.
 #[doc(hidden)]

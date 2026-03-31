@@ -1,14 +1,14 @@
-#[cfg(feature = "ota_http_data")]
+#[cfg(feature = "transfer_http")]
 pub mod http;
-#[cfg(feature = "ota_mqtt_data")]
+#[cfg(feature = "transfer_mqtt")]
 pub mod mqtt;
 
 use serde::Deserialize;
 
-use crate::ota::config::Config;
-use crate::ota::status_details::StatusDetailsExt;
+use crate::transfer::config::Config;
+use crate::transfer::status_details::StatusDetailsExt;
 
-use super::{encoding::OtaJobContext, error::OtaError};
+use super::{encoding::JobContext, error::TransferError};
 
 use super::encoding::Bitmap;
 
@@ -57,7 +57,7 @@ pub struct BlockProgress {
 /// For MQTT, decoding performs in-place CBOR deserialization (zero-copy).
 /// For HTTP, decoding is trivial (the metadata was known at fetch time).
 pub trait RawBlock {
-    fn decode(&mut self) -> Result<FileBlock<'_>, OtaError>;
+    fn decode(&mut self) -> Result<FileBlock<'_>, TransferError>;
 }
 
 pub trait BlockTransfer {
@@ -74,13 +74,13 @@ pub trait BlockTransfer {
     /// For pull-based protocols (HTTP), this fetches the next needed block.
     /// For push-based protocols (MQTT), this waits for the next pushed block
     /// and handles momentum/timeout internally.
-    async fn next_block(&mut self) -> Result<Option<Self::RawBlock<'_>>, OtaError>;
+    async fn next_block(&mut self) -> Result<Option<Self::RawBlock<'_>>, TransferError>;
 
     /// Notify the transfer that a block was successfully written to flash.
     ///
     /// Passes the updated progress so the transfer can request more blocks
     /// when a batch is exhausted (MQTT) or advance its internal cursor (HTTP).
-    async fn on_block_written(&mut self, progress: &BlockProgress) -> Result<(), OtaError>;
+    async fn on_block_written(&mut self, progress: &BlockProgress) -> Result<(), TransferError>;
 }
 
 pub trait DataInterface {
@@ -97,8 +97,8 @@ pub trait DataInterface {
     /// For HTTP: validates the pre-signed URL and prepares the range fetcher.
     async fn begin_transfer(
         &self,
-        job: &OtaJobContext<'_, impl StatusDetailsExt>,
+        job: &JobContext<'_, impl StatusDetailsExt>,
         config: &Config,
         progress: &BlockProgress,
-    ) -> Result<Self::Transfer<'_>, OtaError>;
+    ) -> Result<Self::Transfer<'_>, TransferError>;
 }
