@@ -167,8 +167,7 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
     /// only OTA jobs.
     pub async fn reject_job(&self, job_id: &str, reason: &str) -> Result<(), JobError> {
         let details = RejectDetails { reason };
-        let payload = Jobs::update(JobStatus::Rejected)
-            .status_details(&details);
+        let payload = Jobs::update(JobStatus::Rejected).status_details(&details);
         self.publish_and_wait(job_id, payload).await
     }
 
