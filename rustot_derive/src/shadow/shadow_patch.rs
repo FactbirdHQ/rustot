@@ -74,7 +74,9 @@ pub fn shadow_patch(attr: TokenStream, input: TokenStream) -> TokenStream {
 
     let desired_tokens = {
         ShadowGenerator::new(full_input.clone())
-            .modifier(&mut ReportOnlyModifier)
+            .modifier(&mut ReportOnlyModifier {
+                strip_persist: false,
+            })
             .modifier(&mut RenameModifier(original_ident.clone()))
             .modifier(&mut WithDerivesModifier(
                 macro_params.auto_derive.unwrap_or(true),
@@ -93,7 +95,9 @@ pub fn shadow_patch(attr: TokenStream, input: TokenStream) -> TokenStream {
             GenerateShadowPatchImplVisitor::new(Path::from(reported_ident.clone()));
 
         ShadowGenerator::new(full_input.clone())
-            .modifier(&mut ReportOnlyModifier)
+            .modifier(&mut ReportOnlyModifier {
+                strip_persist: true,
+            })
             .variant_or_field_visitor(&mut SetNewVisibilityVisitor(true))
             .variant_or_field_visitor(&mut SetNewTypeVisitor(delta.clone()))
             .variant_or_field_visitor(&mut shadowpatch_impl_generator)
@@ -127,7 +131,9 @@ pub fn shadow_patch(attr: TokenStream, input: TokenStream) -> TokenStream {
             .generator(&mut DefaultGenerator(false))
             .variant_or_field_visitor(&mut RemoveShadowAttributesVisitor)
             .generator(&mut NewGenerator)
-            .modifier(&mut ReportOnlyModifier)
+            .modifier(&mut ReportOnlyModifier {
+                strip_persist: false,
+            })
             .generator(&mut GenerateFromImpl)
             .finalize()
     };
