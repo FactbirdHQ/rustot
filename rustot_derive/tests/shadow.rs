@@ -379,3 +379,105 @@ fn enum_leaf() {
 //         a: A,
 //     }
 // }
+
+#[test]
+fn report_only_persist() {
+    #[shadow(name = "persist_test")]
+    #[derive(Debug, PartialEq)]
+    struct Config {
+        pub mode: u8,
+
+        pub inner: Inner,
+
+        /// This field is kept in the struct and persisted, but NOT in Delta
+        #[shadow_attr(report_only(persist), leaf)]
+        pub verified: bool,
+
+        #[shadow_attr(report_only, leaf)]
+        pub status: u8,
+    }
+
+    #[shadow_patch]
+    #[derive(Debug, PartialEq)]
+    struct Inner {
+        hello: u16,
+    }
+
+    // 1. Field exists on the runtime struct
+    let config = Config {
+        mode: 1,
+        inner: Inner { hello: 42 },
+        verified: true,
+    };
+    assert!(config.verified);
+
+    // 2. report_only(persist) field does NOT exist on Delta
+    //    (if it did, this wouldn't compile because we'd need to set it)
+    let delta = DeltaConfig {
+        mode: Some(2),
+        inner: None,
+    };
+
+    // 3. report_only(persist) field exists on Reported with actual value
+    let reported = ReportedConfig::from(config.clone());
+    assert_eq!(reported.verified, Some(true)); // persist: gets Some(v.verified)
+    assert_eq!(reported.status, None); // plain report_only: gets None
+    assert_eq!(reported.mode, Some(1));
+    assert_eq!(reported.inner, Some(ReportedInner { hello: Some(42) }));
+
+    // 4. apply_patch does not touch report_only(persist) fields
+    let mut config2 = Config {
+        mode: 1,
+        inner: Inner { hello: 10 },
+        verified: true,
+    };
+    config2.apply_patch(delta);
+    assert_eq!(config2.mode, 2); // changed by delta
+    assert!(config2.verified); // unchanged -- not in delta
+
+    // 5. Reported struct can set report_only(persist) fields
+    let reported_manual = ReportedConfig {
+        mode: None,
+        inner: None,
+        verified: Some(false),
+        status: Some(42),
+    };
+    assert_eq!(reported_manual.verified, Some(false));
+}
+
+#[test]
+fn report_only_persist_with_nested() {
+    /// Test that report_only(persist) works alongside other field types
+    #[shadow(name = "mixed")]
+    #[derive(Debug, PartialEq)]
+    struct Mixed {
+        pub normal: u32,
+
+        #[shadow_attr(report_only(persist), leaf)]
+        pub local_flag: bool,
+
+        #[shadow_attr(report_only)]
+        pub ephemeral: u16,
+    }
+
+    // Struct has normal + persist fields, not ephemeral
+    let m = Mixed {
+        normal: 10,
+        local_flag: false,
+    };
+
+    // Delta only has normal field
+    let delta = DeltaMixed { normal: Some(20) };
+
+    // Reported has all fields
+    let reported = ReportedMixed::from(m.clone());
+    assert_eq!(reported.normal, Some(10));
+    assert_eq!(reported.local_flag, Some(false));
+    assert_eq!(reported.ephemeral, None);
+
+    // apply_patch only affects normal fields
+    let mut m2 = m;
+    m2.apply_patch(delta);
+    assert_eq!(m2.normal, 20);
+    assert!(!m2.local_flag); // unchanged
+}

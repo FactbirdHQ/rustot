@@ -3,6 +3,7 @@ use syn::{parse_quote, punctuated::Punctuated, Data, DeriveInput, Field, Ident, 
 
 use super::variant_or_field_visitor::{
     borrow_fields, borrow_fields_mut, extract_type_from_option, has_shadow_arg,
+    is_report_only_persist, is_report_only_stripped,
 };
 
 pub trait Modifier {
@@ -64,16 +65,40 @@ impl Modifier for WithDerivesModifier {
     }
 }
 
-/// Filter all fields annotated with `#[shadow_attr(report_only)]` from the
+/// Filter fields annotated with `#[shadow_attr(report_only)]` from the
 /// `output` AST.
-pub struct ReportOnlyModifier;
+///
+/// - `strip_persist: false` — only strip plain `report_only` fields (keep
+///   `report_only(persist)` in the struct). Used for the original struct
+///   and the Reported `From` impl.
+/// - `strip_persist: true` — strip ALL `report_only` variants including
+///   `report_only(persist)`. Used for the Delta struct.
+pub struct ReportOnlyModifier {
+    pub strip_persist: bool,
+}
 
 impl ReportOnlyModifier {
-    fn filter_report_only(field: &Field) -> bool {
-        if has_shadow_arg(&field.attrs, "report_only") {
-            return false;
+    fn should_keep(&self, field: &Field) -> bool {
+        let is_any_report_only = has_shadow_arg(&field.attrs, "report_only");
+
+        if is_any_report_only {
+            if self.strip_persist {
+                // Delta mode: strip all report_only variants
+                return false;
+            }
+            // Struct mode: only strip plain report_only, keep persist
+            if is_report_only_stripped(&field.attrs) {
+                return false;
+            }
+            // report_only(persist): keep in struct, but validate no bare Option
+            if is_report_only_persist(&field.attrs) && extract_type_from_option(&field.ty).is_some()
+            {
+                panic!("Optionals are only allowed in plain `report_only` fields, not `report_only(persist)`");
+            }
+            return true;
         }
 
+        // Normal field: Option types are not allowed
         if extract_type_from_option(&field.ty).is_some() {
             panic!("Optionals are only allowed in `report_only` fields");
         }
@@ -94,7 +119,7 @@ impl Modifier for ReportOnlyModifier {
                     .iter()
                     .zip(new_fields.iter_mut())
                     .filter_map(|(old_field, new_field)| {
-                        Self::filter_report_only(old_field).then_some(new_field.clone())
+                        self.should_keep(old_field).then_some(new_field.clone())
                     })
                     .collect::<Punctuated<Field, Token![,]>>();
             }

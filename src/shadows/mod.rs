@@ -69,7 +69,11 @@ impl<'a, M: RawMutex, S: ShadowState> ShadowHandler<'a, '_, M, S> {
                                 .topics(&[SubscribeTopic::builder()
                                     .topic_path(
                                         topics::Topic::UpdateDelta
-                                            .format::<64>(S::PREFIX, self.mqtt.client_id(), S::NAME)?
+                                            .format::<64>(
+                                                S::PREFIX,
+                                                self.mqtt.client_id(),
+                                                S::NAME,
+                                            )?
                                             .as_str(),
                                     )
                                     .build()])
@@ -490,6 +494,39 @@ where
         if let Some(delta) = response.delta {
             state.apply_patch(delta.clone());
 
+            self.dao.lock().await.write(&state).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Update shadow state with persistence and cloud reporting.
+    ///
+    /// Unlike [`update`](Self::update), this gives mutable access to the
+    /// state, saves it to the DAO, then reports to the cloud. Use this for
+    /// fields marked `#[shadow_attr(report_only(persist))]` that need local
+    /// persistence but are excluded from the Delta type.
+    ///
+    /// The closure receives `(&mut S, &mut S::Reported)`:
+    /// - Modify `S` directly for fields that need persistence
+    /// - Set fields on `Reported` for cloud reporting
+    pub async fn update_with_state<F: FnOnce(&mut S, &mut S::Reported)>(
+        &self,
+        f: F,
+    ) -> Result<(), Error> {
+        let mut update = S::Reported::default();
+        let mut state = self.dao.lock().await.read().await?;
+        f(&mut state, &mut update);
+
+        // Persist state (including report_only(persist) fields)
+        self.dao.lock().await.write(&state).await?;
+
+        // Report to cloud
+        let response = self.handler.update_shadow(None, Some(update)).await?;
+
+        // Handle delta from cloud (won't include report_only(persist) fields)
+        if let Some(delta) = response.delta {
+            state.apply_patch(delta.clone());
             self.dao.lock().await.write(&state).await?;
         }
 

@@ -1,7 +1,7 @@
 use quote::quote;
 use syn::{
     parse_quote, punctuated::Punctuated, spanned::Spanned, Attribute, DataStruct, Field, Fields,
-    Ident, Token, Type, Visibility,
+    Ident, Meta, Token, Type, Visibility,
 };
 
 use crate::shadow::{DEFAULT_ATTRIBUTE, SHADOW_ATTRIBUTE};
@@ -158,14 +158,47 @@ pub fn get_attr(attrs: &Vec<Attribute>, attr: &str) -> Option<Attribute> {
 
 pub fn has_shadow_arg(attrs: &Vec<Attribute>, arg: &str) -> bool {
     if let Some(a) = get_attr(&attrs, SHADOW_ATTRIBUTE) {
-        let shadow_args = a
-            .parse_args_with(Punctuated::<Ident, Token![,]>::parse_terminated)
-            .unwrap_or_default();
-
-        return shadow_args.iter().any(|i| i.to_string() == arg);
+        // Parse as Meta to support both bare idents (e.g. `leaf`) and
+        // function-call syntax (e.g. `report_only(persist)`)
+        if let Ok(metas) = a.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) {
+            return metas.iter().any(|meta| meta.path().is_ident(arg));
+        }
     }
 
     false
+}
+
+/// Check for a specific option within a shadow arg.
+/// e.g. `has_shadow_arg_option(attrs, "report_only", "persist")` matches
+/// `#[shadow_attr(report_only(persist))]`
+pub fn has_shadow_arg_option(attrs: &Vec<Attribute>, arg: &str, option: &str) -> bool {
+    if let Some(a) = get_attr(attrs, SHADOW_ATTRIBUTE) {
+        if let Ok(metas) = a.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) {
+            return metas.iter().any(|meta| {
+                if let Meta::List(list) = meta {
+                    if list.path.is_ident(arg) {
+                        if let Ok(inner) =
+                            list.parse_args_with(Punctuated::<Ident, Token![,]>::parse_terminated)
+                        {
+                            return inner.iter().any(|i| i == option);
+                        }
+                    }
+                }
+                false
+            });
+        }
+    }
+    false
+}
+
+/// True for plain `report_only` (field is stripped from struct, not persisted)
+pub fn is_report_only_stripped(attrs: &Vec<Attribute>) -> bool {
+    has_shadow_arg(attrs, "report_only") && !has_shadow_arg_option(attrs, "report_only", "persist")
+}
+
+/// True for `report_only(persist)` (field kept in struct, persisted, but excluded from Delta)
+pub fn is_report_only_persist(attrs: &Vec<Attribute>) -> bool {
+    has_shadow_arg_option(attrs, "report_only", "persist")
 }
 
 pub fn extract_type_from_option(ty: &syn::Type) -> Option<&syn::Type> {
