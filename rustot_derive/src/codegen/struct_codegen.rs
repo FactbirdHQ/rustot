@@ -102,6 +102,11 @@ struct FieldCodegen {
 
     /// ReportedDiff::diff() arm for this field
     reported_diff_arm: TokenStream,
+
+    /// Whether this field is flattened
+    is_flatten: bool,
+    /// parse_delta() match arm body for ObjectScanner-based parsing (None if report_only or flatten)
+    parse_delta_match_arm: Option<TokenStream>,
 }
 
 /// Process a single struct field and generate all code fragments.
@@ -115,7 +120,7 @@ struct FieldCodegen {
 /// Leaf fields are serialized directly as their type. Nested fields delegate
 /// to their inner ShadowNode implementation for Delta/Reported types and
 /// KV operations.
-fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
+fn process_field(field: &syn::Field, krate: &TokenStream) -> syn::Result<FieldCodegen> {
     let field_name = field.ident.as_ref().unwrap();
     let field_ty = &field.ty;
     let attrs = FieldAttrs::from_attrs(&field.attrs);
@@ -123,11 +128,28 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     let serde_name = get_serde_rename(&field.attrs).unwrap_or_else(|| field_name.to_string());
     let _field_path = format!("/{}", serde_name);
 
+    // Validate flatten constraints
+    #[cfg(not(feature = "std"))]
+    if attrs.is_flatten() {
+        return Err(syn::Error::new_spanned(
+            field,
+            "#[shadow_attr(flatten)] requires the `std` feature to be enabled",
+        ));
+    }
+
+    if attrs.is_flatten() && attrs.is_opaque() {
+        return Err(syn::Error::new_spanned(
+            field,
+            "#[shadow_attr(flatten)] and #[shadow_attr(opaque)] are mutually exclusive",
+        ));
+    }
+
     // A field is a "leaf" (direct KV storage) if it's opaque OR has migrations.
     // Fields with migrations must be leaves because migration logic operates on
     // the serialized value directly.
     let has_migration = !attrs.migrate_from().is_empty();
     let is_leaf = attrs.is_opaque() || has_migration;
+    let is_flatten = attrs.is_flatten();
 
     // Filter out shadow_attr from forwarded attributes
     let filtered_attrs: Vec<_> = field
@@ -147,9 +169,14 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         })
     } else {
         let delta_field_ty = quote! { <#field_ty as #krate::shadows::ShadowNode>::Delta };
+        let serde_attr = if is_flatten {
+            quote! { #[serde(flatten, skip_serializing_if = "Option::is_none")] }
+        } else {
+            quote! { #[serde(skip_serializing_if = "Option::is_none")] }
+        };
         Some(quote! {
             #(#filtered_attrs)*
-            #[serde(skip_serializing_if = "Option::is_none")]
+            #serde_attr
             pub #field_name: Option<#delta_field_ty>,
         })
     };
@@ -163,9 +190,14 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         }
     } else {
         let reported_field_ty = quote! { <#field_ty as #krate::shadows::ShadowNode>::Reported };
+        let serde_attr = if is_flatten {
+            quote! { #[serde(flatten, skip_serializing_if = "Option::is_none")] }
+        } else {
+            quote! { #[serde(skip_serializing_if = "Option::is_none")] }
+        };
         quote! {
             #(#filtered_attrs)*
-            #[serde(skip_serializing_if = "Option::is_none")]
+            #serde_attr
             pub #field_name: Option<#reported_field_ty>,
         }
     };
@@ -232,9 +264,17 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- reported serialize arm ---
-    let reported_serialize_arm = quote! {
-        if let Some(ref val) = self.#field_name {
-            map.serialize_entry(#serde_name, val)?;
+    let reported_serialize_arm = if is_flatten {
+        quote! {
+            if let Some(ref val) = self.#field_name {
+                #krate::shadows::ReportedUnionFields::serialize_into_map(val, map)?;
+            }
+        }
+    } else {
+        quote! {
+            if let Some(ref val) = self.#field_name {
+                map.serialize_entry(#serde_name, val)?;
+            }
         }
     };
 
@@ -313,8 +353,8 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         })
     };
 
-    // --- variant_at_path arm (only for non-report_only nested fields) ---
-    let variant_at_path_arm = if attrs.is_report_only() || is_leaf {
+    // --- variant_at_path arm (only for non-report_only, non-flatten nested fields) ---
+    let variant_at_path_arm = if attrs.is_report_only() || is_leaf || is_flatten {
         None
     } else {
         let field_prefix = format!("{}/", serde_name);
@@ -391,7 +431,38 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         }
     };
 
-    FieldCodegen {
+    // --- parse_delta match arm for ObjectScanner-based parsing (used when struct has flatten) ---
+    let parse_delta_match_arm = if attrs.is_report_only() || is_flatten {
+        None
+    } else if is_leaf {
+        Some(quote! {
+            delta.#field_name = Some(
+                #krate::__macro_support::serde_json_core::from_slice(__value_bytes)
+                    .map(|(v, _)| v)
+                    .map_err(|_| #krate::shadows::ParseError::Deserialize)?
+            );
+        })
+    } else {
+        Some(quote! {
+            {
+                let mut nested_path: #krate::__macro_support::heapless::String<64> = #krate::__macro_support::heapless::String::new();
+                let _ = nested_path.push_str(path);
+                if !path.is_empty() {
+                    let _ = nested_path.push('/');
+                }
+                let _ = nested_path.push_str(#serde_name);
+                delta.#field_name = Some(
+                    <#field_ty as #krate::shadows::ShadowNode>::parse_delta(
+                        __value_bytes,
+                        &nested_path,
+                        resolver
+                    ).await?
+                );
+            }
+        })
+    };
+
+    Ok(FieldCodegen {
         serde_name,
         delta_field,
         reported_field,
@@ -410,7 +481,9 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         reported_builder_param,
         reported_builder_assign,
         reported_diff_arm,
-    }
+        is_flatten,
+        parse_delta_match_arm,
+    })
 }
 
 /// Generate code for a struct type
@@ -442,11 +515,22 @@ pub(crate) fn generate_struct_code(
     let field_codegens: Vec<FieldCodegen> = named_fields
         .iter()
         .map(|field| process_field(field, krate))
-        .collect();
+        .collect::<syn::Result<Vec<_>>>()?;
+
+    // Validate: at most one flatten field per struct
+    let flatten_count = field_codegens.iter().filter(|f| f.is_flatten).count();
+    if flatten_count > 1 {
+        return Err(syn::Error::new_spanned(
+            input,
+            "at most one #[shadow_attr(flatten)] field is allowed per struct",
+        ));
+    }
 
     // Extract vectors from FieldCodegen structs
+    // Exclude flattened fields from FIELD_NAMES (their keys are dynamic)
     let field_names: Vec<_> = field_codegens
         .iter()
+        .filter(|f| !f.is_flatten)
         .map(|f| f.serde_name.clone())
         .collect();
     let delta_fields: Vec<_> = field_codegens
@@ -537,15 +621,93 @@ pub(crate) fn generate_struct_code(
         }
     };
 
-    // Generate parse_delta body - always use FieldScanner
-    let field_name_strs: Vec<_> = parse_delta_field_names.iter().map(|s| s.as_str()).collect();
-    let parse_delta_body = quote! {
-        let scanner = #krate::shadows::tag_scanner::FieldScanner::scan(json, &[#(#field_name_strs),*])
-            .map_err(#krate::shadows::ParseError::Scan)?;
+    // Check if any non-report_only field is flattened (requires ObjectScanner-based parse_delta)
+    let has_flatten_delta = field_codegens
+        .iter()
+        .any(|f| f.is_flatten && f.delta_field.is_some());
 
-        let mut delta = Self::Delta::default();
-        #(#parse_delta_arms)*
-        Ok(delta)
+    // Generate parse_delta body
+    let parse_delta_body = if has_flatten_delta {
+        // ObjectScanner-based parse_delta: iterate all JSON entries, dispatch known
+        // fields by name, collect remaining entries for the flattened field.
+        let mut match_arms = Vec::new();
+        let mut flatten_field_name = None;
+        let mut flatten_field_ty = None;
+
+        for (field, codegen) in named_fields.iter().zip(field_codegens.iter()) {
+            if codegen.is_flatten && codegen.delta_field.is_some() {
+                flatten_field_name = Some(field.ident.as_ref().unwrap());
+                flatten_field_ty = Some(&field.ty);
+            } else if let (Some(ref arm), Some(ref name)) = (
+                &codegen.parse_delta_match_arm,
+                &codegen.parse_delta_field_name,
+            ) {
+                match_arms.push(quote! { #name => { #arm } });
+            }
+        }
+
+        let flatten_field_name = flatten_field_name.unwrap();
+        let flatten_field_ty = flatten_field_ty.unwrap();
+
+        quote! {
+            if #krate::shadows::tag_scanner::ObjectScanner::is_null_or_empty(json) {
+                return Ok(Self::Delta::default());
+            }
+
+            let mut __scanner = #krate::shadows::tag_scanner::ObjectScanner::new(json)
+                .map_err(#krate::shadows::ParseError::Scan)?;
+            let mut delta = Self::Delta::default();
+            let mut __flatten_entries: Vec<(&[u8], &[u8])> = Vec::new();
+
+            while let Some((__key_bytes, __value_bytes)) = __scanner.next_entry()
+                .map_err(#krate::shadows::ParseError::Scan)?
+            {
+                let __key_str = core::str::from_utf8(&__key_bytes[1..__key_bytes.len()-1])
+                    .map_err(|_| #krate::shadows::ParseError::Deserialize)?;
+
+                match __key_str {
+                    #(#match_arms)*
+                    _ => {
+                        __flatten_entries.push((__key_bytes, __value_bytes));
+                    }
+                }
+            }
+
+            if !__flatten_entries.is_empty() {
+                let mut __fj: Vec<u8> = Vec::with_capacity(
+                    __flatten_entries.iter().map(|(k, v)| k.len() + v.len() + 2).sum::<usize>() + 2
+                );
+                __fj.push(b'{');
+                for (__i, (__k, __v)) in __flatten_entries.iter().enumerate() {
+                    if __i > 0 { __fj.push(b','); }
+                    __fj.extend_from_slice(__k);
+                    __fj.push(b':');
+                    __fj.extend_from_slice(__v);
+                }
+                __fj.push(b'}');
+
+                delta.#flatten_field_name = Some(
+                    <#flatten_field_ty as #krate::shadows::ShadowNode>::parse_delta(
+                        &__fj,
+                        path,
+                        resolver
+                    ).await?
+                );
+            }
+
+            Ok(delta)
+        }
+    } else {
+        // FieldScanner-based parse_delta (no flatten field)
+        let field_name_strs: Vec<_> = parse_delta_field_names.iter().map(|s| s.as_str()).collect();
+        quote! {
+            let scanner = #krate::shadows::tag_scanner::FieldScanner::scan(json, &[#(#field_name_strs),*])
+                .map_err(#krate::shadows::ParseError::Scan)?;
+
+            let mut delta = Self::Delta::default();
+            #(#parse_delta_arms)*
+            Ok(delta)
+        }
     };
 
     // Generate ShadowNode impl (always generated)

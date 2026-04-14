@@ -35,6 +35,10 @@ pub struct FieldAttrs {
     #[cfg(feature = "kv_persist")]
     #[darling(default, rename = "default")]
     pub default_value: Option<DefaultValue>,
+    /// Field is flattened — its entries are inlined into the parent JSON object.
+    /// Only valid for map types (e.g., HashMap<String, V>). Requires `std` feature.
+    #[darling(default)]
+    pub flatten: bool,
 }
 
 /// Report-only field specification
@@ -143,6 +147,11 @@ impl FieldAttrs {
     #[cfg_attr(not(feature = "kv_persist"), allow(dead_code))]
     pub fn opaque_max_size(&self) -> Option<usize> {
         self.opaque.as_ref().and_then(|o| o.max_size)
+    }
+
+    /// Check if this field is marked as flatten
+    pub fn is_flatten(&self) -> bool {
+        self.flatten
     }
 
     /// Get all migration source keys
@@ -380,6 +389,21 @@ mod tests {
         let field_attrs = FieldAttrs::from_attrs(&attrs);
         assert!(!field_attrs.is_report_only());
         assert!(!field_attrs.is_report_only_persist());
+    }
+
+    // Test flatten attribute parsing
+    #[test]
+    fn test_flatten() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(flatten)])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert!(field_attrs.is_flatten());
+    }
+
+    #[test]
+    fn test_not_flatten() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque)])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert!(!field_attrs.is_flatten());
     }
 
     // Test heck integration for rename_all

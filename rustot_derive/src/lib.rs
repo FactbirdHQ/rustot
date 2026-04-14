@@ -48,6 +48,7 @@ use codegen::generate_shadow_node;
 /// - `#[shadow_attr(migrate(from = "old_key"))]` - Migration from old key
 /// - `#[shadow_attr(migrate(from = "old_key", convert = fn))]` - Migration with conversion
 /// - `#[shadow_attr(default = value)]` - Custom default value
+/// - `#[shadow_attr(flatten)]` - Flatten map entries into parent object (requires `std`)
 ///
 /// # Example
 ///
@@ -83,6 +84,7 @@ pub fn shadow_root(
 /// - `#[shadow_attr(report_only)]` - Field only appears in Reported type
 /// - `#[shadow_attr(migrate(from = "old_key"))]` - Migration from old key
 /// - `#[shadow_attr(default = value)]` - Custom default value
+/// - `#[shadow_attr(flatten)]` - Flatten map entries into parent object (requires `std`)
 ///
 /// # Supported Types
 ///
