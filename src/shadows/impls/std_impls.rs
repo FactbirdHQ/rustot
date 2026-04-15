@@ -44,6 +44,10 @@ impl ShadowNode for String {
         self.clone()
     }
 
+    fn into_delta(&self) -> Self::Delta {
+        self.clone()
+    }
+
     fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
         self.clone()
     }
@@ -167,6 +171,10 @@ where
     }
 
     fn into_reported(&self) -> Self::Reported {
+        self.clone()
+    }
+
+    fn into_delta(&self) -> Self::Delta {
         self.clone()
     }
 
@@ -404,6 +412,14 @@ where
             reported.insert(key.clone(), value.into_reported());
         }
         ReportedHashMap(reported)
+    }
+
+    fn into_delta(&self) -> Self::Delta {
+        let mut map = HashMap::new();
+        for (key, value) in self.iter() {
+            map.insert(key.clone(), Patch::Set(value.into_delta()));
+        }
+        DeltaHashMap(Some(map))
     }
 
     fn into_partial_reported(&self, delta: &Self::Delta) -> Self::Reported {

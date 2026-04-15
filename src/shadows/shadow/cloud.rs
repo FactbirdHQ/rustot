@@ -34,7 +34,7 @@ impl<'a, 'm, S, C, K> Shadow<'a, 'm, S, C, K>
 where
     S: ShadowRoot + Clone,
     S::Delta: Serialize,
-    S::Reported: Serialize + Default,
+    S::Reported: Serialize,
     C: MqttClient,
     K: StateStore<S>,
     [(); max_topic_len(S::PREFIX, S::NAME)]:,
@@ -126,17 +126,17 @@ where
     }
 
     /// Publish an update request to the cloud and wait for response.
-    async fn update_shadow(
+    async fn update_shadow<D: Serialize>(
         &self,
-        desired: Option<S::Delta>,
+        desired: Option<D>,
         reported: Option<S::Reported>,
     ) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
         debug!(
-            "[{:?}] Updating reported shadow value.",
+            "[{:?}] Updating shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
 
-        let request: Request<'_, S::Delta, S::Reported> = Request {
+        let request: Request<'_, D, S::Reported> = Request {
             state: RequestState { desired, reported },
             client_token: Some(self.mqtt.client_id()),
             version: None,
@@ -410,7 +410,7 @@ where
     pub async fn update_reported(&self, reported: impl Into<S::Reported>) -> Result<(), Error> {
         let reported: S::Reported = reported.into();
 
-        let response = self.update_shadow(None, Some(reported)).await?;
+        let response = self.update_shadow::<S::Delta>(None, Some(reported)).await?;
 
         if let Some(delta) = response.delta {
             self.apply_and_save(&delta)
@@ -500,10 +500,13 @@ where
         Ok(state)
     }
 
-    /// Create a new shadow in the cloud with default reported state.
+    /// Create a new shadow in the cloud with the current device state.
     ///
-    /// Publishes an update request with `S::Reported::default()` and returns
-    /// the resulting delta state from the cloud.
+    /// Reads the actual state from the KV store and publishes it to the cloud
+    /// with both `desired` (fully populated delta — all modifiable keys) and
+    /// `reported` (full reported state including report_only fields). This
+    /// ensures the cloud has a complete picture of the device's state from
+    /// the start.
     ///
     /// ## Example
     ///
@@ -516,7 +519,16 @@ where
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
 
-        self.update_shadow(None, Some(S::Reported::default())).await
+        let state: S = self
+            .store
+            .get_state(Self::prefix())
+            .await
+            .map_err(|_| Error::DaoWrite)?;
+
+        let desired = state.into_delta();
+        let reported = state.into_reported();
+
+        self.update_shadow(Some(desired), Some(reported)).await
     }
 
     /// Delete the shadow from the cloud and remove all persisted state.

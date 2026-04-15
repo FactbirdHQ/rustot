@@ -286,6 +286,49 @@ async fn test_shadow_end_to_end() {
         assert_eq!(state.tagged, TaggedEnum::None);
         assert_eq!(state.adjacent, Adjacent::Off);
 
+        // Verify cloud document has both desired and reported fully populated
+        let doc = cloud_get_shadow(&client, thing_name)
+            .await
+            .expect("Failed to get shadow after create");
+        log::info!("Cloud doc after create: {}", doc["state"]);
+
+        let desired = &doc["state"]["desired"];
+        let reported = &doc["state"]["reported"];
+
+        // desired should have all modifiable fields
+        assert!(
+            !desired.is_null(),
+            "desired should be populated after create"
+        );
+        assert!(desired["count"].is_number(), "desired should have count");
+        assert!(!desired["active"].is_null(), "desired should have active");
+        assert!(!desired["inner"].is_null(), "desired should have inner");
+        assert!(!desired["tagged"].is_null(), "desired should have tagged");
+        assert!(
+            !desired["adjacent"].is_null(),
+            "desired should have adjacent"
+        );
+
+        // desired should NOT have report_only fields
+        assert!(
+            desired.get("version").is_none() || desired["version"].is_null(),
+            "desired should not have report_only field 'version'"
+        );
+
+        // reported should have all fields including report_only
+        assert!(
+            !reported.is_null(),
+            "reported should be populated after create"
+        );
+        assert!(reported["count"].is_number(), "reported should have count");
+
+        // There should be no delta (desired == reported for non-report-only fields)
+        assert!(
+            doc["state"]["delta"].is_null(),
+            "delta should be null when desired matches reported"
+        );
+        log::info!("Cloud state verified: desired and reported fully populated, no delta");
+
         // =====================================================================
         // Test 1: Primitive fields (count, active)
         // =====================================================================

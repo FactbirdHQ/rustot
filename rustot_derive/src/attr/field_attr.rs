@@ -131,7 +131,7 @@ impl FieldAttrs {
 
     /// Check if this field is report_only with KV persistence
     pub fn is_report_only_persist(&self) -> bool {
-        self.report_only.as_ref().map_or(false, |spec| spec.persist)
+        self.report_only.as_ref().is_some_and(|spec| spec.persist)
     }
 
     /// Check if this field is marked as opaque
