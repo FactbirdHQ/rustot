@@ -12,6 +12,7 @@ use sequential_storage::cache::{KeyCacheImpl, NoCache};
 use sequential_storage::map::{MapConfig, MapStorage};
 
 use super::{ApplyJsonError, KVStore, StateStore};
+use crate::shadows::ReportedFields;
 use crate::shadows::commit::CommitStats;
 use crate::shadows::error::KvError;
 use crate::shadows::migration::LoadResult;
@@ -458,6 +459,20 @@ impl<
             orphans_removed,
             schema_hash_updated: true,
         })
+    }
+
+    async fn persist_reported(
+        &self,
+        prefix: &str,
+        reported: &St::Reported,
+    ) -> Result<(), Self::Error> {
+        reported
+            .persist_report_only(prefix, self)
+            .await
+            .map_err(|e| match e {
+                KvError::Kv(kv_err) => kv_err,
+                _ => SequentialKVStoreError::KeyTooLong,
+            })
     }
 
     fn resolver<'a>(&'a self, prefix: &'a str) -> impl VariantResolver + 'a {

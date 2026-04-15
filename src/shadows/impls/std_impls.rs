@@ -4,7 +4,7 @@
 //! - `Vec<T>` — opaque leaf type
 //! - `HashMap<K, V>` — map collection with per-entry Patch deltas
 
-use crate::shadows::{ParseError, ReportedUnionFields, ShadowNode, VariantResolver, fnv1a_hash};
+use crate::shadows::{ParseError, ReportedFields, ShadowNode, VariantResolver, fnv1a_hash};
 use serde::ser::SerializeMap;
 use std::collections::HashMap;
 use std::string::String;
@@ -49,7 +49,7 @@ impl ShadowNode for String {
     }
 }
 
-impl ReportedUnionFields for String {
+impl ReportedFields for String {
     const FIELD_NAMES: &'static [&'static str] = &[];
 
     fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
@@ -175,7 +175,7 @@ where
     }
 }
 
-impl<T> ReportedUnionFields for Vec<T>
+impl<T> ReportedFields for Vec<T>
 where
     T: Clone + Default + serde::Serialize + serde::de::DeserializeOwned,
 {
@@ -298,7 +298,7 @@ pub struct DeltaHashMap<K: Eq + Hash, D>(pub Option<HashMap<K, Patch<D>>>);
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct ReportedHashMap<K: Eq + Hash, R>(pub HashMap<K, R>);
 
-impl<K: Eq + Hash + serde::Serialize, R: serde::Serialize> ReportedUnionFields
+impl<K: Eq + Hash + serde::Serialize, R: serde::Serialize> ReportedFields
     for ReportedHashMap<K, R>
 {
     const FIELD_NAMES: &'static [&'static str] = &[];

@@ -72,7 +72,7 @@ struct FieldCodegen {
     into_partial_reported_arm: TokenStream,
     /// SCHEMA_HASH computation code
     schema_hash_code: TokenStream,
-    /// ReportedUnionFields::serialize_into_map arm
+    /// ReportedFields::serialize_into_map arm
     reported_serialize_arm: TokenStream,
     /// variant_at_path() delegation arm (None for leaf fields)
     variant_at_path_arm: Option<TokenStream>,
@@ -99,6 +99,9 @@ struct FieldCodegen {
 
     /// ReportedDiff::diff() arm for this field
     reported_diff_arm: TokenStream,
+
+    /// persist_report_only() arm for report_only(persist) fields (None otherwise)
+    persist_report_only_arm: Option<TokenStream>,
 }
 
 /// Process a single struct field and generate all code fragments.
@@ -377,6 +380,26 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         }
     };
 
+    // --- persist_report_only arm (only for report_only(persist) leaf fields) ---
+    let persist_report_only_arm = if attrs.is_report_only_persist() {
+        let field_path = get_serde_rename(&field.attrs).unwrap_or_else(|| field_name.to_string());
+        let field_path = format!("/{}", field_path);
+        Some(quote! {
+            if let Some(ref val) = self.#field_name {
+                let __saved_len = __key_buf.len();
+                let _ = __key_buf.push_str(#field_path);
+                let mut __vb = <#field_ty as #krate::__macro_support::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE;
+                let mut __buf = [0u8; <#field_ty as #krate::__macro_support::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE];
+                let bytes = #krate::__macro_support::postcard::to_slice(val, &mut __buf)
+                    .map_err(|_| #krate::shadows::KvError::Serialization)?;
+                __kv.store(__key_buf.as_str(), bytes).await.map_err(#krate::shadows::KvError::Kv)?;
+                __key_buf.truncate(__saved_len);
+            }
+        })
+    } else {
+        None
+    };
+
     FieldCodegen {
         serde_name,
         delta_field,
@@ -395,6 +418,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         reported_builder_param,
         reported_builder_assign,
         reported_diff_arm,
+        persist_report_only_arm,
     }
 }
 
@@ -481,6 +505,10 @@ pub(crate) fn generate_struct_code(
     let reported_diff_arms: Vec<_> = field_codegens
         .iter()
         .map(|f| f.reported_diff_arm.clone())
+        .collect();
+    let persist_report_only_arms: Vec<_> = field_codegens
+        .iter()
+        .filter_map(|f| f.persist_report_only_arm.clone())
         .collect();
 
     // Generate Delta type - always use FieldScanner, no Deserialize needed
@@ -878,9 +906,32 @@ pub(crate) fn generate_struct_code(
         #kv_persist_impl
     };
 
-    // Generate ReportedUnionFields impl
+    // Generate persist_report_only override if there are report_only(persist) fields
+    #[cfg(not(feature = "kv_persist"))]
+    let persist_report_only_method = quote! {};
+    #[cfg(feature = "kv_persist")]
+    let persist_report_only_method = if persist_report_only_arms.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            fn persist_report_only<__K: #krate::shadows::KVStore>(
+                &self,
+                __prefix: &str,
+                __kv: &__K,
+            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<__K::Error>>> {
+                async move {
+                    let mut __key_buf = #krate::__macro_support::heapless::String::<64>::new();
+                    let _ = __key_buf.push_str(__prefix);
+                    #(#persist_report_only_arms)*
+                    Ok(())
+                }
+            }
+        }
+    };
+
+    // Generate ReportedFields impl
     let reported_union_fields_impl = quote! {
-        impl #krate::shadows::ReportedUnionFields for #reported_name {
+        impl #krate::shadows::ReportedFields for #reported_name {
             const FIELD_NAMES: &'static [&'static str] = &[#(#field_names),*];
 
             fn serialize_into_map<S: ::serde::ser::SerializeMap>(
@@ -890,6 +941,8 @@ pub(crate) fn generate_struct_code(
                 #(#reported_serialize_arms)*
                 Ok(())
             }
+
+            #persist_report_only_method
         }
 
         impl #krate::shadows::ReportedDiff for #reported_name {

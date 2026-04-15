@@ -5,7 +5,7 @@
 //! - Reported type with skip_serializing_if
 //! - ShadowNode trait implementation
 //! - ShadowRoot trait implementation (for root types)
-//! - ReportedUnionFields implementation
+//! - ReportedFields implementation
 
 mod adjacently_tagged;
 mod enum_codegen;
@@ -33,7 +33,7 @@ pub(crate) struct CodegenOutput {
     pub reported_type: TokenStream,
     /// The `ShadowNode` trait implementation (includes `KVPersist` when feature-enabled)
     pub shadow_node_impl: TokenStream,
-    /// The `ReportedUnionFields` trait implementation
+    /// The `ReportedFields` trait implementation
     pub reported_union_fields_impl: TokenStream,
     /// Builder impl block for `desired()` / `reported()` associated functions
     pub builder_impl: TokenStream,

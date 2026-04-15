@@ -6,7 +6,7 @@
 //!
 //! All implementations are strictly no_std / no_alloc.
 
-use crate::shadows::{ParseError, ReportedUnionFields, ShadowNode, VariantResolver, fnv1a_hash};
+use crate::shadows::{ParseError, ReportedFields, ShadowNode, VariantResolver, fnv1a_hash};
 use serde::ser::SerializeMap;
 
 #[cfg(feature = "shadows_kv_persist")]
@@ -51,7 +51,7 @@ impl<const N: usize> ShadowNode for heapless::String<N> {
     }
 }
 
-impl<const N: usize> ReportedUnionFields for heapless::String<N> {
+impl<const N: usize> ReportedFields for heapless::String<N> {
     const FIELD_NAMES: &'static [&'static str] = &[];
 
     fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
@@ -181,7 +181,7 @@ where
     }
 }
 
-impl<T, const N: usize> ReportedUnionFields for heapless::Vec<T, N>
+impl<T, const N: usize> ReportedFields for heapless::Vec<T, N>
 where
     T: Clone + Default + serde::Serialize + serde::de::DeserializeOwned,
 {
@@ -318,7 +318,7 @@ pub struct DeltaLinearMap<K: Eq, D, const N: usize>(
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct ReportedLinearMap<K: Eq, R, const N: usize>(pub heapless::LinearMap<K, R, N>);
 
-impl<K: Eq + serde::Serialize, R: serde::Serialize, const N: usize> ReportedUnionFields
+impl<K: Eq + serde::Serialize, R: serde::Serialize, const N: usize> ReportedFields
     for ReportedLinearMap<K, R, N>
 {
     const FIELD_NAMES: &'static [&'static str] = &[];
@@ -808,7 +808,7 @@ macro_rules! impl_array_shadow_node {
             }
         }
 
-        impl<T> ReportedUnionFields for [T; $n]
+        impl<T> ReportedFields for [T; $n]
         where
             T: Clone + Default + serde::Serialize + serde::de::DeserializeOwned,
         {

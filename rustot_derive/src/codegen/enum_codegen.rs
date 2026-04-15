@@ -739,10 +739,10 @@ pub(crate) fn generate_simple_enum_code(
         #kv_persist_impl
     };
 
-    // Generate ReportedUnionFields impl for enum
+    // Generate ReportedFields impl for enum
     // For enums, we need to serialize the discriminant
     let reported_union_fields_impl = quote! {
-        impl #krate::shadows::ReportedUnionFields for #reported_name {
+        impl #krate::shadows::ReportedFields for #reported_name {
             const FIELD_NAMES: &'static [&'static str] = &[];
 
             fn serialize_into_map<S: ::serde::ser::SerializeMap>(

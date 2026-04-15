@@ -128,6 +128,22 @@ pub trait StateStore<S: ShadowNode> {
     /// - KV stores: Returns a resolver that fetches `_variant` keys from storage
     fn resolver<'a>(&'a self, prefix: &'a str) -> impl VariantResolver + 'a;
 
+    /// Persist `report_only(persist)` fields from a Reported struct to storage.
+    ///
+    /// Called by `Shadow::update_reported()` to persist fields that are
+    /// `report_only(persist)` — they're not in the Delta type, so they can
+    /// only be persisted through reporting.
+    ///
+    /// Default implementation is a no-op. KV-backed stores override this to
+    /// write the fields to their KV keys.
+    async fn persist_reported(
+        &self,
+        _prefix: &str,
+        _reported: &S::Reported,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Parse JSON delta, resolve variants, apply, and return the typed delta.
     ///
     /// This method:
