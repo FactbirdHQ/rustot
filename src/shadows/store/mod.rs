@@ -128,6 +128,18 @@ pub trait StateStore<S: ShadowNode> {
     /// - KV stores: Returns a resolver that fetches `_variant` keys from storage
     fn resolver<'a>(&'a self, prefix: &'a str) -> impl VariantResolver + 'a;
 
+    /// Persist `report_only(persist)` fields from a Reported struct to storage.
+    ///
+    /// Called by `Shadow::update_reported()` before sending to MQTT.
+    /// Default implementation is a no-op. KV-backed stores override this.
+    async fn persist_reported(
+        &self,
+        _prefix: &str,
+        _reported: &S::Reported,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Parse JSON delta, resolve variants, apply, and return the typed delta.
     ///
     /// This method:

@@ -22,7 +22,7 @@ use codegen::generate_shadow_node;
 /// - `ShadowNode` trait implementation (persistence support)
 /// - `Delta{Name}` struct for applying partial updates
 /// - `Reported{Name}` struct with serde skip_serializing_if
-/// - `ReportedUnionFields` implementation
+/// - `ReportedFields` implementation
 /// - `desired()` / `reported()` builder methods (requires `shadows_builders` feature)
 ///
 /// # Builder Methods
@@ -76,7 +76,7 @@ pub fn shadow_root(
 /// - `ShadowNode` trait implementation (persistence support)
 /// - `Delta{Name}` struct/enum for applying partial updates
 /// - `Reported{Name}` struct/enum with serde skip_serializing_if
-/// - `ReportedUnionFields` implementation
+/// - `ReportedFields` implementation
 ///
 /// # Field Attributes
 ///
@@ -126,7 +126,7 @@ pub fn shadow_node(
 /// - `ShadowNode` trait implementation (persistence support)
 /// - `Delta{Name}` struct for applying partial updates
 /// - `Reported{Name}` struct with serde skip_serializing_if
-/// - `ReportedUnionFields` implementation
+/// - `ReportedFields` implementation
 /// - `desired()` / `reported()` builder methods (requires `shadows_builders` feature)
 ///
 /// # Attributes
