@@ -13,7 +13,7 @@
 //! it works transparently for both primitives and nested `ShadowNode` types,
 //! eliminating the need for `is_primitive()` checks in the derive macro.
 
-/// Implement `ShadowNode`, `ReportedUnionFields`, and (with `shadows_kv_persist`)
+/// Implement `ShadowNode`, `ReportedFields`, and (with `shadows_kv_persist`)
 /// `KVPersist` for opaque/leaf types.
 ///
 /// # Forms
@@ -78,7 +78,7 @@ macro_rules! impl_opaque {
             }
         }
 
-        impl $crate::shadows::ReportedUnionFields for $ty {
+        impl $crate::shadows::ReportedFields for $ty {
             const FIELD_NAMES: &'static [&'static str] = &[];
 
             fn serialize_into_map<S: ::serde::ser::SerializeMap>(

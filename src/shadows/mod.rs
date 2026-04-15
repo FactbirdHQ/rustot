@@ -102,7 +102,7 @@ pub enum DeltaContent<T> {
     Value(T),
     /// Null cleanup — serializes as `{field1: null, field2: null, ...}`.
     ///
-    /// Each inner slice is a `FIELD_NAMES` from a `ReportedUnionFields` impl,
+    /// Each inner slice is a `FIELD_NAMES` from a `ReportedFields` impl,
     /// allowing multiple variants' fields to be combined.
     NullFields(&'static [&'static [&'static str]]),
 }
@@ -243,16 +243,16 @@ pub fn delta_mode_is_absent<T>(dm: &DeltaMode<T>) -> bool {
 ///
 /// ## Why Universal Implementation?
 ///
-/// All `#[shadow_node]` types generate `ReportedUnionFields` for their Reported type,
+/// All `#[shadow_node]` types generate `ReportedFields` for their Reported type,
 /// even if they're not used inside an adjacently-tagged enum. This is because at
 /// macro expansion time, we don't know if a type will later be used as an inner
 /// type of an adjacently-tagged enum.
 ///
 /// ## Supertrait: `Serialize`
 ///
-/// `ReportedUnionFields` requires `Serialize` as a supertrait. This means the
-/// `ShadowNode::Reported` bound of `ReportedUnionFields` implies `Serialize`.
-pub trait ReportedUnionFields: Serialize {
+/// `ReportedFields` requires `Serialize` as a supertrait. This means the
+/// `ShadowNode::Reported` bound of `ReportedFields` implies `Serialize`.
+pub trait ReportedFields: Serialize {
     /// Names of all fields this type contributes to the flat union.
     ///
     /// Used to null out inactive variant fields during serialization.
@@ -264,6 +264,22 @@ pub trait ReportedUnionFields: Serialize {
     /// adds fields to an existing `SerializeMap`. This enables flat union serialization
     /// where multiple types' fields are combined into a single JSON object.
     fn serialize_into_map<S: serde::ser::SerializeMap>(&self, map: &mut S) -> Result<(), S::Error>;
+
+    /// Persist `report_only(persist)` fields from this Reported struct to KV storage.
+    ///
+    /// For each `report_only(persist)` field that is `Some`, writes the value to
+    /// its KV key. Fields that are `None` are not touched.
+    ///
+    /// Default implementation is a no-op — types without `report_only(persist)`
+    /// fields don't need to persist anything.
+    #[cfg(feature = "shadows_kv_persist")]
+    fn persist_report_only<K: KVStore>(
+        &self,
+        _prefix: &str,
+        _kv: &K,
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>> {
+        core::future::ready(Ok(()))
+    }
 }
 
 /// Trait for diffing Reported types in-place.
@@ -416,12 +432,12 @@ pub trait ShadowNode: Clone + Sized {
     /// Fields marked `report_only` are excluded from the state struct and only
     /// appear in this Reported type. They are `None` in partial reported.
     ///
-    /// ## Trait Bound: `ReportedUnionFields`
+    /// ## Trait Bound: `ReportedFields`
     ///
-    /// All `Reported` types must implement `ReportedUnionFields`, which provides:
+    /// All `Reported` types must implement `ReportedFields`, which provides:
     /// - `Serialize` (as a supertrait)
     /// - `serialize_into_map()` for flat union serialization
-    type Reported: ReportedUnionFields;
+    type Reported: ReportedFields;
 
     /// Compile-time hash of this type's schema structure.
     ///

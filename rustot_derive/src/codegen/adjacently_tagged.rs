@@ -274,7 +274,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     },
                 });
 
-                // For flat union serialize - use ReportedUnionFields
+                // For flat union serialize - use ReportedFields
                 inactive_variant_field_nulls.push((variant_ident.clone(), inner_ty.clone()));
 
                 // Schema hash for newtype variant
@@ -497,7 +497,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 .map(|(_, inner_ty)| {
                     quote! {
                         #krate::shadows::serialize_null_fields(
-                            <<#inner_ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedUnionFields>::FIELD_NAMES,
+                            <<#inner_ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedFields>::FIELD_NAMES,
                             &mut content_map
                         )?;
                     }
@@ -516,7 +516,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         map.serialize_entry(#tag_key, #serde_name)?;
                         // Create nested content map using a helper that implements Serialize
                         struct ContentWrapper<'a, C>(&'a C, core::marker::PhantomData<fn() -> ()>);
-                        impl<'a, C: #krate::shadows::ReportedUnionFields + ::serde::Serialize> ::serde::Serialize for ContentWrapper<'a, C> {
+                        impl<'a, C: #krate::shadows::ReportedFields + ::serde::Serialize> ::serde::Serialize for ContentWrapper<'a, C> {
                             fn serialize<SS>(&self, serializer: SS) -> Result<SS::Ok, SS::Error>
                             where
                                 SS: ::serde::Serializer,
@@ -588,7 +588,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 S: ::serde::Serializer,
             {
                 use ::serde::ser::SerializeMap;
-                use #krate::shadows::ReportedUnionFields;
+                use #krate::shadows::ReportedFields;
 
                 const TOTAL_FIELDS: usize = #total_fields_expr;
                 let mut map = serializer.serialize_map(Some(TOTAL_FIELDS))?;
@@ -663,7 +663,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     .filter(|(other_ident, _)| other_ident != variant_ident)
                     .map(|(_, inner_ty)| {
                         quote! {
-                            <<#inner_ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedUnionFields>::FIELD_NAMES
+                            <<#inner_ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedFields>::FIELD_NAMES
                         }
                     })
                     .collect();
@@ -1042,10 +1042,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     };
 
     // =========================================================================
-    // 6. Generate ReportedUnionFields Implementation
+    // 6. Generate ReportedFields Implementation
     // =========================================================================
     let reported_union_fields_impl = quote! {
-        impl #krate::shadows::ReportedUnionFields for #reported_name {
+        impl #krate::shadows::ReportedFields for #reported_name {
             const FIELD_NAMES: &'static [&'static str] = &[#tag_key];
 
             fn serialize_into_map<S: ::serde::ser::SerializeMap>(

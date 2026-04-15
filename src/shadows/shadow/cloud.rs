@@ -410,6 +410,12 @@ where
     pub async fn update_reported(&self, reported: impl Into<S::Reported>) -> Result<(), Error> {
         let reported: S::Reported = reported.into();
 
+        // Persist any report_only(persist) fields to KV before sending to cloud.
+        self.store
+            .persist_reported(Self::prefix(), &reported)
+            .await
+            .map_err(|_| Error::DaoWrite)?;
+
         let response = self.update_shadow::<S::Delta>(None, Some(reported)).await?;
 
         if let Some(delta) = response.delta {
