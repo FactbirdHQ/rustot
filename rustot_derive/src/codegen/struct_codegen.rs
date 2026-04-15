@@ -289,7 +289,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- into_delta arm (report_only fields are not in Delta, so no arm needed) ---
-    let into_delta_arm = if attrs.report_only {
+    let into_delta_arm = if attrs.is_report_only() {
         None
     } else if is_leaf {
         Some(quote! { #field_name: Some(self.#field_name.clone()), })
