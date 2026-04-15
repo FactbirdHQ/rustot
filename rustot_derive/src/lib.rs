@@ -257,11 +257,16 @@ fn strip_shadow_attrs(input: &DeriveInput) -> TokenStream {
     match &mut clean.data {
         syn::Data::Struct(data) => {
             if let syn::Fields::Named(fields) = &mut data.fields {
-                // Remove report_only fields from the original struct
+                // Remove transient report_only fields from the original struct.
+                // report_only(persist) fields remain — they need to be in the struct
+                // for KV persistence and loading on boot.
                 fields.named = fields
                     .named
                     .iter()
-                    .filter(|field| !FieldAttrs::from_attrs(&field.attrs).report_only)
+                    .filter(|field| {
+                        let attrs = FieldAttrs::from_attrs(&field.attrs);
+                        !attrs.is_report_only() || attrs.is_report_only_persist()
+                    })
                     .cloned()
                     .collect();
                 // Strip shadow_attr from remaining fields
