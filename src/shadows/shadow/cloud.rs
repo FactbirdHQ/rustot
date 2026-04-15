@@ -97,7 +97,7 @@ where
                                 .await
                                 .map_err(|_| Error::InvalidPayload)?;
 
-                        if parsed.client_token != Some(self.mqtt.client_id()) {
+                        if parsed.client_token == Some(self.mqtt.client_id()) {
                             Ok(None)
                         } else {
                             Ok(Some(parsed.state))
