@@ -130,7 +130,7 @@ where
         reported: Option<S::Reported>,
     ) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
         debug!(
-            "[{:?}] Updating reported shadow value.",
+            "[{:?}] Updating shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
         );
 
