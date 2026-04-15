@@ -300,10 +300,12 @@ where
 /// `None` means "no changes to the map" (the map field itself was absent
 /// from the delta). `Some(map)` contains per-entry patches.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct DeltaHashMap<K: Eq + Hash, D>(pub Option<HashMap<K, Patch<D>>>);
 
 /// Reported type for `HashMap`-based shadow fields.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+#[serde(transparent)]
 pub struct ReportedHashMap<K: Eq + Hash, R>(pub HashMap<K, R>);
 
 impl<K: Eq + Hash + serde::Serialize, R: serde::Serialize> ReportedUnionFields
@@ -311,7 +313,10 @@ impl<K: Eq + Hash + serde::Serialize, R: serde::Serialize> ReportedUnionFields
 {
     const FIELD_NAMES: &'static [&'static str] = &[];
 
-    fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
+    fn serialize_into_map<S: SerializeMap>(&self, map: &mut S) -> Result<(), S::Error> {
+        for (key, value) in self.0.iter() {
+            map.serialize_entry(key, value)?;
+        }
         Ok(())
     }
 }
@@ -772,5 +777,195 @@ mod tests {
             assert!(loaded.get("a").is_none());
             assert_eq!(loaded.get("b"), Some(&2));
         }
+    }
+}
+
+// =============================================================================
+// Flatten Tests
+// =============================================================================
+
+#[cfg(test)]
+mod flatten_tests {
+    use crate::shadows::{NullResolver, ShadowNode};
+    use rustot_derive::{shadow_node, shadow_root};
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+    struct ConnectorConfig {
+        pub enabled: bool,
+    }
+
+    #[shadow_root(name = "displays")]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+    struct DisplaysShadow {
+        pub brightness: u8,
+        #[shadow_attr(flatten)]
+        pub connectors: HashMap<String, ConnectorConfig>,
+    }
+
+    #[tokio::test]
+    async fn test_flatten_parse_delta_mixed_fields() {
+        let json =
+            br#"{"brightness": 50, "HDMI-A-1": {"enabled": true}, "DP-1": {"enabled": false}}"#;
+        let delta = DisplaysShadow::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
+
+        // Normal field parsed
+        assert_eq!(delta.brightness, Some(50));
+
+        // Flattened entries collected into connectors delta
+        let patches = delta.connectors.as_ref().unwrap().0.as_ref().unwrap();
+        assert_eq!(patches.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_flatten_parse_delta_only_normal() {
+        let json = br#"{"brightness": 80}"#;
+        let delta = DisplaysShadow::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
+
+        assert_eq!(delta.brightness, Some(80));
+        // No remaining keys → connectors delta is None
+        assert!(delta.connectors.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_flatten_parse_delta_only_flattened() {
+        let json = br#"{"HDMI-A-1": {"enabled": true}}"#;
+        let delta = DisplaysShadow::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
+
+        assert!(delta.brightness.is_none());
+        let patches = delta.connectors.as_ref().unwrap().0.as_ref().unwrap();
+        assert_eq!(patches.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_flatten_parse_delta_null() {
+        let json = b"null";
+        let delta = DisplaysShadow::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
+
+        assert!(delta.brightness.is_none());
+        assert!(delta.connectors.is_none());
+    }
+
+    #[test]
+    fn test_flatten_apply_delta() {
+        let mut state = DisplaysShadow {
+            brightness: 50,
+            connectors: HashMap::new(),
+        };
+
+        // Build a delta with both normal and flattened updates
+        let mut patches = HashMap::new();
+        patches.insert(
+            "HDMI-A-1".to_string(),
+            crate::shadows::data_types::Patch::Set(DeltaConnectorConfig {
+                enabled: Some(true),
+            }),
+        );
+        let delta = DeltaDisplaysShadow {
+            brightness: Some(80),
+            connectors: Some(super::DeltaHashMap(Some(patches))),
+        };
+
+        state.apply_delta(&delta);
+        assert_eq!(state.brightness, 80);
+        assert_eq!(
+            state.connectors.get("HDMI-A-1"),
+            Some(&ConnectorConfig { enabled: true })
+        );
+    }
+
+    #[test]
+    fn test_flatten_into_reported() {
+        let state = DisplaysShadow {
+            brightness: 50,
+            connectors: {
+                let mut m = HashMap::new();
+                m.insert("HDMI-A-1".to_string(), ConnectorConfig { enabled: true });
+                m
+            },
+        };
+
+        let reported = state.into_reported();
+        assert_eq!(reported.brightness, Some(50));
+        let connector_reported = &reported.connectors.as_ref().unwrap().0["HDMI-A-1"];
+        assert_eq!(connector_reported.enabled, Some(true));
+    }
+
+    #[test]
+    fn test_flatten_reported_serializes_flat() {
+        let state = DisplaysShadow {
+            brightness: 50,
+            connectors: {
+                let mut m = HashMap::new();
+                m.insert("HDMI-A-1".to_string(), ConnectorConfig { enabled: true });
+                m
+            },
+        };
+
+        let reported = state.into_reported();
+        let json = serde_json::to_string(&reported).unwrap();
+
+        // Should NOT contain "connectors" as a nested key
+        assert!(!json.contains("\"connectors\""));
+        // Should contain flat entries
+        assert!(json.contains("\"brightness\""));
+        assert!(json.contains("\"HDMI-A-1\""));
+        assert!(json.contains("\"enabled\""));
+    }
+
+    #[test]
+    fn test_flatten_delta_serializes_flat() {
+        let mut patches = HashMap::new();
+        patches.insert(
+            "DP-1".to_string(),
+            crate::shadows::data_types::Patch::Set(DeltaConnectorConfig {
+                enabled: Some(false),
+            }),
+        );
+
+        let delta = DeltaDisplaysShadow {
+            brightness: Some(60),
+            connectors: Some(super::DeltaHashMap(Some(patches))),
+        };
+
+        let json = serde_json::to_string(&delta).unwrap();
+        // Should NOT contain "connectors" as a nested key
+        assert!(!json.contains("\"connectors\""));
+        // Should contain flat entries
+        assert!(json.contains("\"brightness\""));
+        assert!(json.contains("\"DP-1\""));
+    }
+
+    #[test]
+    fn test_flatten_into_partial_reported() {
+        let state = DisplaysShadow {
+            brightness: 50,
+            connectors: {
+                let mut m = HashMap::new();
+                m.insert("HDMI-A-1".to_string(), ConnectorConfig { enabled: true });
+                m.insert("DP-1".to_string(), ConnectorConfig { enabled: false });
+                m
+            },
+        };
+
+        // Delta only changes brightness — connectors should be None in partial reported
+        let delta = DeltaDisplaysShadow {
+            brightness: Some(80),
+            connectors: None,
+        };
+
+        let partial = state.into_partial_reported(&delta);
+        assert_eq!(partial.brightness, Some(50));
+        assert!(partial.connectors.is_none());
     }
 }
