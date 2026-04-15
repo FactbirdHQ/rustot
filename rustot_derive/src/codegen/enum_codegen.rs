@@ -125,6 +125,7 @@ pub(crate) fn generate_simple_enum_code(
     let mut variant_names = Vec::new();
     let mut apply_delta_arms = Vec::new();
     let mut into_reported_arms = Vec::new();
+    let mut into_delta_arms: Vec<TokenStream> = Vec::new();
     let mut into_partial_reported_arms = Vec::new();
     let mut schema_hash_code = Vec::new();
     let mut reported_diff_arms = Vec::new();
@@ -159,6 +160,11 @@ pub(crate) fn generate_simple_enum_code(
                 // into_reported: for unit variants, return the reported variant
                 into_reported_arms.push(quote! {
                     Self::#variant_ident => Self::Reported::#variant_ident,
+                });
+
+                // into_delta: for unit variants, return the delta variant
+                into_delta_arms.push(quote! {
+                    Self::#variant_ident => Self::Delta::#variant_ident,
                 });
 
                 // into_partial_reported: for unit variants, return the reported variant
@@ -219,6 +225,13 @@ pub(crate) fn generate_simple_enum_code(
                 into_reported_arms.push(quote! {
                     Self::#variant_ident(ref inner) => {
                         Self::Reported::#variant_ident(#krate::shadows::ShadowNode::into_reported(inner))
+                    }
+                });
+
+                // into_delta: delegate to inner's into_delta
+                into_delta_arms.push(quote! {
+                    Self::#variant_ident(ref inner) => {
+                        Self::Delta::#variant_ident(#krate::shadows::ShadowNode::into_delta(inner))
                     }
                 });
 
@@ -525,6 +538,12 @@ pub(crate) fn generate_simple_enum_code(
             fn into_reported(&self) -> Self::Reported {
                 match self {
                     #(#into_reported_arms)*
+                }
+            }
+
+            fn into_delta(&self) -> Self::Delta {
+                match self {
+                    #(#into_delta_arms)*
                 }
             }
 

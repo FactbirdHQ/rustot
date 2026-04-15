@@ -481,6 +481,15 @@ pub trait ShadowNode: Clone + Sized {
     #[allow(clippy::wrong_self_convention)]
     fn into_reported(&self) -> Self::Reported;
 
+    /// Convert to a fully populated delta (all fields `Some`).
+    ///
+    /// Used when creating a shadow to populate the desired state in the cloud.
+    /// Unlike `into_reported`, this excludes `report_only` fields (which are
+    /// not part of the Delta type) — giving the cloud a complete picture of
+    /// all modifiable keys.
+    #[allow(clippy::wrong_self_convention)]
+    fn into_delta(&self) -> Self::Delta;
+
     /// Convert to reported representation containing only fields present in delta.
     ///
     /// Used for efficient acknowledgment - reports only changed fields.

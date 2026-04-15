@@ -85,6 +85,9 @@ struct FieldCodegen {
     /// into_reported() field assignment (for ShadowNode impl)
     into_reported_arm: TokenStream,
 
+    /// into_delta() field assignment (None for report_only fields)
+    into_delta_arm: Option<TokenStream>,
+
     /// desired_cleanup() delegation arm (None for leaf and report_only fields)
     desired_cleanup_arm: Option<TokenStream>,
 
@@ -285,6 +288,17 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         quote! { #field_name: Some(#krate::shadows::ShadowNode::into_reported(&self.#field_name)), }
     };
 
+    // --- into_delta arm (report_only fields are not in Delta, so no arm needed) ---
+    let into_delta_arm = if attrs.report_only {
+        None
+    } else if is_leaf {
+        Some(quote! { #field_name: Some(self.#field_name.clone()), })
+    } else {
+        Some(
+            quote! { #field_name: Some(#krate::shadows::ShadowNode::into_delta(&self.#field_name)), },
+        )
+    };
+
     // --- desired_cleanup arm (only for non-report_only nested fields) ---
     let desired_cleanup_arm = if attrs.is_report_only() || is_leaf {
         None
@@ -389,6 +403,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         parse_delta_field_name,
         parse_delta_arm,
         into_reported_arm,
+        into_delta_arm,
         desired_cleanup_arm,
         desired_builder_param,
         desired_builder_assign,
@@ -473,6 +488,10 @@ pub(crate) fn generate_struct_code(
     let into_reported_arms: Vec<_> = field_codegens
         .iter()
         .map(|f| f.into_reported_arm.clone())
+        .collect();
+    let into_delta_arms: Vec<_> = field_codegens
+        .iter()
+        .filter_map(|f| f.into_delta_arm.clone())
         .collect();
     let desired_cleanup_arms: Vec<_> = field_codegens
         .iter()
@@ -559,6 +578,12 @@ pub(crate) fn generate_struct_code(
             fn into_reported(&self) -> Self::Reported {
                 #reported_name {
                     #(#into_reported_arms)*
+                }
+            }
+
+            fn into_delta(&self) -> Self::Delta {
+                #delta_name {
+                    #(#into_delta_arms)*
                 }
             }
 

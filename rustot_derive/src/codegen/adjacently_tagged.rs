@@ -120,6 +120,9 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // For into_reported - full conversion
     let mut into_reported_arms = Vec::new();
 
+    // For into_delta - full delta conversion
+    let mut into_delta_arms: Vec<TokenStream> = Vec::new();
+
     // For into_partial_reported - match on self and construct Reported directly
     let mut into_partial_reported_arms = Vec::new();
 
@@ -174,6 +177,14 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 // into_reported: unit variant
                 into_reported_arms.push(quote! {
                     Self::#variant_ident => Self::Reported::#variant_ident,
+                });
+
+                // into_delta: unit variant — mode only, no config
+                into_delta_arms.push(quote! {
+                    Self::#variant_ident => #delta_name {
+                        mode: #krate::shadows::DeltaMode::Known(#variant_enum_name::#variant_ident),
+                        config: #krate::shadows::DeltaContent::Absent,
+                    },
                 });
 
                 // into_partial_reported: unit variant has no inner state
@@ -233,6 +244,16 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     Self::#variant_ident(ref inner) => {
                         Self::Reported::#variant_ident(#krate::shadows::ShadowNode::into_reported(inner))
                     }
+                });
+
+                // into_delta: delegate to inner's into_delta
+                into_delta_arms.push(quote! {
+                    Self::#variant_ident(ref inner) => #delta_name {
+                        mode: #krate::shadows::DeltaMode::Known(#variant_enum_name::#variant_ident),
+                        config: #krate::shadows::DeltaContent::Value(
+                            #delta_config_name::#variant_ident(#krate::shadows::ShadowNode::into_delta(inner))
+                        ),
+                    },
                 });
 
                 // into_partial_reported: get inner delta from config if matching, else use default
@@ -784,6 +805,12 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             fn into_reported(&self) -> Self::Reported {
                 match self {
                     #(#into_reported_arms)*
+                }
+            }
+
+            fn into_delta(&self) -> Self::Delta {
+                match self {
+                    #(#into_delta_arms)*
                 }
             }
 
