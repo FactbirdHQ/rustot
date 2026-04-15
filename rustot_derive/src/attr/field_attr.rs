@@ -16,9 +16,13 @@ pub const SERDE_ATTR: &str = "serde";
 /// Parsed field-level shadow attributes
 #[derive(Default, Clone, FromMeta)]
 pub struct FieldAttrs {
-    /// Field is only included in the Reported type, not Delta
+    /// Field is only included in the Reported type, not Delta.
+    ///
+    /// Two forms:
+    /// - `#[shadow_attr(report_only)]` — transient, not persisted to KV
+    /// - `#[shadow_attr(report_only(persist))]` — persisted to KV, included in schema hash
     #[darling(default)]
-    pub report_only: bool,
+    pub report_only: Option<ReportOnlySpec>,
     /// Field is opaque - treated as leaf (primitive-like, no recursive patching)
     /// Can be just `opaque` (requires MaxSize) or `opaque(max_size = N)` (explicit size)
     #[darling(default)]
@@ -31,6 +35,37 @@ pub struct FieldAttrs {
     #[cfg(feature = "kv_persist")]
     #[darling(default, rename = "default")]
     pub default_value: Option<DefaultValue>,
+}
+
+/// Report-only field specification
+///
+/// Supports two forms:
+/// - `#[shadow_attr(report_only)]` — transient (not persisted)
+/// - `#[shadow_attr(report_only(persist))]` — persisted to KV storage
+#[derive(Clone, Default)]
+pub struct ReportOnlySpec {
+    pub persist: bool,
+}
+
+impl FromMeta for ReportOnlySpec {
+    fn from_word() -> darling::Result<Self> {
+        // `#[shadow_attr(report_only)]` — transient
+        Ok(ReportOnlySpec { persist: false })
+    }
+
+    fn from_list(items: &[darling::ast::NestedMeta]) -> darling::Result<Self> {
+        // `#[shadow_attr(report_only(persist))]`
+        for item in items {
+            if let darling::ast::NestedMeta::Meta(Meta::Path(path)) = item {
+                if path.is_ident("persist") {
+                    return Ok(ReportOnlySpec { persist: true });
+                }
+            }
+        }
+        Err(darling::Error::custom(
+            "expected `report_only` or `report_only(persist)`",
+        ))
+    }
 }
 
 /// Opaque field specification
@@ -87,6 +122,16 @@ impl FieldAttrs {
             }
         }
         Self::default()
+    }
+
+    /// Check if this field is report_only (either transient or persist)
+    pub fn is_report_only(&self) -> bool {
+        self.report_only.is_some()
+    }
+
+    /// Check if this field is report_only with KV persistence
+    pub fn is_report_only_persist(&self) -> bool {
+        self.report_only.as_ref().map_or(false, |spec| spec.persist)
     }
 
     /// Check if this field is marked as opaque
@@ -310,6 +355,31 @@ mod tests {
         let field_attrs = FieldAttrs::from_attrs(&attrs);
         assert!(!field_attrs.is_opaque());
         assert_eq!(field_attrs.opaque_max_size(), None);
+    }
+
+    // Test report_only attribute parsing
+    #[test]
+    fn test_report_only_simple() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(report_only)])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert!(field_attrs.is_report_only());
+        assert!(!field_attrs.is_report_only_persist());
+    }
+
+    #[test]
+    fn test_report_only_persist() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(report_only(persist))])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert!(field_attrs.is_report_only());
+        assert!(field_attrs.is_report_only_persist());
+    }
+
+    #[test]
+    fn test_not_report_only() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[shadow_attr(opaque)])];
+        let field_attrs = FieldAttrs::from_attrs(&attrs);
+        assert!(!field_attrs.is_report_only());
+        assert!(!field_attrs.is_report_only_persist());
     }
 
     // Test heck integration for rename_all

@@ -134,7 +134,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         .collect();
 
     // --- Delta field ---
-    let delta_field = if attrs.report_only {
+    let delta_field = if attrs.is_report_only() {
         None
     } else if is_leaf {
         Some(quote! {
@@ -168,7 +168,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- apply_delta arm ---
-    let apply_delta_arm = if attrs.report_only {
+    let apply_delta_arm = if attrs.is_report_only() {
         None
     } else if is_leaf {
         Some(quote! {
@@ -185,7 +185,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- into_partial_reported arm ---
-    let into_partial_reported_arm = if attrs.report_only {
+    let into_partial_reported_arm = if attrs.is_report_only() {
         quote! { #field_name: None, }
     } else if is_leaf {
         quote! {
@@ -206,10 +206,10 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- Schema hash code ---
-    // report_only fields are excluded from the schema hash since they are not
-    // part of the state struct or KV persistence — changing them should not
-    // trigger a schema migration.
-    let schema_hash_code = if attrs.report_only {
+    // Transient report_only fields are excluded from the schema hash since they
+    // are not persisted to KV — changing them should not trigger a schema migration.
+    // report_only(persist) fields ARE included since they are persisted.
+    let schema_hash_code = if attrs.is_report_only() && !attrs.is_report_only_persist() {
         quote! {}
     } else {
         let field_name_bytes = serde_name.as_bytes();
@@ -236,7 +236,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- parse_delta ---
-    let (parse_delta_field_name, parse_delta_arm) = if attrs.report_only {
+    let (parse_delta_field_name, parse_delta_arm) = if attrs.is_report_only() {
         (None, None)
     } else if is_leaf {
         (
@@ -275,7 +275,9 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- into_reported arm ---
-    let into_reported_arm = if attrs.report_only {
+    // Transient report_only: None (set separately via reported builder).
+    // report_only(persist): populated from self (persisted state has the value).
+    let into_reported_arm = if attrs.is_report_only() && !attrs.is_report_only_persist() {
         quote! { #field_name: None, }
     } else if is_leaf {
         quote! { #field_name: Some(self.#field_name.clone()), }
@@ -284,7 +286,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- desired_cleanup arm (only for non-report_only nested fields) ---
-    let desired_cleanup_arm = if attrs.report_only || is_leaf {
+    let desired_cleanup_arm = if attrs.is_report_only() || is_leaf {
         None
     } else {
         Some(quote! {
@@ -298,7 +300,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- variant_at_path arm (only for non-report_only nested fields) ---
-    let variant_at_path_arm = if attrs.report_only || is_leaf {
+    let variant_at_path_arm = if attrs.is_report_only() || is_leaf {
         None
     } else {
         let field_prefix = format!("{}/", serde_name);
@@ -316,7 +318,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
     };
 
     // --- Builder parameters for desired() ---
-    let desired_builder_param = if attrs.report_only {
+    let desired_builder_param = if attrs.is_report_only() {
         None
     } else if is_leaf {
         Some(quote! { #field_name: Option<#field_ty>, })
@@ -325,7 +327,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> FieldCodegen {
         Some(quote! { #[builder(into)] #field_name: Option<#delta_ty>, })
     };
 
-    let desired_builder_assign = if attrs.report_only {
+    let desired_builder_assign = if attrs.is_report_only() {
         None
     } else {
         Some(quote! { #field_name, })
@@ -606,9 +608,10 @@ pub(crate) fn generate_struct_code(
             let has_migration = !attrs.migrate_from().is_empty();
             let is_leaf = attrs.is_opaque() || has_migration;
 
-            // ValueBuf sizing — only non-report_only leaf fields contribute.
-            // report_only fields are not persisted to KV, nested fields bring their own ValueBuf.
-            if is_leaf && !attrs.report_only {
+            // ValueBuf sizing — only persisted leaf fields contribute.
+            // Transient report_only fields are not persisted to KV.
+            // report_only(persist) fields ARE persisted.
+            if is_leaf && (!attrs.is_report_only() || attrs.is_report_only_persist()) {
                 if let Some(explicit_size) = attrs.opaque_max_size() {
                     // Explicit max_size provided - use it directly
                     max_value_len_items.push(quote! { #explicit_size });
@@ -658,16 +661,20 @@ pub(crate) fn generate_struct_code(
                 });
             }
 
-            // Opaque field types that need MaxSize bound (no explicit max_size, not report_only)
-            if attrs.is_opaque() && attrs.opaque_max_size().is_none() && !attrs.report_only {
+            // Opaque field types that need MaxSize bound (no explicit max_size, persisted)
+            if attrs.is_opaque()
+                && attrs.opaque_max_size().is_none()
+                && (!attrs.is_report_only() || attrs.is_report_only_persist())
+            {
                 opaque_field_types.push(field_ty.clone());
             }
 
             // KV operations (leaf vs nested)
-            // report_only fields are completely skipped — they're not part of the state
-            // struct and not persisted to KV.
-            if attrs.report_only {
-                // No KV operations for report_only fields (leaf or nested)
+            // Transient report_only fields are completely skipped.
+            // report_only(persist) fields are included in KV operations EXCEPT
+            // persist_delta (field is not in the Delta struct — can't read from delta).
+            if attrs.is_report_only() && !attrs.is_report_only_persist() {
+                // No KV operations for transient report_only fields
             } else if is_leaf {
                 max_key_len_items.push(quote! { #field_path_len });
 
@@ -699,11 +706,14 @@ pub(crate) fn generate_struct_code(
                     quote! { self.#field_name },
                 ));
 
-                persist_delta_arms.push(kv_codegen::leaf_persist_delta(
-                    krate,
-                    &field_path,
-                    field_name,
-                ));
+                // report_only(persist) fields are NOT in the delta, so skip persist_delta
+                if !attrs.is_report_only_persist() {
+                    persist_delta_arms.push(kv_codegen::leaf_persist_delta(
+                        krate,
+                        &field_path,
+                        field_name,
+                    ));
+                }
 
                 is_valid_key_arms.push(kv_codegen::leaf_is_valid_key(&field_path));
                 field_count_items.push(kv_codegen::leaf_field_count());
@@ -733,12 +743,15 @@ pub(crate) fn generate_struct_code(
                     quote! { &self.#field_name },
                 ));
 
-                persist_delta_arms.push(kv_codegen::nested_persist_delta(
-                    krate,
-                    &field_path,
-                    field_ty,
-                    field_name,
-                ));
+                // report_only(persist) fields are NOT in the delta, so skip persist_delta
+                if !attrs.is_report_only_persist() {
+                    persist_delta_arms.push(kv_codegen::nested_persist_delta(
+                        krate,
+                        &field_path,
+                        field_ty,
+                        field_name,
+                    ));
+                }
 
                 is_valid_key_arms.push(kv_codegen::nested_is_valid_key(
                     krate,
