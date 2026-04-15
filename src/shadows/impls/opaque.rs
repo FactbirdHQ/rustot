@@ -69,6 +69,10 @@ macro_rules! impl_opaque {
                 self.clone()
             }
 
+            fn into_delta(&self) -> Self::Delta {
+                self.clone()
+            }
+
             fn into_partial_reported(&self, _delta: &Self::Delta) -> Self::Reported {
                 self.clone()
             }
