@@ -79,8 +79,9 @@ where
                 return Ok(delta_state.desired.or(delta_state.delta));
             }
 
-            // Scope the mutable borrow of the subscription so we can call
-            // sub_ref.take() in the clean-session path below.
+            // Scope the mutable borrow so we can call sub_ref.take() on
+            // clean-session below. The parsed DeltaResponse borrows from
+            // the message payload, so everything must resolve in this block.
             let result = {
                 let sub = sub_ref.deref_mut().as_mut().unwrap();
                 match sub.next_message().await {
@@ -92,29 +93,30 @@ where
 
                         let resolver = self.store.resolver(Self::prefix());
                         let parsed =
-                            DeltaResponse::parse::<S, _>(delta_message.payload(), &resolver).await;
+                            DeltaResponse::parse::<S, _>(delta_message.payload(), &resolver)
+                                .await
+                                .map_err(|_| Error::InvalidPayload)?;
 
-                        Some(
-                            parsed
-                                .map(|delta| delta.state)
-                                .map_err(|_| Error::InvalidPayload),
-                        )
+                        if parsed.client_token != Some(self.mqtt.client_id()) {
+                            Ok(None)
+                        } else {
+                            Ok(Some(parsed.state))
+                        }
                     }
-                    None => None,
+                    None => Err(()),
                 }
             };
 
             match result {
-                Some(Ok(state)) => return Ok(state),
-                Some(Err(e)) => return Err(e),
-                None => {
-                    // Clear subscription if we get clean session
+                Ok(Some(state)) => return Ok(state),
+                Ok(None) => continue,
+                Err(()) => {
+                    // Clean session — resubscribe
                     info!(
                         "[{:?}] Clean session detected, resubscribing to delta topic",
                         S::NAME.unwrap_or(CLASSIC_SHADOW)
                     );
                     sub_ref.take();
-                    // Drop the lock and wait before retrying to avoid tight loop
                     drop(sub_ref);
                     embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
                     continue;
@@ -429,8 +431,9 @@ where
     /// Accepts anything convertible to `S::Delta` via `Into`, including
     /// `DesiredFoo` types for adjacently-tagged enums.
     ///
-    /// If the cloud accepts the change and returns a delta, it is
-    /// automatically applied and persisted.
+    /// Sends both the desired change and the corresponding reported state
+    /// in a single update, so the cloud resolves the delta immediately
+    /// without requiring an extra round-trip through `wait_delta`.
     ///
     /// ## Example
     ///
@@ -441,9 +444,16 @@ where
     /// ).await?;
     /// ```
     pub async fn update_desired(&self, desired: impl Into<S::Delta>) -> Result<(), Error> {
-        let desired: S::Delta = desired.into();
+        let state: S = self
+            .store
+            .get_state(Self::prefix())
+            .await
+            .map_err(|_| Error::DaoWrite)?;
 
-        let response = self.update_shadow(Some(desired), None).await?;
+        let desired: S::Delta = desired.into();
+        let reported = state.into_partial_reported(&desired);
+
+        let response = self.update_shadow(Some(desired), Some(reported)).await?;
 
         if let Some(delta) = response.delta {
             self.apply_and_save(&delta)
