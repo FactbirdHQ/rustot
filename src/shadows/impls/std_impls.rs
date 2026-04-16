@@ -308,6 +308,18 @@ pub struct DeltaHashMap<K: Eq + Hash, D>(pub Option<HashMap<K, Patch<D>>>);
 #[serde(transparent)]
 pub struct ReportedHashMap<K: Eq + Hash, R>(pub HashMap<K, R>);
 
+impl<K: Eq + Hash, R> From<HashMap<K, R>> for ReportedHashMap<K, R> {
+    fn from(map: HashMap<K, R>) -> Self {
+        Self(map)
+    }
+}
+
+impl<K: Eq + Hash, D> From<HashMap<K, Patch<D>>> for DeltaHashMap<K, D> {
+    fn from(map: HashMap<K, Patch<D>>) -> Self {
+        Self(Some(map))
+    }
+}
+
 impl<K: Eq + Hash + serde::Serialize, R: serde::Serialize> ReportedFields
     for ReportedHashMap<K, R>
 {

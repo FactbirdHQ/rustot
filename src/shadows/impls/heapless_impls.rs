@@ -326,6 +326,20 @@ pub struct DeltaLinearMap<K: Eq, D, const N: usize>(
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct ReportedLinearMap<K: Eq, R, const N: usize>(pub heapless::LinearMap<K, R, N>);
 
+impl<K: Eq, R, const N: usize> From<heapless::LinearMap<K, R, N>> for ReportedLinearMap<K, R, N> {
+    fn from(map: heapless::LinearMap<K, R, N>) -> Self {
+        Self(map)
+    }
+}
+
+impl<K: Eq, D, const N: usize> From<heapless::LinearMap<K, Patch<D>, N>>
+    for DeltaLinearMap<K, D, N>
+{
+    fn from(map: heapless::LinearMap<K, Patch<D>, N>) -> Self {
+        Self(Some(map))
+    }
+}
+
 impl<K: Eq + serde::Serialize, R: serde::Serialize, const N: usize> ReportedFields
     for ReportedLinearMap<K, R, N>
 {

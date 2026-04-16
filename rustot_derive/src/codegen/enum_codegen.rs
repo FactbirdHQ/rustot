@@ -129,6 +129,8 @@ pub(crate) fn generate_simple_enum_code(
     let mut into_partial_reported_arms = Vec::new();
     let mut schema_hash_code = Vec::new();
     let mut reported_diff_arms = Vec::new();
+    let mut reported_from_impls: Vec<TokenStream> = Vec::new();
+    let mut delta_from_impls: Vec<TokenStream> = Vec::new();
 
     for variant in variants {
         let variant_ident = &variant.ident;
@@ -208,6 +210,22 @@ pub(crate) fn generate_simple_enum_code(
 
                 delta_variants.push(quote! { #variant_ident(#delta_inner_ty), });
                 reported_variants.push(quote! { #variant_ident(#reported_inner_ty), });
+
+                // From impls for #[builder(into)] support
+                reported_from_impls.push(quote! {
+                    impl From<#reported_inner_ty> for #reported_name {
+                        fn from(inner: #reported_inner_ty) -> Self {
+                            Self::#variant_ident(inner)
+                        }
+                    }
+                });
+                delta_from_impls.push(quote! {
+                    impl From<#delta_inner_ty> for #delta_name {
+                        fn from(inner: #delta_inner_ty) -> Self {
+                            Self::#variant_ident(inner)
+                        }
+                    }
+                });
 
                 // apply_delta: set variant and delegate to inner
                 apply_delta_arms.push(quote! {
@@ -430,6 +448,9 @@ pub(crate) fn generate_simple_enum_code(
         }
 
         #reported_default_impl
+
+        #(#reported_from_impls)*
+        #(#delta_from_impls)*
     };
 
     // Generate variant_at_path match arms
