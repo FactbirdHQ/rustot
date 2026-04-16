@@ -433,9 +433,15 @@ where
             for (key, patch) in patches.iter() {
                 match patch {
                     Patch::Set(inner_delta) => {
-                        // Include the entry's partial reported (after apply_delta)
                         if let Some(v) = self.get(key) {
                             reported.insert(key.clone(), v.into_partial_reported(inner_delta));
+                        } else {
+                            // New key not yet in state — use default with delta
+                            // applied, mirroring the apply_delta pattern.
+                            let mut new_val = V::default();
+                            new_val.apply_delta(inner_delta);
+                            reported
+                                .insert(key.clone(), new_val.into_partial_reported(inner_delta));
                         }
                     }
                     Patch::Unset => {
