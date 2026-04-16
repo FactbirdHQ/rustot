@@ -110,6 +110,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     let mut reported_variants = Vec::new(); // For ReportedPortMode
     let mut variant_names = Vec::new(); // Serde names for all variants
     let mut variant_idents = Vec::new(); // Rust idents for all variants
+    let mut reported_from_impls: Vec<TokenStream> = Vec::new();
+    let mut delta_from_impls: Vec<TokenStream> = Vec::new();
 
     // For apply_delta - mode switching
     let mut mode_switch_arms = Vec::new();
@@ -217,6 +219,22 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 delta_config_variants.push(quote! { #variant_ident(#delta_inner_ty), });
                 reported_variants.push(quote! { #variant_ident(#reported_inner_ty), });
                 desired_variants.push(quote! { #variant_ident(#delta_inner_ty), });
+
+                // From impls for #[builder(into)] support
+                reported_from_impls.push(quote! {
+                    impl From<#reported_inner_ty> for #reported_name {
+                        fn from(inner: #reported_inner_ty) -> Self {
+                            Self::#variant_ident(inner)
+                        }
+                    }
+                });
+                delta_from_impls.push(quote! {
+                    impl From<#delta_inner_ty> for #delta_config_name {
+                        fn from(inner: #delta_inner_ty) -> Self {
+                            Self::#variant_ident(inner)
+                        }
+                    }
+                });
                 from_desired_arms.push(quote! {
                     #desired_name::#variant_ident(config) => #delta_name {
                         mode: #krate::shadows::DeltaMode::Known(#variant_enum_name::#variant_ident),
@@ -598,6 +616,9 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 map.end()
             }
         }
+
+        #(#reported_from_impls)*
+        #(#delta_from_impls)*
     };
 
     // =========================================================================
