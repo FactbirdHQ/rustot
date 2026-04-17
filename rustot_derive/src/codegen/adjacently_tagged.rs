@@ -399,10 +399,13 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         // No variants with data - don't generate the config enum
         TokenStream::new()
     } else {
-        // No Deserialize - inner delta types don't have it, we use parse_delta instead
+        // No Deserialize - inner delta types don't have it, we use parse_delta instead.
+        // Untagged: the active variant is indicated by the outer `mode` field in the
+        // adjacently-tagged layout, so the content must serialize as just the inner
+        // value (not wrapped under the variant name).
         quote! {
             #[derive(Clone, ::serde::Serialize)]
-            #rename_all_attr
+            #[serde(untagged)]
             #vis enum #delta_config_name {
                 #(#delta_config_variants)*
             }

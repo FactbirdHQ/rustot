@@ -1179,11 +1179,8 @@ mod adjacently_tagged {
         };
 
         let json = serde_json::to_string(&delta).unwrap();
-        // Should have "mode" and "config" keys (renamed from fields)
-        assert!(json.contains("\"mode\""));
-        assert!(json.contains("\"config\""));
-        assert!(json.contains("\"sio\"")); // lowercase due to rename_all
-        assert!(json.contains("\"polarity\""));
+        // Adjacently-tagged: config holds the inner data directly, not wrapped in {"sio": ...}
+        assert_eq!(json, r#"{"mode":"sio","config":{"polarity":true}}"#);
 
         // Test deserialization using parse_delta
         use crate::shadows::{NullResolver, ShadowNode};
