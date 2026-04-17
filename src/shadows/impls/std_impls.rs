@@ -389,8 +389,14 @@ where
             let patch = if trimmed == "\"unset\"" || trimmed == "null" {
                 Patch::Unset
             } else {
-                // Build nested path for resolver
-                let nested_path = format!("{}/{}", path, key);
+                // Build nested path for resolver. Avoid leading `/` when the
+                // parent path is empty — the KV store keys don't have leading
+                // slashes, so a mismatch breaks variant resolution.
+                let nested_path = if path.is_empty() {
+                    format!("{}", key)
+                } else {
+                    format!("{}/{}", path, key)
+                };
 
                 let delta = V::parse_delta(value_bytes, &nested_path, resolver).await?;
                 Patch::Set(delta)
