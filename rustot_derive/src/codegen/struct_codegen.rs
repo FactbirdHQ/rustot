@@ -815,7 +815,13 @@ pub(crate) fn generate_struct_code(
 
             let serde_name =
                 get_serde_rename(&field.attrs).unwrap_or_else(|| field_name.to_string());
-            let field_path = format!("/{}", serde_name);
+            // Flatten fields have no key component in KV — their entries are
+            // persisted at the parent's path (same as JSON flattening).
+            let field_path = if attrs.is_flatten() {
+                String::new()
+            } else {
+                format!("/{}", serde_name)
+            };
             let field_path_len = field_path.len();
 
             let has_migration = !attrs.migrate_from().is_empty();

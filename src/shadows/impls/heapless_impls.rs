@@ -412,11 +412,14 @@ where
             let patch = if trimmed == "\"unset\"" || trimmed == "null" {
                 Patch::Unset
             } else {
-                // Build nested path for resolver
+                // Build nested path for resolver. Avoid leading `/` when the
+                // parent path is empty — the KV store keys don't have leading
+                // slashes, so a mismatch breaks variant resolution.
                 let mut nested_path = heapless::String::<128>::new();
                 let _ = nested_path.push_str(path);
-                let _ = nested_path.push_str("/");
-                // Use core::fmt::Write for key display
+                if !path.is_empty() {
+                    let _ = nested_path.push_str("/");
+                }
                 use core::fmt::Write;
                 let _ = write!(nested_path, "{}", &key);
 
