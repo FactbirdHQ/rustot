@@ -2,6 +2,7 @@
 
 use core::ops::DerefMut;
 
+use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use serde::Serialize;
 
 use crate::mqtt::{
@@ -19,6 +20,45 @@ use crate::shadows::{
 };
 
 use super::Shadow;
+
+/// Drop-guard that clears `Shadow::subscription` unless explicitly disarmed.
+///
+/// `wait_delta`'s first-call path installs the delta-topic subscription before
+/// the initial get + apply + ack has finished. If the future is cancelled in
+/// that window (e.g. by a `tokio::select!` branch firing), the subscription
+/// would be left in place and every subsequent call would silently wait for a
+/// delta message on the subscription topic — a permanent hang, because the
+/// cloud only publishes deltas when `desired` changes.
+///
+/// This guard restores the invariant `subscription == Some <=> initial sync
+/// has fully completed` by taking the subscription back on any early exit.
+/// `disarm()` is called on the happy path to keep the subscription cached.
+struct ResetSubscriptionOnDrop<'s, M: RawMutex, T> {
+    subscription: &'s Mutex<M, Option<T>>,
+    armed: bool,
+}
+
+impl<M: RawMutex, T> ResetSubscriptionOnDrop<'_, M, T> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<M: RawMutex, T> Drop for ResetSubscriptionOnDrop<'_, M, T> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // `try_lock` is synchronous; Drop cannot await. In practice the lock
+        // is free here: any holder would have been on the cancelled future's
+        // stack and its guard is dropped before ours. If the lock is somehow
+        // contended, skipping the reset is safe — we'd merely miss the
+        // cleanup for this one cancellation, which is better than blocking.
+        if let Ok(mut guard) = self.subscription.try_lock() {
+            guard.take();
+        }
+    }
+}
 
 /// Overhead for partial request JSON formatting.
 const PARTIAL_REQUEST_OVERHEAD: usize = 64;
@@ -341,6 +381,20 @@ where
             "[{:?}] wait_delta: entry",
             S::NAME.unwrap_or(CLASSIC_SHADOW)
         );
+
+        // If this is a first call, arm a drop-guard that clears the
+        // subscription on any early exit (cancellation, error, panic). This
+        // preserves the invariant that `subscription == Some` implies the
+        // initial sync completed: without it, cancellation between
+        // `handle_delta` installing the subscription and `update_shadow`
+        // finishing the ack leaves the next caller to wait forever on a
+        // delta topic that only fires when `desired` changes cloud-side.
+        let is_first_call = self.subscription.lock().await.is_none();
+        let mut reset_guard = ResetSubscriptionOnDrop {
+            subscription: &self.subscription,
+            armed: is_first_call,
+        };
+
         let delta = self.handle_delta().await?;
 
         let state = if let Some(ref delta) = delta {
@@ -364,6 +418,7 @@ where
                 // survives MQTT reconnection (clean_start=false) and the delta
                 // is never re-delivered, causing permanent desync.
                 self.subscription.lock().await.take();
+                reset_guard.disarm();
                 return Err(e);
             }
 
@@ -375,6 +430,9 @@ where
                 .await
                 .map_err(|_| Error::DaoWrite)?
         };
+
+        // Initial sync succeeded — keep the cached subscription for the loop.
+        reset_guard.disarm();
 
         info!(
             "[{:?}] wait_delta: return has_delta={}",
@@ -485,7 +543,14 @@ where
     pub async fn sync_shadow(&self) -> Result<S, Error> {
         let delta_state = self.get_shadow_from_cloud().await?;
 
-        let state = if let Some(delta) = delta_state.delta {
+        // Prefer `desired` over `delta` to match `wait_delta`. The cloud's
+        // `delta` is a diff against its current `reported`, which may be
+        // stale or missing entirely on first boot — applying only the diff
+        // leaves local fields in an inconsistent state (e.g. a URL updated
+        // while its parent variant discriminator is unchanged), and the
+        // subsequent reported ack writes those inconsistent defaults back
+        // to the cloud. The full `desired` converges reliably in all cases.
+        let state = if let Some(delta) = delta_state.desired.or(delta_state.delta) {
             let state = self
                 .apply_and_save(&delta)
                 .await
