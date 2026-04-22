@@ -1880,3 +1880,56 @@ async fn test_commit_preserves_map_entries_and_removes_orphans() {
     // Orphan removed
     assert!(!kv_has_key(&kv, "dev/old_field").await);
 }
+
+// =========================================================================
+// Cancellation safety
+// =========================================================================
+
+/// Regression test for a cancellation-safety hang in `wait_delta`.
+///
+/// The first call to `wait_delta` walks a multi-step sequence:
+///   1. subscribe to the delta topic
+///   2. cache the subscription in `Shadow::subscription`
+///   3. publish `get` and await `get/accepted`
+///   4. apply the delta locally and acknowledge via `update`
+///
+/// Previously, step 2 happened before step 3 completed. If the future was
+/// cancelled between subscribe and ack (e.g. because a sibling branch of a
+/// `tokio::select!` fired first), the subscription stayed installed but no
+/// initial sync had run. Every subsequent `wait_delta` call would then see
+/// the cached subscription and take the fast-path branch, blocking forever
+/// on a delta topic that only fires when cloud `desired` changes —
+/// permanent desync without any error signal.
+///
+/// Invariant asserted here: after a cancelled `wait_delta`, the cached
+/// subscription must be cleared so the next caller re-runs initial sync.
+#[tokio::test]
+async fn test_wait_delta_cancellation_clears_cached_subscription() {
+    use core::time::Duration;
+
+    let kv = InMemory::<SimpleConfig>::new();
+    let mqtt = MockMqttClient::new("test-client");
+    let shadow = Shadow::<SimpleConfig, _, _>::new(&kv, &mqtt);
+    shadow.load().await.unwrap();
+
+    // Sanity check: fresh shadow has no cached subscription.
+    assert!(shadow.subscription.lock().await.is_none());
+
+    // `MockSubscription::next_message` pends forever, so `wait_delta` hangs
+    // inside `get_shadow_from_cloud` after caching the subscription. Time
+    // out to simulate an outer `select!` cancelling the future.
+    let result = tokio::time::timeout(Duration::from_millis(20), shadow.wait_delta()).await;
+    assert!(
+        result.is_err(),
+        "wait_delta should have been cancelled by the timeout"
+    );
+
+    // Without the drop-guard this assertion fails: the subscription was
+    // cached by step 2 and never cleared on cancellation.
+    assert!(
+        shadow.subscription.lock().await.is_none(),
+        "subscription must be cleared after cancellation so the next \
+         wait_delta call redoes the full initial sync instead of \
+         blocking on the delta topic",
+    );
+}
