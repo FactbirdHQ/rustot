@@ -149,10 +149,7 @@ impl CommandTestContext {
 /// device on the request topic. `content_type` selects which `request/<fmt>`
 /// topic AWS routes to (`application/json` → `request/json`,
 /// `application/cbor` → `request/cbor`).
-pub async fn setup(
-    payload_bytes: Vec<u8>,
-    content_type: &str,
-) -> Option<CommandTestContext> {
+pub async fn setup(payload_bytes: Vec<u8>, content_type: &str) -> Option<CommandTestContext> {
     let region = aws_config::Region::new(REGION);
 
     let mgmt_config = aws_config::defaults(aws_config::BehaviorVersion::latest())

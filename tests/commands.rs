@@ -24,9 +24,7 @@ use common::network::TlsNetwork;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use mqttrust::{Config, DomainBroker, State, transport::embedded_nal::NalTransport};
-use rustot::commands::{
-    CommandAgent, CommandResultEntry, ResultMap, parse_command_request,
-};
+use rustot::commands::{CommandAgent, CommandResultEntry, ResultMap, parse_command_request};
 use rustot::mqtt::Mqtt;
 use serde::Deserialize;
 use serial_test::serial;
@@ -52,9 +50,8 @@ async fn test_commands() {
     // path the device uses to encode its responses).
     let payload = {
         let mut buf = [0u8; 256];
-        let mut ser = minicbor_serde::Serializer::new(minicbor::encode::write::Cursor::new(
-            &mut buf[..],
-        ));
+        let mut ser =
+            minicbor_serde::Serializer::new(minicbor::encode::write::Cursor::new(&mut buf[..]));
         serde::Serialize::serialize(
             &serde_json::json!({ "action": "echo", "value": 42 }),
             &mut ser,
@@ -107,20 +104,21 @@ async fn run_happy_path(ctx: &aws_commands::CommandTestContext) -> Result<(), St
         let mqtt = Mqtt(&client);
         let agent = CommandAgent::new(&mqtt);
 
-        let mut sub = agent.subscribe().await.map_err(|e| format!("subscribe: {e:?}"))?;
+        let mut sub = agent
+            .subscribe()
+            .await
+            .map_err(|e| format!("subscribe: {e:?}"))?;
         log::info!("Device subscribed; triggering execution");
 
         // Now that we're listening, ask the cloud to send the command.
         let exec_id = ctx.start_execution().await?;
         exec_id_cell.set(exec_id.clone()).ok();
 
-        let mut msg = embassy_time::with_timeout(
-            embassy_time::Duration::from_secs(30),
-            sub.next_message(),
-        )
-        .await
-        .map_err(|_| "timed out waiting for command request")?
-        .ok_or("subscription closed before command arrived")?;
+        let mut msg =
+            embassy_time::with_timeout(embassy_time::Duration::from_secs(30), sub.next_message())
+                .await
+                .map_err(|_| "timed out waiting for command request")?
+                .ok_or("subscription closed before command arrived")?;
 
         let req = parse_command_request::<TestCommand>(&mut msg)
             .ok_or("failed to parse command request")?;
@@ -138,7 +136,12 @@ async fn run_happy_path(ctx: &aws_commands::CommandTestContext) -> Result<(), St
                 req.execution_id.as_str()
             ));
         }
-        if req.payload != (TestCommand { action: "echo", value: 42 }) {
+        if req.payload
+            != (TestCommand {
+                action: "echo",
+                value: 42,
+            })
+        {
             return Err(format!("unexpected payload: {:?}", req.payload));
         }
 
