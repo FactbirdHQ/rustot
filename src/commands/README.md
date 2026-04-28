@@ -169,14 +169,28 @@ cargo test --lib commands::
 cargo test --lib --no-default-features --features mqtt_mqttrust commands::
 ```
 
-A live integration test against AWS IoT is not yet shipped; trigger an
-execution end-to-end with the AWS CLI:
+An end-to-end integration test (`tests/commands.rs`) creates a fresh Command
+resource in AWS IoT, triggers `StartCommandExecution` against the test thing,
+and asserts the cloud-side execution status reaches `SUCCEEDED`:
+
+```bash
+RUST_LOG=trace \
+  THING_NAME=MyTestThing \
+  AWS_HOSTNAME=xxxxxxxx-ats.iot.eu-west-1.amazonaws.com \
+  cargo test --test commands --features "commands_cbor,log"
+```
+
+`tests/secrets/identity.pfx` must hold a valid AWS IoT identity for the
+thing; `IDENTITY_PASSWORD` may be set if the file is password-protected. AWS
+credentials must be available in the environment with permission to assume
+the cross-account role used by the test harness.
+
+To trigger an execution by hand from outside the test harness:
 
 ```bash
 aws iot-jobs-data start-command-execution \
   --target-arn   arn:aws:iot:<region>:<account>:thing/<ThingName> \
-  --command-arn  arn:aws:iot:<region>:<account>:command/<CommandName> \
-  --parameters   'mode={S=comfort}'
+  --command-arn  arn:aws:iot:<region>:<account>:command/<CommandName>
 ```
 
 and observe the device subscribe → request → response → `accepted` flow.

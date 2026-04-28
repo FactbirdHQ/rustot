@@ -112,6 +112,9 @@ rumqttc = { version = "0.24", features = ["use-native-tls"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
+aws-sdk-iotjobsdataplane = "1"
+minicbor = "0.25"
+minicbor-serde = "0.3"
 
 
 [features]
