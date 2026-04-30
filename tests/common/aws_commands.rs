@@ -31,6 +31,10 @@ pub struct CommandTestContext {
     thing_arn: String,
     /// AWS region
     region: aws_config::Region,
+    /// Account-specific endpoint for `aws-sdk-iotjobsdataplane`, resolved via
+    /// `iot:DescribeEndpoint(endpointType="iot:Jobs")`. The SDK's default
+    /// regional endpoint returns AccessDenied for command executions.
+    jobs_data_endpoint: String,
 }
 
 impl CommandTestContext {
@@ -41,12 +45,15 @@ impl CommandTestContext {
     /// Trigger a command execution against the test thing and return the
     /// generated `executionId`.
     pub async fn start_execution(&self) -> Result<String, String> {
-        let cfg = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        let shared = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(self.region.clone())
             .credentials_provider(self.iot_creds.clone())
             .load()
             .await;
-        let client = aws_sdk_iotjobsdataplane::Client::new(&cfg);
+        let cfg = aws_sdk_iotjobsdataplane::config::Builder::from(&shared)
+            .endpoint_url(&self.jobs_data_endpoint)
+            .build();
+        let client = aws_sdk_iotjobsdataplane::Client::from_conf(cfg);
 
         let resp = client
             .start_command_execution()
@@ -244,6 +251,28 @@ pub async fn setup(payload_bytes: Vec<u8>, content_type: &str) -> Option<Command
         .await;
     let iot_client = aws_sdk_iot::Client::new(&iot_config);
 
+    // Resolve the account-specific Jobs Data endpoint. The default regional
+    // endpoint is AccessDenied for command executions.
+    let jobs_data_endpoint = match iot_client
+        .describe_endpoint()
+        .endpoint_type("iot:Jobs")
+        .send()
+        .await
+    {
+        Ok(r) => match r.endpoint_address {
+            Some(host) => format!("https://{host}"),
+            None => {
+                log::warn!("DescribeEndpoint(iot:Jobs) returned no address, skipping");
+                return None;
+            }
+        },
+        Err(e) => {
+            log::warn!("DescribeEndpoint(iot:Jobs) failed, skipping: {e}");
+            return None;
+        }
+    };
+    log::info!("Resolved Jobs Data endpoint: {jobs_data_endpoint}");
+
     let payload = CommandPayload::builder()
         .content(Blob::new(payload_bytes))
         .content_type(content_type.to_owned())
@@ -279,6 +308,7 @@ pub async fn setup(payload_bytes: Vec<u8>, content_type: &str) -> Option<Command
         command_arn,
         thing_arn,
         region,
+        jobs_data_endpoint,
     })
 }
 
