@@ -11,6 +11,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use aws_credential_types::provider::SharedCredentialsProvider;
+use aws_sdk_iot::error::ProvideErrorMetadata;
 use aws_sdk_iot::primitives::Blob;
 use aws_sdk_iot::types::{CommandExecutionStatus, CommandNamespace, CommandPayload};
 
@@ -53,7 +54,14 @@ impl CommandTestContext {
             .command_arn(&self.command_arn)
             .send()
             .await
-            .map_err(|e| format!("StartCommandExecution failed: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "StartCommandExecution failed: code={:?} message={:?} raw={:?}",
+                    e.code(),
+                    e.message(),
+                    e
+                )
+            })?;
 
         let id = resp
             .execution_id()
@@ -81,7 +89,14 @@ impl CommandTestContext {
             .target_arn(&self.thing_arn)
             .send()
             .await
-            .map_err(|e| format!("GetCommandExecution failed: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "GetCommandExecution failed: code={:?} message={:?} raw={:?}",
+                    e.code(),
+                    e.message(),
+                    e
+                )
+            })?;
 
         resp.status()
             .cloned()
