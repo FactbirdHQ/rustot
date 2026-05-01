@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::mqtt::{MqttMessage, MqttSubscription, PublishOptions, QoS, ToPayload};
 
@@ -22,8 +22,12 @@ pub struct RumqttcClient {
     client_id: String,
     /// Routes incoming publishes to subscriptions by subscription ID
     router: Arc<Mutex<MessageRouter>>,
-    /// Tracks connection state
-    connected: Arc<std::sync::atomic::AtomicBool>,
+    /// Connection state: `true` when CONNACK received, `false` after
+    /// disconnect or error. Subscriptions race their `next_message` against
+    /// `changed()` on a clone of this so a parked waiter can wake on
+    /// disconnect — without it, a persistent-session reconnect would leave
+    /// the local routing torn down with the future hanging forever.
+    connection_state: watch::Sender<bool>,
 }
 
 struct MessageRouter {
@@ -44,12 +48,12 @@ impl RumqttcClient {
             next_sub_id: 0,
             subscriptions: HashMap::new(),
         }));
-        let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (connection_state, _) = watch::channel(false);
 
         let router_clone = router.clone();
-        let connected_clone = connected.clone();
+        let connection_state_clone = connection_state.clone();
         let handle = tokio::spawn(async move {
-            Self::run_eventloop(eventloop, router_clone, connected_clone).await;
+            Self::run_eventloop(eventloop, router_clone, connection_state_clone).await;
         });
 
         (
@@ -57,7 +61,7 @@ impl RumqttcClient {
                 client,
                 client_id,
                 router,
-                connected,
+                connection_state,
             },
             handle,
         )
@@ -66,12 +70,12 @@ impl RumqttcClient {
     async fn run_eventloop(
         mut eventloop: rumqttc::EventLoop,
         router: Arc<Mutex<MessageRouter>>,
-        connected: Arc<std::sync::atomic::AtomicBool>,
+        connection_state: watch::Sender<bool>,
     ) {
         loop {
             match eventloop.poll().await {
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
-                    connected.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = connection_state.send(true);
                 }
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(publish))) => {
                     // Route to matching subscriptions
@@ -90,12 +94,12 @@ impl RumqttcClient {
                     }
                 }
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::Disconnect)) => {
-                    connected.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = connection_state.send(false);
                 }
                 Ok(_) => {} // Other events (SubAck, PubAck, etc.)
                 Err(_e) => {
                     // Connection error - rumqttc will auto-reconnect on next poll
-                    connected.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = connection_state.send(false);
                     #[cfg(feature = "log")]
                     log::warn!("EventLoop error: {:?}", _e);
                 }
@@ -116,10 +120,16 @@ impl crate::mqtt::MqttClient for RumqttcClient {
     }
 
     fn wait_connected(&self) -> impl core::future::Future<Output = ()> {
-        let connected = self.connected.clone();
+        let mut rx = self.connection_state.subscribe();
         async move {
-            while !connected.load(std::sync::atomic::Ordering::SeqCst) {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            loop {
+                if *rx.borrow_and_update() {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    // Sender dropped — eventloop task is gone, will never connect.
+                    return;
+                }
             }
         }
     }
@@ -155,6 +165,10 @@ impl crate::mqtt::MqttClient for RumqttcClient {
     ) -> impl core::future::Future<Output = Result<Self::Subscription<'_, N>, Self::Error>> {
         let client = self.client.clone();
         let router = self.router.clone();
+        let mut connection_state = self.connection_state.subscribe();
+        // Mark current value as seen so `changed()` only fires on the next
+        // transition (typically a disconnect after this subscribe).
+        let _ = connection_state.borrow_and_update();
         let topics_owned: [(&str, QoS); N] = *topics;
         async move {
             // Subscribe to all topics
@@ -183,6 +197,7 @@ impl crate::mqtt::MqttClient for RumqttcClient {
                 router,
                 sub_id,
                 topics: topic_strings,
+                connection_state,
             })
         }
     }
@@ -195,6 +210,7 @@ pub struct RumqttcSubscription<const N: usize> {
     router: Arc<Mutex<MessageRouter>>,
     sub_id: u64,
     topics: [String; N],
+    connection_state: watch::Receiver<bool>,
 }
 
 impl<const N: usize> MqttSubscription for RumqttcSubscription<N> {
@@ -205,7 +221,13 @@ impl<const N: usize> MqttSubscription for RumqttcSubscription<N> {
     type Error = rumqttc::ClientError;
 
     async fn next_message(&mut self) -> Option<Self::Message<'_>> {
-        self.receiver.recv().await
+        tokio::select! {
+            msg = self.receiver.recv() => msg,
+            // Any state transition since subscribe — disconnect, or even a
+            // resume — invalidates local routing. Surface as `None` so the
+            // caller can resubscribe on the new session.
+            _ = self.connection_state.changed() => None,
+        }
     }
 
     async fn unsubscribe(self) -> Result<(), Self::Error> {
