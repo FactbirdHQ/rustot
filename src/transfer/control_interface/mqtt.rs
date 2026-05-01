@@ -82,8 +82,8 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
             Some(
                 self.0
                     .subscribe(&[
-                        (accepted_topic.as_str(), QoS::AtMostOnce),
-                        (rejected_topic.as_str(), QoS::AtMostOnce),
+                        (accepted_topic.as_str(), QoS::AtLeastOnce),
+                        (rejected_topic.as_str(), QoS::AtLeastOnce),
                     ])
                     .await
                     .map_err(|_| TransferError::Mqtt)?,
