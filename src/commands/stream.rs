@@ -137,8 +137,8 @@ impl<'a, C: MqttClient> CommandAgent<'a, C> {
             .mqtt
             .0
             .subscribe(&[
-                (accepted_topic.as_str(), QoS::AtMostOnce),
-                (rejected_topic.as_str(), QoS::AtMostOnce),
+                (accepted_topic.as_str(), QoS::AtLeastOnce),
+                (rejected_topic.as_str(), QoS::AtLeastOnce),
             ])
             .await
             .map_err(|_| CommandError::Mqtt)?;
