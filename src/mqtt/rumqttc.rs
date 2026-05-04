@@ -22,12 +22,16 @@ pub struct RumqttcClient {
     client_id: String,
     /// Routes incoming publishes to subscriptions by subscription ID
     router: Arc<Mutex<MessageRouter>>,
-    /// Connection state: `true` when CONNACK received, `false` after
-    /// disconnect or error. Subscriptions race their `next_message` against
-    /// `changed()` on a clone of this so a parked waiter can wake on
-    /// disconnect — without it, a persistent-session reconnect would leave
-    /// the local routing torn down with the future hanging forever.
+    /// `true` when CONNACK received, `false` after disconnect or error.
+    /// Used by `wait_connected` only.
     connection_state: watch::Sender<bool>,
+    /// Bumped on each CONNACK with `session_present=false` (broker dropped
+    /// our subs). Subscriptions snapshot this at creation; `next_message`
+    /// races against `changed()` so a parked waiter wakes with `None` when
+    /// the broker has actually dropped our routing. Transient disconnects
+    /// and session-resume reconnects do not bump this counter — broker
+    /// state is intact in those cases, so the subscription stays valid.
+    clean_session_count: watch::Sender<u8>,
 }
 
 struct MessageRouter {
@@ -49,11 +53,19 @@ impl RumqttcClient {
             subscriptions: HashMap::new(),
         }));
         let (connection_state, _) = watch::channel(false);
+        let (clean_session_count, _) = watch::channel(0u8);
 
         let router_clone = router.clone();
         let connection_state_clone = connection_state.clone();
+        let clean_session_count_clone = clean_session_count.clone();
         let handle = tokio::spawn(async move {
-            Self::run_eventloop(eventloop, router_clone, connection_state_clone).await;
+            Self::run_eventloop(
+                eventloop,
+                router_clone,
+                connection_state_clone,
+                clean_session_count_clone,
+            )
+            .await;
         });
 
         (
@@ -62,6 +74,7 @@ impl RumqttcClient {
                 client_id,
                 router,
                 connection_state,
+                clean_session_count,
             },
             handle,
         )
@@ -71,11 +84,16 @@ impl RumqttcClient {
         mut eventloop: rumqttc::EventLoop,
         router: Arc<Mutex<MessageRouter>>,
         connection_state: watch::Sender<bool>,
+        clean_session_count: watch::Sender<u8>,
     ) {
         loop {
             match eventloop.poll().await {
-                Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
+                Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(connack))) => {
                     let _ = connection_state.send(true);
+                    if !connack.session_present {
+                        let next = clean_session_count.borrow().wrapping_add(1);
+                        let _ = clean_session_count.send(next);
+                    }
                 }
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(publish))) => {
                     // Route to matching subscriptions
@@ -165,10 +183,11 @@ impl crate::mqtt::MqttClient for RumqttcClient {
     ) -> impl core::future::Future<Output = Result<Self::Subscription<'_, N>, Self::Error>> {
         let client = self.client.clone();
         let router = self.router.clone();
-        let mut connection_state = self.connection_state.subscribe();
-        // Mark current value as seen so `changed()` only fires on the next
-        // transition (typically a disconnect after this subscribe).
-        let _ = connection_state.borrow_and_update();
+        let mut clean_session_count = self.clean_session_count.subscribe();
+        // Mark current value as seen so `changed()` only fires when the
+        // counter is bumped (i.e. CONNACK with session_present=false) after
+        // this subscribe.
+        let _ = clean_session_count.borrow_and_update();
         let topics_owned: [(&str, QoS); N] = *topics;
         async move {
             // Subscribe to all topics
@@ -197,7 +216,7 @@ impl crate::mqtt::MqttClient for RumqttcClient {
                 router,
                 sub_id,
                 topics: topic_strings,
-                connection_state,
+                clean_session_count,
             })
         }
     }
@@ -210,7 +229,7 @@ pub struct RumqttcSubscription<const N: usize> {
     router: Arc<Mutex<MessageRouter>>,
     sub_id: u64,
     topics: [String; N],
-    connection_state: watch::Receiver<bool>,
+    clean_session_count: watch::Receiver<u8>,
 }
 
 impl<const N: usize> MqttSubscription for RumqttcSubscription<N> {
@@ -223,10 +242,11 @@ impl<const N: usize> MqttSubscription for RumqttcSubscription<N> {
     async fn next_message(&mut self) -> Option<Self::Message<'_>> {
         tokio::select! {
             msg = self.receiver.recv() => msg,
-            // Any state transition since subscribe — disconnect, or even a
-            // resume — invalidates local routing. Surface as `None` so the
-            // caller can resubscribe on the new session.
-            _ = self.connection_state.changed() => None,
+            // Bumped only on CONNACK with session_present=false (broker
+            // dropped our subs). Transient disconnects and session-resume
+            // reconnects don't trigger this. Caller treats `None` as
+            // recoverable: drop the subscription and resubscribe.
+            _ = self.clean_session_count.changed() => None,
         }
     }
 

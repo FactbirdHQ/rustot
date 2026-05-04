@@ -125,11 +125,12 @@ pub trait MqttSubscription {
 
     /// Wait for and return the next message.
     ///
-    /// Returns `None` if the subscription has been closed **or the
-    /// underlying MQTT connection has changed state since subscribe** (any
-    /// disconnect, or a reconnect that invalidates local routing). Callers
-    /// should treat `None` as a recoverable signal: drop the subscription
-    /// and resubscribe on the next operation.
+    /// Returns `None` if the subscription has been closed, or if the broker
+    /// has dropped subscriptions for this client (a CONNACK with
+    /// `session_present=false`). Transient disconnects and session-resume
+    /// reconnects keep the subscription valid. Callers should treat `None`
+    /// as a recoverable signal: drop the subscription and resubscribe on
+    /// the next operation.
     fn next_message(&mut self) -> impl Future<Output = Option<Self::Message<'_>>>;
 
     /// Unsubscribe and close this subscription.
