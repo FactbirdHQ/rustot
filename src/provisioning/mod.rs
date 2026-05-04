@@ -4,7 +4,9 @@ pub mod topics;
 
 use core::future::Future;
 
-use crate::mqtt::{DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS};
+use crate::mqtt::{
+    DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, PublishOptions, QoS,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub use error::Error;
@@ -224,16 +226,20 @@ impl FleetProvisioner {
             Topic::RegisterThingRejected(template_name, payload_format).format::<150>()?;
         let mut register_subscription = mqtt
             .subscribe::<2>(&[
-                (register_accepted_topic.as_str(), QoS::AtMostOnce),
-                (register_rejected_topic.as_str(), QoS::AtMostOnce),
+                (register_accepted_topic.as_str(), QoS::AtLeastOnce),
+                (register_rejected_topic.as_str(), QoS::AtLeastOnce),
             ])
             .await
             .map_err(|_| Error::Mqtt)?;
 
         let publish_topic = Topic::RegisterThing(template_name, payload_format).format::<69>()?;
-        mqtt.publish(publish_topic.as_str(), payload)
-            .await
-            .map_err(|_| Error::Mqtt)?;
+        mqtt.publish_with_options(
+            publish_topic.as_str(),
+            payload,
+            PublishOptions::new().qos(QoS::AtLeastOnce),
+        )
+        .await
+        .map_err(|_| Error::Mqtt)?;
 
         let mut message = register_subscription
             .next_message()
@@ -276,8 +282,8 @@ impl FleetProvisioner {
 
             let subscription = mqtt
                 .subscribe(&[
-                    (rejected_topic.as_str(), QoS::AtMostOnce),
-                    (accepted_topic.as_str(), QoS::AtMostOnce),
+                    (rejected_topic.as_str(), QoS::AtLeastOnce),
+                    (accepted_topic.as_str(), QoS::AtLeastOnce),
                 ])
                 .await
                 .map_err(|_| Error::Mqtt)?;
@@ -307,9 +313,13 @@ impl FleetProvisioner {
             );
 
             let publish_topic = Topic::CreateCertificateFromCsr(payload_format).format::<40>()?;
-            mqtt.publish(publish_topic.as_str(), payload)
-                .await
-                .map_err(|_| Error::Mqtt)?;
+            mqtt.publish_with_options(
+                publish_topic.as_str(),
+                payload,
+                PublishOptions::new().qos(QoS::AtLeastOnce),
+            )
+            .await
+            .map_err(|_| Error::Mqtt)?;
 
             Ok(subscription)
         } else {
@@ -320,16 +330,20 @@ impl FleetProvisioner {
 
             let subscription = mqtt
                 .subscribe(&[
-                    (accepted_topic.as_str(), QoS::AtMostOnce),
-                    (rejected_topic.as_str(), QoS::AtMostOnce),
+                    (accepted_topic.as_str(), QoS::AtLeastOnce),
+                    (rejected_topic.as_str(), QoS::AtLeastOnce),
                 ])
                 .await
                 .map_err(|_| Error::Mqtt)?;
 
             let publish_topic = Topic::CreateKeysAndCertificate(payload_format).format::<29>()?;
-            mqtt.publish(publish_topic.as_str(), b"".as_slice())
-                .await
-                .map_err(|_| Error::Mqtt)?;
+            mqtt.publish_with_options(
+                publish_topic.as_str(),
+                b"".as_slice(),
+                PublishOptions::new().qos(QoS::AtLeastOnce),
+            )
+            .await
+            .map_err(|_| Error::Mqtt)?;
 
             Ok(subscription)
         }
