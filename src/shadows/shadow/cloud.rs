@@ -6,7 +6,8 @@ use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use serde::Serialize;
 
 use crate::mqtt::{
-    DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS, ToPayload,
+    DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, PublishOptions, QoS,
+    ToPayload,
 };
 
 use crate::shadows::{
@@ -104,7 +105,7 @@ where
 
                 let sub = self
                     .mqtt
-                    .subscribe(&[(topic.as_str(), QoS::AtMostOnce)])
+                    .subscribe(&[(topic.as_str(), QoS::AtLeastOnce)])
                     .await
                     .map_err(|_| Error::Mqtt)?;
 
@@ -331,8 +332,8 @@ where
         let sub = self
             .mqtt
             .subscribe(&[
-                (accepted_topic.as_str(), QoS::AtMostOnce),
-                (rejected_topic.as_str(), QoS::AtMostOnce),
+                (accepted_topic.as_str(), QoS::AtLeastOnce),
+                (rejected_topic.as_str(), QoS::AtLeastOnce),
             ])
             .await
             .map_err(|_| Error::Mqtt)?;
@@ -344,7 +345,11 @@ where
             S::NAME,
         )?;
         self.mqtt
-            .publish(topic_name.as_str(), payload)
+            .publish_with_options(
+                topic_name.as_str(),
+                payload,
+                PublishOptions::new().qos(QoS::AtLeastOnce),
+            )
             .await
             .map_err(|_| Error::Mqtt)?;
 
