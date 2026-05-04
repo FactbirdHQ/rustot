@@ -112,6 +112,9 @@ rumqttc = { version = "0.24", features = ["use-native-tls"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
+aws-sdk-iotjobsdataplane = "1"
+minicbor = "0.25"
+minicbor-serde = "0.3"
 
 
 [features]
@@ -119,6 +122,7 @@ default = [
     "transfer_mqtt",
     "metric_cbor",
     "provision_cbor",
+    "commands_cbor",
     "shadows_kv_persist",
     "mqtt_mqttrust",
 ]
@@ -126,6 +130,8 @@ default = [
 metric_cbor = ["dep:minicbor", "dep:minicbor-serde"]
 
 provision_cbor = ["dep:minicbor", "dep:minicbor-serde"]
+
+commands_cbor = ["dep:minicbor", "dep:minicbor-serde"]
 
 transfer_mqtt = ["dep:minicbor", "dep:minicbor-serde"]
 
