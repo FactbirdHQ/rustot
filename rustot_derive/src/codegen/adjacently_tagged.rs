@@ -56,7 +56,8 @@ use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Ident};
 
 use crate::attr::{
-    get_serde_rename_all, get_serde_tag_content, get_variant_serde_name, has_default_attr,
+    FieldAttrs, get_serde_rename_all, get_serde_tag_content, get_variant_serde_name,
+    has_default_attr,
 };
 
 #[cfg(feature = "kv_persist")]
@@ -134,8 +135,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // For custom Serialize - flat union
     let mut inactive_variant_field_nulls = Vec::new(); // field names to null when not active
 
-    // Track which variants have data (for DeltaConfig enum)
-    let mut variants_with_data: Vec<(&syn::Variant, String)> = Vec::new();
+    // Track which variants have data (for DeltaConfig enum); the bool is is_opaque.
+    let mut variants_with_data: Vec<(&syn::Variant, String, bool)> = Vec::new();
 
     // For DesiredFoo enum
     let mut desired_variants = Vec::new();
@@ -208,8 +209,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 // Newtype variant - has data
                 let inner_ty = &fields.unnamed[0].ty;
+                let field_attrs = FieldAttrs::from_attrs(&fields.unnamed[0].attrs);
+                let is_opaque = field_attrs.is_opaque();
 
-                variants_with_data.push((variant, serde_name.clone()));
+                variants_with_data.push((variant, serde_name.clone(), is_opaque));
 
                 // Nested ShadowNode
                 let delta_inner_ty = quote! { <#inner_ty as #krate::shadows::ShadowNode>::Delta };
@@ -220,21 +223,27 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 reported_variants.push(quote! { #variant_ident(#reported_inner_ty), });
                 desired_variants.push(quote! { #variant_ident(#delta_inner_ty), });
 
-                // From impls for #[builder(into)] support
-                reported_from_impls.push(quote! {
-                    impl From<#reported_inner_ty> for #reported_name {
-                        fn from(inner: #reported_inner_ty) -> Self {
-                            Self::#variant_ident(inner)
+                // From impls for #[builder(into)] support.
+                // Skip for opaque inner types: their Delta = Reported = Self, which
+                // makes the projection `<T as ShadowNode>::Reported` resolve to T,
+                // colliding with the blanket `impl<T> From<T> for T` whenever T
+                // could equal the target enum.
+                if !is_opaque {
+                    reported_from_impls.push(quote! {
+                        impl From<#reported_inner_ty> for #reported_name {
+                            fn from(inner: #reported_inner_ty) -> Self {
+                                Self::#variant_ident(inner)
+                            }
                         }
-                    }
-                });
-                delta_from_impls.push(quote! {
-                    impl From<#delta_inner_ty> for #delta_config_name {
-                        fn from(inner: #delta_inner_ty) -> Self {
-                            Self::#variant_ident(inner)
+                    });
+                    delta_from_impls.push(quote! {
+                        impl From<#delta_inner_ty> for #delta_config_name {
+                            fn from(inner: #delta_inner_ty) -> Self {
+                                Self::#variant_ident(inner)
+                            }
                         }
-                    }
-                });
+                    });
+                }
                 from_desired_arms.push(quote! {
                     #desired_name::#variant_ident(config) => #delta_name {
                         mode: #krate::shadows::DeltaMode::Known(#variant_enum_name::#variant_ident),
@@ -292,8 +301,12 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     },
                 });
 
-                // For flat union serialize - use ReportedFields
-                inactive_variant_field_nulls.push((variant_ident.clone(), inner_ty.clone()));
+                // For flat union serialize - use ReportedFields. Opaque inner
+                // types have empty FIELD_NAMES and serialize as scalars (not
+                // nested maps), so they contribute nothing to null-padding.
+                if !is_opaque {
+                    inactive_variant_field_nulls.push((variant_ident.clone(), inner_ty.clone()));
+                }
 
                 // Schema hash for newtype variant
                 let variant_bytes = serde_name.as_bytes();
@@ -525,12 +538,24 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 })
                 .collect();
 
-            // Check if this variant has data
-            let has_data = variants_with_data
+            // Check if this variant has data, and whether it's opaque
+            let variant_data = variants_with_data
                 .iter()
-                .any(|(v, _)| v.ident == *variant_ident);
+                .find(|(v, _, _)| v.ident == *variant_ident);
+            let has_data = variant_data.is_some();
+            let is_opaque = variant_data.map(|(_, _, o)| *o).unwrap_or(false);
 
-            if has_data {
+            if has_data && is_opaque {
+                // Opaque variant — content is a scalar, written directly under
+                // the content key. No nested map and no null-padding (other
+                // variants' nulls would have nowhere to live in a scalar).
+                quote! {
+                    Self::#variant_ident(ref content) => {
+                        map.serialize_entry(#tag_key, #serde_name)?;
+                        map.serialize_entry(#content_key, content)?;
+                    }
+                }
+            } else if has_data {
                 // Variant with data - serialize mode and nested content with nulls
                 quote! {
                     Self::#variant_ident(ref config) => {
@@ -647,7 +672,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         .iter()
         .zip(variant_names.iter())
         .map(|(ident, serde_name)| {
-            let has_data = variants_with_data.iter().any(|(v, _)| v.ident == *ident);
+            let has_data = variants_with_data.iter().any(|(v, _, _)| v.ident == *ident);
             if has_data {
                 quote! {
                     Self::#ident(_) => {
@@ -679,7 +704,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             .map(|variant_ident| {
                 let has_data = variants_with_data
                     .iter()
-                    .any(|(v, _)| v.ident == *variant_ident);
+                    .any(|(v, _, _)| v.ident == *variant_ident);
 
                 // Collect FIELD_NAMES references for all OTHER data variants
                 let null_field_refs: Vec<TokenStream> = inactive_variant_field_nulls

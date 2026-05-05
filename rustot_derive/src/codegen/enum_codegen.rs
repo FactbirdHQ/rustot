@@ -60,7 +60,7 @@ use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident};
 
 use crate::attr::{
-    apply_rename_all, get_serde_rename, get_serde_rename_all, get_serde_tag_content,
+    FieldAttrs, apply_rename_all, get_serde_rename, get_serde_rename_all, get_serde_tag_content,
     has_default_attr,
 };
 
@@ -204,6 +204,8 @@ pub(crate) fn generate_simple_enum_code(
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 // Newtype variant - delegate to inner ShadowNode
                 let inner_ty = &fields.unnamed[0].ty;
+                let field_attrs = FieldAttrs::from_attrs(&fields.unnamed[0].attrs);
+                let is_opaque = field_attrs.is_opaque();
                 let delta_inner_ty = quote! { <#inner_ty as #krate::shadows::ShadowNode>::Delta };
                 let reported_inner_ty =
                     quote! { <#inner_ty as #krate::shadows::ShadowNode>::Reported };
@@ -211,21 +213,26 @@ pub(crate) fn generate_simple_enum_code(
                 delta_variants.push(quote! { #variant_ident(#delta_inner_ty), });
                 reported_variants.push(quote! { #variant_ident(#reported_inner_ty), });
 
-                // From impls for #[builder(into)] support
-                reported_from_impls.push(quote! {
-                    impl From<#reported_inner_ty> for #reported_name {
-                        fn from(inner: #reported_inner_ty) -> Self {
-                            Self::#variant_ident(inner)
+                // From impls for #[builder(into)] support.
+                // Skip for opaque inner types: their Delta = Reported = Self,
+                // so the projection collapses to `From<X> for X` which collides
+                // with the blanket `impl<T> From<T> for T`.
+                if !is_opaque {
+                    reported_from_impls.push(quote! {
+                        impl From<#reported_inner_ty> for #reported_name {
+                            fn from(inner: #reported_inner_ty) -> Self {
+                                Self::#variant_ident(inner)
+                            }
                         }
-                    }
-                });
-                delta_from_impls.push(quote! {
-                    impl From<#delta_inner_ty> for #delta_name {
-                        fn from(inner: #delta_inner_ty) -> Self {
-                            Self::#variant_ident(inner)
+                    });
+                    delta_from_impls.push(quote! {
+                        impl From<#delta_inner_ty> for #delta_name {
+                            fn from(inner: #delta_inner_ty) -> Self {
+                                Self::#variant_ident(inner)
+                            }
                         }
-                    }
-                });
+                    });
+                }
 
                 // apply_delta: set variant and delegate to inner
                 apply_delta_arms.push(quote! {

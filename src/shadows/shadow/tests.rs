@@ -1824,6 +1824,138 @@ mod adjacently_tagged {
         let cleanup = pm.desired_cleanup(&delta).unwrap();
         assert!(cleanup.mode.is_absent());
     }
+
+    // =========================================================================
+    // Opaque newtype variants in adjacently-tagged enums
+    // =========================================================================
+
+    // Opaque-only enum: one data variant carrying a leaf string, plus a unit
+    // variant. Wire format must be flat: {"mode":"manual","apn":"onomondo"} or
+    // {"mode":"auto"} (no nested content map, no "apn":{} on the unit variant).
+    #[shadow_node]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+    #[serde(tag = "mode", content = "apn", rename_all = "lowercase")]
+    pub enum ApnMode {
+        Manual(#[shadow_attr(opaque)] heapless::String<62>),
+        #[default]
+        Auto,
+    }
+
+    fn hs<const N: usize>(s: &str) -> heapless::String<N> {
+        heapless::String::try_from(s).unwrap()
+    }
+
+    #[test]
+    fn test_opaque_variant_serializes_flat() {
+        let reported = ReportedApnMode::Manual(hs::<62>("onomondo"));
+        let json = serde_json::to_string(&reported).unwrap();
+        assert_eq!(json, r#"{"mode":"manual","apn":"onomondo"}"#);
+    }
+
+    #[test]
+    fn test_opaque_unit_variant_serializes_without_content_key() {
+        let reported = ReportedApnMode::Auto;
+        let json = serde_json::to_string(&reported).unwrap();
+        assert_eq!(json, r#"{"mode":"auto"}"#);
+    }
+
+    #[tokio::test]
+    async fn test_opaque_variant_parse_delta_and_apply() {
+        use crate::shadows::{NullResolver, ShadowNode};
+
+        let json = br#"{"mode":"manual","apn":"onomondo"}"#;
+        let delta = ApnMode::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
+        assert_eq!(delta.mode, DeltaMode::Known(ApnModeVariant::Manual));
+
+        let mut state = ApnMode::Auto;
+        state.apply_delta(&delta);
+        assert_eq!(state, ApnMode::Manual(hs::<62>("onomondo")));
+    }
+
+    #[tokio::test]
+    async fn test_opaque_unit_variant_parse_delta_and_apply() {
+        use crate::shadows::{NullResolver, ShadowNode};
+
+        let json = br#"{"mode":"auto"}"#;
+        let delta = ApnMode::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
+        assert_eq!(delta.mode, DeltaMode::Known(ApnModeVariant::Auto));
+        assert!(matches!(delta.config, DeltaContent::Absent));
+
+        let mut state = ApnMode::Manual(hs::<62>("xxx"));
+        state.apply_delta(&delta);
+        assert_eq!(state, ApnMode::Auto);
+    }
+
+    // Mixed enum: one opaque variant, one struct variant, plus a unit variant.
+    // Both shapes must serialize/parse correctly under the same content key.
+    #[shadow_node]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+    #[serde(tag = "mode", content = "config", rename_all = "lowercase")]
+    pub enum MixedMode {
+        Tag(#[shadow_attr(opaque)] heapless::String<16>),
+        Sio(SioConfig),
+        #[default]
+        Off,
+    }
+
+    #[test]
+    fn test_mixed_opaque_and_struct_variants_serialize() {
+        let opaque = ReportedMixedMode::Tag(hs::<16>("hello"));
+        let json = serde_json::to_string(&opaque).unwrap();
+        assert_eq!(json, r#"{"mode":"tag","config":"hello"}"#);
+
+        let struct_v = ReportedMixedMode::Sio(ReportedSioConfig {
+            polarity: Some(true),
+        });
+        let struct_json = serde_json::to_string(&struct_v).unwrap();
+        assert!(struct_json.contains(r#""mode":"sio""#));
+        assert!(struct_json.contains(r#""polarity":true"#));
+
+        let unit = ReportedMixedMode::Off;
+        let unit_json = serde_json::to_string(&unit).unwrap();
+        // Off should null-pad the only non-opaque sibling (Sio) so AWS clears
+        // stale fields when switching from Sio to Off.
+        assert!(unit_json.contains(r#""mode":"off""#));
+        assert!(unit_json.contains(r#""polarity":null"#));
+    }
+
+    #[tokio::test]
+    async fn test_mixed_parse_delta_opaque_then_struct() {
+        use crate::shadows::{NullResolver, ShadowNode};
+
+        let opaque_json = br#"{"mode":"tag","config":"abc"}"#;
+        let delta = MixedMode::parse_delta(opaque_json, "", &NullResolver)
+            .await
+            .unwrap();
+        let mut state = MixedMode::Off;
+        state.apply_delta(&delta);
+        assert_eq!(state, MixedMode::Tag(hs::<16>("abc")));
+
+        let struct_json = br#"{"mode":"sio","config":{"polarity":true}}"#;
+        let delta = MixedMode::parse_delta(struct_json, "", &NullResolver)
+            .await
+            .unwrap();
+        state.apply_delta(&delta);
+        assert_eq!(state, MixedMode::Sio(SioConfig { polarity: true }));
+    }
+
+    // Compile-only check: the From impls must NOT be emitted for opaque
+    // variants — otherwise `impl From<heapless::String<62>> for
+    // heapless::String<62>` would collide with `impl<T> From<T> for T`. If this
+    // module compiles, the gating works. We additionally assert that the
+    // non-opaque sibling's From impl IS present.
+    #[test]
+    fn test_from_impl_emitted_for_struct_variant_only() {
+        // Non-opaque struct variant → From impl present
+        let _: ReportedMixedMode = ReportedSioConfig {
+            polarity: Some(true),
+        }
+        .into();
+    }
 }
 
 // =========================================================================
