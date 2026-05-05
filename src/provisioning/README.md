@@ -1,48 +1,162 @@
-# AWS IoT Fleet Provisioner
+# AWS IoT Fleet Provisioning
 
-By using AWS IoT fleet provisioning, AWS IoT can generate and securely deliver device certificates and
-private keys to your devices when they connect to AWS IoT for the first time. AWS IoT provides client
-certificates that are signed by the Amazon Root certificate authority (CA).
-There are two ways to use fleet provisioning:
+Securely exchange a bootstrap "claim" certificate (shared across a fleet) for
+a unique per-device certificate when the device first connects. The
+per-device certificate is then used for all subsequent AWS IoT operations.
 
-- By claim (implemented by this crate)
-- By trusted user (**not** implemented by this crate)
+This module implements **provisioning by claim**. **Provisioning by trusted
+user** is out of scope.
 
-## Provisioning by claim
+See the [AWS IoT Fleet Provisioning documentation][aws-docs] for service
+architecture, IAM/policy setup, and pre-provisioning hooks.
 
-Devices can be manufactured with a provisioning claim certificate and private key (which are special
-purpose credentials) embedded in them. If these certificates are registered with AWS IoT, the service can
-exchange them for unique device certificates that the device can use for regular operations. This process
-includes the following steps:
+[aws-docs]: https://docs.aws.amazon.com/iot/latest/developerguide/provision-wo-cert.html
 
-**Before you deliver the device**
+## Cloud-side prerequisites
 
-1. Call `CreateProvisioningTemplate` to create a provisioning template. This API
-   returns a template ARN. For more information, see Device provisioning MQTT
-   API documentation.
+Done once, before devices are deployed:
 
-   You can also create a fleet provisioning template in the AWS IoT console.
+1. `CreateProvisioningTemplate` — creates a fleet-provisioning template (also
+   doable in the AWS IoT console under *Onboard → Fleet provisioning
+   templates*).
+2. Generate a claim certificate + private key.
+3. Register the claim certificate with AWS IoT and attach an IoT policy that
+   restricts the certificate to provisioning operations only.
+4. Attach the `AWSIoTThingsRegistration` managed policy to the provisioning
+   IAM role.
+5. Manufacture devices with the claim certificate + private key embedded.
 
-   - a. From the navigation pane, choose Onboard, then choose
-     Fleet provisioning templates.
-   - b. Choose Create and follow the prompts.
+`tests/provisioning_infrastructure/` contains the basic AWS infrastructure
+files (template, policy, pre-provisioning Lambda) used by the integration
+test. **Note**: the example pre-provisioning hook blindly accepts any
+request — replace it with your own validation logic in production.
 
-2. Create certificates and associated private keys to be used as provisioning claim certificates.
-3. Register these certificates with AWS IoT and associate an IoT policy that restricts the use of the
-   certificates. The following example IoT policy restricts the use of the certificate associated with this
-   policy to provisioning devices.
-4. Give the AWS IoT service permission to create or update IoT resources such as things and certificates
-   in your account when provisioning devices. Do this by attaching the AWSIoTThingsRegistration
-   managed policy to an IAM role (called the provisioning role) that trusts the AWS IoT service principal.
-5. Manufacture the device with the provisioning claim certificate securely
-   embedded in it.
+## Workflow (device side)
 
-<hr>
+1. Connect to AWS IoT MQTT using the claim certificate.
+2. Call [`FleetProvisioner::provision`] (or [`provision_csr`] /
+   [`provision_cbor`]). The function:
+   - Subscribes to the create-cert + register-thing reply topics.
+   - Publishes `CreateKeysAndCertificate` (or `CreateCertificateFromCsr`).
+   - Receives the new certificate; calls your [`CredentialHandler`] to
+     persist it.
+   - Publishes `RegisterThing` with the template name, ownership token, and
+     any user-supplied parameters.
+   - Returns the provisioned device configuration (deserialized into your
+     own `DeserializeOwned` type) on success.
+3. Reconnect with the new per-device certificate.
 
-## Example / Test
+## Topic table
 
-You can find an example of how to use this crate for provisioning in the `tests/provisioning.rs` file. This example can be run by `RUST_LOG=trace TEMPLATE_NAME="provision_template_name" THING_NAME="MyTestThing" AWS_HOSTNAME=xxxxxxxx-ats.iot.eu-west-1.amazonaws.com cargo test --test 'provisioning' --features "ota_mqtt_data,log"`, assuming you have an `tests/secrets/claim_identity.pfx` file with the claiming credentials. If your `claim_identity.pfx` is password protected, it can be supplied by setting the `IDENTITY_PASSWORD` env variable.
+| Direction | Purpose | Topic |
+|---|---|---|
+| Pub | Create keys & certificate         | `$aws/certificates/create/{format}` |
+| Sub | CreateKeys reply                  | `$aws/certificates/create/{format}/accepted` / `.../rejected` |
+| Pub | Create certificate from CSR       | `$aws/certificates/create-from-csr/{format}` |
+| Sub | CreateFromCsr reply               | `$aws/certificates/create-from-csr/{format}/accepted` / `.../rejected` |
+| Pub | Register thing                    | `$aws/provisioning-templates/{template}/provision/{format}` |
+| Sub | RegisterThing reply               | `$aws/provisioning-templates/{template}/provision/{format}/accepted` / `.../rejected` |
 
-Basic AWS infrastructure files needed for the example/test can be found in `tests/provisioning_infrastructure`. Do note that the pre-provision lambda handler will blindly allow any request to provision.
+`{format}` is `cbor` when the `provision_cbor` feature is enabled, `json`
+otherwise. The CBOR variant uses smaller wire payloads at the cost of pulling
+in `minicbor`.
 
-pfx identity files can be created from a set of device certificate and private key using OpenSSL as: `openssl pkcs12 -export -out claim_identity.pfx -inkey private.pem.key -in certificate.pem.crt -certfile root-ca.pem`
+## Example
+
+```rust
+use rustot::provisioning::{Credentials, CredentialHandler, Error, FleetProvisioner};
+
+#[derive(Default)]
+struct Storage { /* ... */ }
+impl CredentialHandler for Storage {
+    async fn store_credentials(&mut self, c: Credentials<'_>) -> Result<(), Error> {
+        // Persist `c.certificate_pem`, `c.private_key`, `c.certificate_id`
+        // somewhere durable (flash, secure element, etc.).
+        Ok(())
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct DeviceConfig {
+    thing_name: heapless::String<128>,
+    // ... whatever your provisioning template emits ...
+}
+
+async fn provision<M: rustot::mqtt::MqttClient>(mqtt: &M) {
+    let mut storage = Storage::default();
+
+    let parameters = serde_json::json!({
+        "SerialNumber": "1234567890",
+        "DeviceLocation": "factory-7",
+    });
+
+    let cfg: Option<DeviceConfig> = FleetProvisioner::provision(
+        mqtt,
+        "MyProvisioningTemplate",
+        Some(&parameters),
+        &mut storage,
+    )
+    .await
+    .expect("provisioning");
+
+    if let Some(cfg) = cfg {
+        log::info!("Provisioned as {}", cfg.thing_name);
+    }
+}
+```
+
+For higher security, generate the private key on-device and submit a CSR via
+[`provision_csr`] — the private key never leaves the device.
+
+## Cargo features
+
+| Feature | Default | Effect |
+|---|---|---|
+| `provision_cbor` | yes | Encode payloads as CBOR via `minicbor-serde`; topic suffix becomes `cbor`. Disable for JSON. |
+
+When enabled, [`FleetProvisioner::provision_cbor`] is also available
+explicitly; otherwise only the JSON entry points compile.
+
+## Limitations
+
+- **By-claim only.** Provisioning by trusted user is not implemented.
+- **Single attempt.** No automatic retry / backoff; wrap calls if you need
+  it.
+- **No certificate rotation.** Once provisioned, the device uses the issued
+  certificate; rotation is a separate AWS feature.
+
+## Testing
+
+Unit tests cover topic format/parse and request/response serialization:
+
+```bash
+cargo test --lib provisioning::
+```
+
+The integration test (`tests/provisioning.rs`) runs against a real AWS IoT
+endpoint:
+
+```bash
+RUST_LOG=trace \
+  TEMPLATE_NAME=provision_template_name \
+  THING_NAME=MyTestThing \
+  AWS_HOSTNAME=xxxxxxxx-ats.iot.eu-west-1.amazonaws.com \
+  cargo test --test provisioning --features "provision_cbor,log"
+```
+
+`tests/secrets/claim_identity.pfx` must hold the claim certificate. If
+password-protected, supply `IDENTITY_PASSWORD`.
+
+`pfx` files can be built from a certificate + private key with:
+
+```bash
+openssl pkcs12 -export \
+  -out claim_identity.pfx \
+  -inkey private.pem.key -in certificate.pem.crt -certfile root-ca.pem
+```
+
+[`FleetProvisioner::provision`]: https://docs.rs/rustot/latest/rustot/provisioning/struct.FleetProvisioner.html#method.provision
+[`provision_csr`]: https://docs.rs/rustot/latest/rustot/provisioning/struct.FleetProvisioner.html#method.provision_csr
+[`provision_cbor`]: https://docs.rs/rustot/latest/rustot/provisioning/struct.FleetProvisioner.html#method.provision_cbor
+[`FleetProvisioner::provision_cbor`]: https://docs.rs/rustot/latest/rustot/provisioning/struct.FleetProvisioner.html#method.provision_cbor
+[`CredentialHandler`]: https://docs.rs/rustot/latest/rustot/provisioning/trait.CredentialHandler.html

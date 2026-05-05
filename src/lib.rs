@@ -7,6 +7,7 @@
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;
 
+pub mod commands;
 pub mod defender_metrics;
 pub mod jobs;
 pub mod mqtt;
