@@ -1826,19 +1826,24 @@ mod adjacently_tagged {
     }
 
     // =========================================================================
-    // Opaque newtype variants in adjacently-tagged enums
+    // Leaf newtype variants in adjacently-tagged enums
     // =========================================================================
+    //
+    // The codegen detects leaf inner types via `<T as ReportedFields>::FIELD_NAMES`
+    // at const time, so `#[shadow_attr(opaque)]` is not required on the variant
+    // field — any type whose ShadowNode impl is via `impl_opaque!` (or otherwise
+    // sets Delta = Reported = Self) works transparently.
 
-    // Opaque-only enum: one data variant carrying a leaf string, plus a unit
-    // variant. Wire format must be flat: {"mode":"manual","apn":"onomondo"} or
-    // {"mode":"auto"} (no nested content map, no "apn":{} on the unit variant).
+    // Leaf-only enum: one data variant carrying a leaf string, plus a unit
+    // variant. Wire format must be flat: {"kind":"named","value":"hello"} or
+    // {"kind":"empty"} (no nested content map, no "value":{} on the unit variant).
     #[shadow_node]
     #[derive(Debug, Clone, Default, PartialEq, Serialize)]
-    #[serde(tag = "mode", content = "apn", rename_all = "lowercase")]
-    pub enum ApnMode {
-        Manual(#[shadow_attr(opaque)] heapless::String<62>),
+    #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
+    pub enum LeafEnum {
+        Named(heapless::String<32>),
         #[default]
-        Auto,
+        Empty,
     }
 
     fn hs<const N: usize>(s: &str) -> heapless::String<N> {
@@ -1846,115 +1851,145 @@ mod adjacently_tagged {
     }
 
     #[test]
-    fn test_opaque_variant_serializes_flat() {
-        let reported = ReportedApnMode::Manual(hs::<62>("onomondo"));
+    fn test_leaf_string_variant_serializes_flat() {
+        let reported = ReportedLeafEnum::Named(hs::<32>("hello"));
         let json = serde_json::to_string(&reported).unwrap();
-        assert_eq!(json, r#"{"mode":"manual","apn":"onomondo"}"#);
+        assert_eq!(json, r#"{"kind":"named","value":"hello"}"#);
     }
 
     #[test]
-    fn test_opaque_unit_variant_serializes_without_content_key() {
-        let reported = ReportedApnMode::Auto;
+    fn test_leaf_unit_variant_serializes_without_content_key() {
+        let reported = ReportedLeafEnum::Empty;
         let json = serde_json::to_string(&reported).unwrap();
-        assert_eq!(json, r#"{"mode":"auto"}"#);
+        assert_eq!(json, r#"{"kind":"empty"}"#);
     }
 
     #[tokio::test]
-    async fn test_opaque_variant_parse_delta_and_apply() {
+    async fn test_leaf_string_variant_parse_delta_and_apply() {
         use crate::shadows::{NullResolver, ShadowNode};
 
-        let json = br#"{"mode":"manual","apn":"onomondo"}"#;
-        let delta = ApnMode::parse_delta(json, "", &NullResolver)
+        let json = br#"{"kind":"named","value":"hello"}"#;
+        let delta = LeafEnum::parse_delta(json, "", &NullResolver)
             .await
             .unwrap();
-        assert_eq!(delta.mode, DeltaMode::Known(ApnModeVariant::Manual));
+        assert_eq!(delta.mode, DeltaMode::Known(LeafEnumVariant::Named));
 
-        let mut state = ApnMode::Auto;
+        let mut state = LeafEnum::Empty;
         state.apply_delta(&delta);
-        assert_eq!(state, ApnMode::Manual(hs::<62>("onomondo")));
+        assert_eq!(state, LeafEnum::Named(hs::<32>("hello")));
     }
 
     #[tokio::test]
-    async fn test_opaque_unit_variant_parse_delta_and_apply() {
+    async fn test_leaf_unit_variant_parse_delta_and_apply() {
         use crate::shadows::{NullResolver, ShadowNode};
 
-        let json = br#"{"mode":"auto"}"#;
-        let delta = ApnMode::parse_delta(json, "", &NullResolver)
+        let json = br#"{"kind":"empty"}"#;
+        let delta = LeafEnum::parse_delta(json, "", &NullResolver)
             .await
             .unwrap();
-        assert_eq!(delta.mode, DeltaMode::Known(ApnModeVariant::Auto));
+        assert_eq!(delta.mode, DeltaMode::Known(LeafEnumVariant::Empty));
         assert!(matches!(delta.config, DeltaContent::Absent));
 
-        let mut state = ApnMode::Manual(hs::<62>("xxx"));
+        let mut state = LeafEnum::Named(hs::<32>("xxx"));
         state.apply_delta(&delta);
-        assert_eq!(state, ApnMode::Auto);
+        assert_eq!(state, LeafEnum::Empty);
     }
 
-    // Mixed enum: one opaque variant, one struct variant, plus a unit variant.
+    // Generic struct variant for the mixed-shape test, decoupled from any
+    // domain-specific test fixture in this file.
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    pub struct ToggleConfig {
+        pub enabled: bool,
+    }
+
+    // Mixed enum: one leaf variant, one struct variant, plus a unit variant.
     // Both shapes must serialize/parse correctly under the same content key.
     #[shadow_node]
     #[derive(Debug, Clone, Default, PartialEq, Serialize)]
-    #[serde(tag = "mode", content = "config", rename_all = "lowercase")]
-    pub enum MixedMode {
-        Tag(#[shadow_attr(opaque)] heapless::String<16>),
-        Sio(SioConfig),
+    #[serde(tag = "kind", content = "data", rename_all = "lowercase")]
+    pub enum MixedEnum {
+        Label(heapless::String<16>),
+        Toggle(ToggleConfig),
         #[default]
-        Off,
+        None,
+    }
+
+    // Primitive leaf (u32) — exercised without `#[shadow_attr(opaque)]` to
+    // confirm the codegen dispatches purely on the trait, not the attribute.
+    #[shadow_node]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+    #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
+    pub enum IntEnum {
+        #[default]
+        None,
+        Number(u32),
     }
 
     #[test]
-    fn test_mixed_opaque_and_struct_variants_serialize() {
-        let opaque = ReportedMixedMode::Tag(hs::<16>("hello"));
-        let json = serde_json::to_string(&opaque).unwrap();
-        assert_eq!(json, r#"{"mode":"tag","config":"hello"}"#);
+    fn test_primitive_leaf_variant_serializes_flat() {
+        let r = ReportedIntEnum::Number(42);
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            r#"{"kind":"number","value":42}"#
+        );
+        let none = ReportedIntEnum::None;
+        // No non-leaf siblings, so unit variant emits no content key.
+        assert_eq!(serde_json::to_string(&none).unwrap(), r#"{"kind":"none"}"#);
+    }
 
-        let struct_v = ReportedMixedMode::Sio(ReportedSioConfig {
-            polarity: Some(true),
+    #[test]
+    fn test_mixed_leaf_and_struct_variants_serialize() {
+        let leaf = ReportedMixedEnum::Label(hs::<16>("hello"));
+        let json = serde_json::to_string(&leaf).unwrap();
+        assert_eq!(json, r#"{"kind":"label","data":"hello"}"#);
+
+        let struct_v = ReportedMixedEnum::Toggle(ReportedToggleConfig {
+            enabled: Some(true),
         });
         let struct_json = serde_json::to_string(&struct_v).unwrap();
-        assert!(struct_json.contains(r#""mode":"sio""#));
-        assert!(struct_json.contains(r#""polarity":true"#));
+        assert!(struct_json.contains(r#""kind":"toggle""#));
+        assert!(struct_json.contains(r#""enabled":true"#));
 
-        let unit = ReportedMixedMode::Off;
+        let unit = ReportedMixedEnum::None;
         let unit_json = serde_json::to_string(&unit).unwrap();
-        // Off should null-pad the only non-opaque sibling (Sio) so AWS clears
-        // stale fields when switching from Sio to Off.
-        assert!(unit_json.contains(r#""mode":"off""#));
-        assert!(unit_json.contains(r#""polarity":null"#));
+        // None should null-pad the only non-leaf sibling (Toggle) so AWS
+        // clears stale fields when switching from Toggle to None.
+        assert!(unit_json.contains(r#""kind":"none""#));
+        assert!(unit_json.contains(r#""enabled":null"#));
     }
 
     #[tokio::test]
-    async fn test_mixed_parse_delta_opaque_then_struct() {
+    async fn test_mixed_parse_delta_leaf_then_struct() {
         use crate::shadows::{NullResolver, ShadowNode};
 
-        let opaque_json = br#"{"mode":"tag","config":"abc"}"#;
-        let delta = MixedMode::parse_delta(opaque_json, "", &NullResolver)
+        let leaf_json = br#"{"kind":"label","data":"abc"}"#;
+        let delta = MixedEnum::parse_delta(leaf_json, "", &NullResolver)
             .await
             .unwrap();
-        let mut state = MixedMode::Off;
+        let mut state = MixedEnum::None;
         state.apply_delta(&delta);
-        assert_eq!(state, MixedMode::Tag(hs::<16>("abc")));
+        assert_eq!(state, MixedEnum::Label(hs::<16>("abc")));
 
-        let struct_json = br#"{"mode":"sio","config":{"polarity":true}}"#;
-        let delta = MixedMode::parse_delta(struct_json, "", &NullResolver)
+        let struct_json = br#"{"kind":"toggle","data":{"enabled":true}}"#;
+        let delta = MixedEnum::parse_delta(struct_json, "", &NullResolver)
             .await
             .unwrap();
         state.apply_delta(&delta);
-        assert_eq!(state, MixedMode::Sio(SioConfig { polarity: true }));
+        assert_eq!(state, MixedEnum::Toggle(ToggleConfig { enabled: true }));
     }
 
-    // Compile-only check: the From impls must NOT be emitted for opaque
-    // variants — otherwise `impl From<heapless::String<62>> for
-    // heapless::String<62>` would collide with `impl<T> From<T> for T`. If this
-    // module compiles, the gating works. We additionally assert that the
-    // non-opaque sibling's From impl IS present.
+    // Compile-only check: From impls are emitted for both leaf and struct
+    // variants. The projection `<T as ShadowNode>::Reported` doesn't normalize
+    // during coherence, so emitting `impl From<<u32 as ShadowNode>::Reported>
+    // for ReportedMode` does not conflict with `impl<T> From<T> for T`.
     #[test]
-    fn test_from_impl_emitted_for_struct_variant_only() {
-        // Non-opaque struct variant → From impl present
-        let _: ReportedMixedMode = ReportedSioConfig {
-            polarity: Some(true),
+    fn test_from_impls_emitted_for_all_data_variants() {
+        let _: ReportedMixedEnum = ReportedToggleConfig {
+            enabled: Some(true),
         }
         .into();
+        let _: ReportedMixedEnum = hs::<16>("hello").into();
     }
 }
 
