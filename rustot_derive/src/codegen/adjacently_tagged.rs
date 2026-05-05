@@ -292,7 +292,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     },
                 });
 
-                // For flat union serialize - use ReportedFields. Leaf inner
+                // For flat union serialize - use ReportedFields. Opaque inner
                 // types (Delta = Reported = Self) have empty FIELD_NAMES, so
                 // their entry contributes nothing to null-padding at runtime —
                 // we always include them and let the const FIELD_NAMES iteration
@@ -513,8 +513,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             let serde_name = &variant_names[i];
 
             // Sibling data variants whose Reported fields should be nulled when
-            // this variant is active. Leaf siblings have empty FIELD_NAMES and
-            // contribute nothing at runtime.
+            // this variant is active. Opaque siblings have empty FIELD_NAMES
+            // and contribute nothing at runtime.
             let sibling_inner_tys: Vec<&syn::Type> = inactive_variant_field_nulls
                 .iter()
                 .filter(|(other_ident, _)| other_ident != variant_ident)
@@ -534,9 +534,10 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 .collect();
 
             // Const expression that is true iff at least one sibling data
-            // variant is non-leaf (has fields to null). Used to decide whether
-            // a unit variant emits a (potentially empty) content map at all.
-            let has_non_leaf_sibling: TokenStream = if sibling_inner_tys.is_empty() {
+            // variant is non-opaque (has fields to null). Used to decide
+            // whether a unit variant emits a (potentially empty) content map
+            // at all.
+            let has_non_opaque_sibling: TokenStream = if sibling_inner_tys.is_empty() {
                 quote! { false }
             } else {
                 let terms = sibling_inner_tys.iter().map(|inner_ty| quote! {
@@ -550,9 +551,9 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 .find(|(v, _)| v.ident == *variant_ident);
 
             if let Some((variant, _)) = variant_data {
-                // Newtype variant. Dispatch on whether the inner type is a
-                // leaf (Delta = Reported = Self, FIELD_NAMES empty) at const
-                // time — leaf inner types serialize as scalars, struct-like
+                // Newtype variant. Dispatch on whether the inner type is
+                // opaque (Delta = Reported = Self, FIELD_NAMES empty) at const
+                // time — opaque inner types serialize as scalars, struct-like
                 // inners serialize as a nested map with sibling nulls.
                 let inner_ty = match &variant.fields {
                     Fields::Unnamed(f) => &f.unnamed[0].ty,
@@ -561,13 +562,13 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 quote! {
                     Self::#variant_ident(ref content) => {
                         map.serialize_entry(#tag_key, #serde_name)?;
-                        const __INNER_IS_LEAF: bool =
+                        const __INNER_IS_OPAQUE: bool =
                             <<#inner_ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedFields>::FIELD_NAMES.is_empty();
-                        if __INNER_IS_LEAF {
-                            // Leaf: serialize value directly under content key.
+                        if __INNER_IS_OPAQUE {
+                            // Opaque: serialize value directly under content key.
                             map.serialize_entry(#content_key, content)?;
                         } else {
-                            // Non-leaf: nested content map with sibling nulls.
+                            // Non-opaque: nested content map with sibling nulls.
                             struct ContentWrapper<'a, C>(&'a C, core::marker::PhantomData<fn() -> ()>);
                             impl<'a, C: #krate::shadows::ReportedFields + ::serde::Serialize> ::serde::Serialize for ContentWrapper<'a, C> {
                                 fn serialize<SS>(&self, serializer: SS) -> Result<SS::Ok, SS::Error>
@@ -586,14 +587,15 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     }
                 }
             } else {
-                // Unit variant. Emit a null-only content map if and only if at
-                // least one sibling data variant is non-leaf — otherwise there
-                // is nothing to null and the content key would just be `{}`.
+                // Unit variant. Emit a null-only content map if and only if
+                // at least one sibling data variant is non-opaque — otherwise
+                // there is nothing to null and the content key would just be
+                // `{}`.
                 quote! {
                     Self::#variant_ident => {
                         map.serialize_entry(#tag_key, #serde_name)?;
-                        const __HAS_NON_LEAF_SIBLING: bool = #has_non_leaf_sibling;
-                        if __HAS_NON_LEAF_SIBLING {
+                        const __HAS_NON_OPAQUE_SIBLING: bool = #has_non_opaque_sibling;
+                        if __HAS_NON_OPAQUE_SIBLING {
                             struct NullContentWrapper;
                             impl ::serde::Serialize for NullContentWrapper {
                                 fn serialize<SS>(&self, serializer: SS) -> Result<SS::Ok, SS::Error>

@@ -1826,21 +1826,22 @@ mod adjacently_tagged {
     }
 
     // =========================================================================
-    // Leaf newtype variants in adjacently-tagged enums
+    // Opaque newtype variants in adjacently-tagged enums
     // =========================================================================
     //
-    // The codegen detects leaf inner types via `<T as ReportedFields>::FIELD_NAMES`
+    // The codegen detects opaque inner types via `<T as ReportedFields>::FIELD_NAMES`
     // at const time, so `#[shadow_attr(opaque)]` is not required on the variant
     // field — any type whose ShadowNode impl is via `impl_opaque!` (or otherwise
     // sets Delta = Reported = Self) works transparently.
 
-    // Leaf-only enum: one data variant carrying a leaf string, plus a unit
-    // variant. Wire format must be flat: {"kind":"named","value":"hello"} or
-    // {"kind":"empty"} (no nested content map, no "value":{} on the unit variant).
+    // Opaque-only enum: one data variant carrying an opaque string, plus a
+    // unit variant. Wire format must be flat:
+    // {"kind":"named","value":"hello"} or {"kind":"empty"} (no nested content
+    // map, no "value":{} on the unit variant).
     #[shadow_node]
     #[derive(Debug, Clone, Default, PartialEq, Serialize)]
     #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
-    pub enum LeafEnum {
+    pub enum OpaqueEnum {
         Named(heapless::String<32>),
         #[default]
         Empty,
@@ -1851,48 +1852,48 @@ mod adjacently_tagged {
     }
 
     #[test]
-    fn test_leaf_string_variant_serializes_flat() {
-        let reported = ReportedLeafEnum::Named(hs::<32>("hello"));
+    fn test_opaque_string_variant_serializes_flat() {
+        let reported = ReportedOpaqueEnum::Named(hs::<32>("hello"));
         let json = serde_json::to_string(&reported).unwrap();
         assert_eq!(json, r#"{"kind":"named","value":"hello"}"#);
     }
 
     #[test]
-    fn test_leaf_unit_variant_serializes_without_content_key() {
-        let reported = ReportedLeafEnum::Empty;
+    fn test_opaque_unit_variant_serializes_without_content_key() {
+        let reported = ReportedOpaqueEnum::Empty;
         let json = serde_json::to_string(&reported).unwrap();
         assert_eq!(json, r#"{"kind":"empty"}"#);
     }
 
     #[tokio::test]
-    async fn test_leaf_string_variant_parse_delta_and_apply() {
+    async fn test_opaque_string_variant_parse_delta_and_apply() {
         use crate::shadows::{NullResolver, ShadowNode};
 
         let json = br#"{"kind":"named","value":"hello"}"#;
-        let delta = LeafEnum::parse_delta(json, "", &NullResolver)
+        let delta = OpaqueEnum::parse_delta(json, "", &NullResolver)
             .await
             .unwrap();
-        assert_eq!(delta.mode, DeltaMode::Known(LeafEnumVariant::Named));
+        assert_eq!(delta.mode, DeltaMode::Known(OpaqueEnumVariant::Named));
 
-        let mut state = LeafEnum::Empty;
+        let mut state = OpaqueEnum::Empty;
         state.apply_delta(&delta);
-        assert_eq!(state, LeafEnum::Named(hs::<32>("hello")));
+        assert_eq!(state, OpaqueEnum::Named(hs::<32>("hello")));
     }
 
     #[tokio::test]
-    async fn test_leaf_unit_variant_parse_delta_and_apply() {
+    async fn test_opaque_unit_variant_parse_delta_and_apply() {
         use crate::shadows::{NullResolver, ShadowNode};
 
         let json = br#"{"kind":"empty"}"#;
-        let delta = LeafEnum::parse_delta(json, "", &NullResolver)
+        let delta = OpaqueEnum::parse_delta(json, "", &NullResolver)
             .await
             .unwrap();
-        assert_eq!(delta.mode, DeltaMode::Known(LeafEnumVariant::Empty));
+        assert_eq!(delta.mode, DeltaMode::Known(OpaqueEnumVariant::Empty));
         assert!(matches!(delta.config, DeltaContent::Absent));
 
-        let mut state = LeafEnum::Named(hs::<32>("xxx"));
+        let mut state = OpaqueEnum::Named(hs::<32>("xxx"));
         state.apply_delta(&delta);
-        assert_eq!(state, LeafEnum::Empty);
+        assert_eq!(state, OpaqueEnum::Empty);
     }
 
     // Generic struct variant for the mixed-shape test, decoupled from any
@@ -1903,8 +1904,9 @@ mod adjacently_tagged {
         pub enabled: bool,
     }
 
-    // Mixed enum: one leaf variant, one struct variant, plus a unit variant.
-    // Both shapes must serialize/parse correctly under the same content key.
+    // Mixed enum: one opaque variant, one struct variant, plus a unit
+    // variant. Both shapes must serialize/parse correctly under the same
+    // content key.
     #[shadow_node]
     #[derive(Debug, Clone, Default, PartialEq, Serialize)]
     #[serde(tag = "kind", content = "data", rename_all = "lowercase")]
@@ -1915,7 +1917,7 @@ mod adjacently_tagged {
         None,
     }
 
-    // Primitive leaf (u32) — exercised without `#[shadow_attr(opaque)]` to
+    // Primitive opaque (u32) — exercised without `#[shadow_attr(opaque)]` to
     // confirm the codegen dispatches purely on the trait, not the attribute.
     #[shadow_node]
     #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -1927,21 +1929,21 @@ mod adjacently_tagged {
     }
 
     #[test]
-    fn test_primitive_leaf_variant_serializes_flat() {
+    fn test_primitive_opaque_variant_serializes_flat() {
         let r = ReportedIntEnum::Number(42);
         assert_eq!(
             serde_json::to_string(&r).unwrap(),
             r#"{"kind":"number","value":42}"#
         );
         let none = ReportedIntEnum::None;
-        // No non-leaf siblings, so unit variant emits no content key.
+        // No non-opaque siblings, so unit variant emits no content key.
         assert_eq!(serde_json::to_string(&none).unwrap(), r#"{"kind":"none"}"#);
     }
 
     #[test]
-    fn test_mixed_leaf_and_struct_variants_serialize() {
-        let leaf = ReportedMixedEnum::Label(hs::<16>("hello"));
-        let json = serde_json::to_string(&leaf).unwrap();
+    fn test_mixed_opaque_and_struct_variants_serialize() {
+        let opaque = ReportedMixedEnum::Label(hs::<16>("hello"));
+        let json = serde_json::to_string(&opaque).unwrap();
         assert_eq!(json, r#"{"kind":"label","data":"hello"}"#);
 
         let struct_v = ReportedMixedEnum::Toggle(ReportedToggleConfig {
@@ -1953,18 +1955,18 @@ mod adjacently_tagged {
 
         let unit = ReportedMixedEnum::None;
         let unit_json = serde_json::to_string(&unit).unwrap();
-        // None should null-pad the only non-leaf sibling (Toggle) so AWS
+        // None should null-pad the only non-opaque sibling (Toggle) so AWS
         // clears stale fields when switching from Toggle to None.
         assert!(unit_json.contains(r#""kind":"none""#));
         assert!(unit_json.contains(r#""enabled":null"#));
     }
 
     #[tokio::test]
-    async fn test_mixed_parse_delta_leaf_then_struct() {
+    async fn test_mixed_parse_delta_opaque_then_struct() {
         use crate::shadows::{NullResolver, ShadowNode};
 
-        let leaf_json = br#"{"kind":"label","data":"abc"}"#;
-        let delta = MixedEnum::parse_delta(leaf_json, "", &NullResolver)
+        let opaque_json = br#"{"kind":"label","data":"abc"}"#;
+        let delta = MixedEnum::parse_delta(opaque_json, "", &NullResolver)
             .await
             .unwrap();
         let mut state = MixedEnum::None;
@@ -1979,7 +1981,7 @@ mod adjacently_tagged {
         assert_eq!(state, MixedEnum::Toggle(ToggleConfig { enabled: true }));
     }
 
-    // Compile-only check: From impls are emitted for both leaf and struct
+    // Compile-only check: From impls are emitted for both opaque and struct
     // variants. The projection `<T as ShadowNode>::Reported` doesn't normalize
     // during coherence, so emitting `impl From<<u32 as ShadowNode>::Reported>
     // for ReportedMode` does not conflict with `impl<T> From<T> for T`.
