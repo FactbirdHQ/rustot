@@ -67,8 +67,8 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
             .mqtt
             .0
             .subscribe(&[
-                (notify_topic.as_str(), QoS::AtMostOnce),
-                (describe_topic.as_str(), QoS::AtMostOnce),
+                (notify_topic.as_str(), QoS::AtLeastOnce),
+                (describe_topic.as_str(), QoS::AtLeastOnce),
             ])
             .await
             .map_err(|_| JobError::Mqtt)?;
@@ -78,7 +78,11 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
         let topic = describe.topic(client_id)?;
         self.mqtt
             .0
-            .publish(&topic, describe)
+            .publish_with_options(
+                &topic,
+                describe,
+                PublishOptions::new().qos(QoS::AtLeastOnce),
+            )
             .await
             .map_err(|_| JobError::Mqtt)?;
 
@@ -91,8 +95,8 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
     /// `status_details` can be any serializable type describing current
     /// progress.
     ///
-    /// Progress updates use QoS 0 (fire-and-forget) since they are
-    /// non-critical and frequent.
+    /// QoS 1 so a transient broker disconnect mid-job doesn't silently
+    /// drop the progress update.
     pub async fn report_progress<S: Serialize>(
         &self,
         job_id: &str,
@@ -109,7 +113,7 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
 
         self.mqtt
             .0
-            .publish(&topic, payload)
+            .publish_with_options(&topic, payload, PublishOptions::new().qos(QoS::AtLeastOnce))
             .await
             .map_err(|_| JobError::Mqtt)
     }
@@ -188,8 +192,8 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
             .mqtt
             .0
             .subscribe(&[
-                (accepted_topic.as_str(), QoS::AtMostOnce),
-                (rejected_topic.as_str(), QoS::AtMostOnce),
+                (accepted_topic.as_str(), QoS::AtLeastOnce),
+                (rejected_topic.as_str(), QoS::AtLeastOnce),
             ])
             .await
             .map_err(|_| JobError::Mqtt)?;
