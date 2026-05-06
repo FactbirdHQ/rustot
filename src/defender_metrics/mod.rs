@@ -1,5 +1,6 @@
 use crate::mqtt::{
-    DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, QoS, ToPayload,
+    DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, PublishOptions, QoS,
+    ToPayload,
 };
 use data_types::Metric;
 use errors::{ErrorResponse, MetricError};
@@ -113,8 +114,8 @@ impl<'m, C: MqttClient> MetricHandler<'m, C> {
         let sub = self
             .mqtt
             .subscribe(&[
-                (accepted.as_str(), QoS::AtMostOnce),
-                (rejected.as_str(), QoS::AtMostOnce),
+                (accepted.as_str(), QoS::AtLeastOnce),
+                (rejected.as_str(), QoS::AtLeastOnce),
             ])
             .await
             .map_err(|_| MetricError::Mqtt)?;
@@ -122,7 +123,11 @@ impl<'m, C: MqttClient> MetricHandler<'m, C> {
         let topic_name = Topic::Publish.format::<MAX_DEFENDER_TOPIC_LEN>(self.mqtt.client_id())?;
 
         self.mqtt
-            .publish(topic_name.as_str(), payload)
+            .publish_with_options(
+                topic_name.as_str(),
+                payload,
+                PublishOptions::new().qos(QoS::AtLeastOnce),
+            )
             .await
             .map_err(|_| {
                 error!("ERROR PUBLISHING PAYLOAD");
