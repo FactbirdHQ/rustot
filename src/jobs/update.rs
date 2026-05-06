@@ -1,7 +1,13 @@
 use serde::Serialize;
 
 use crate::jobs::{MAX_CLIENT_TOKEN_LEN, data_types::JobStatus};
-use crate::mqtt::{PayloadError, ToPayload};
+use crate::mqtt::{MaxJsonSize, PayloadError, ToPayload};
+
+/// JSON-framing overhead for [`UpdateJobExecutionRequest`]: status enum,
+/// optional flags, and the JSON object itself with all its keys. Add this to
+/// the caller's `status_details` [`MaxJsonSize::MAX_JSON_SIZE`] to size the
+/// encode buffer.
+const UPDATE_FRAMING_OVERHEAD: usize = MAX_CLIENT_TOKEN_LEN + 256;
 
 /// Updates the status of a job execution. You can optionally create a step
 /// timer by setting a value for the stepTimeoutInMinutes property. If you don't
@@ -70,8 +76,11 @@ pub struct UpdateJobExecutionRequest<'a, S: Serialize = ()> {
 ///
 /// The type parameter `S` represents the status details type. Use
 /// [`status_details`](Self::status_details) to set the status details and
-/// change the type parameter.
-pub struct Update<'a, S: Serialize = ()> {
+/// change the type parameter. The encode buffer for this update is sized
+/// from `S::MAX_JSON_SIZE` plus framing overhead, so callers carrying
+/// rich `status_details` payloads should impl [`MaxJsonSize`] with a
+/// generous upper bound.
+pub struct Update<'a, S: MaxJsonSize = ()> {
     status: JobStatus,
     client_token: Option<&'a str>,
     status_details: Option<&'a S>,
@@ -98,7 +107,7 @@ impl<'a> Update<'a, ()> {
     }
 }
 
-impl<'a, S: Serialize> Update<'a, S> {
+impl<'a, S: MaxJsonSize> Update<'a, S> {
     /// Set the client token for request correlation.
     pub fn client_token(self, client_token: &'a str) -> Self {
         assert!(client_token.len() < MAX_CLIENT_TOKEN_LEN);
@@ -111,9 +120,9 @@ impl<'a, S: Serialize> Update<'a, S> {
 
     /// Set the status details.
     ///
-    /// This method accepts any type that implements `Serialize`, allowing
-    /// different consumers to provide different status detail structures.
-    pub fn status_details<T: Serialize>(self, status_details: &'a T) -> Update<'a, T> {
+    /// `T` must impl [`MaxJsonSize`] so the publish path can size the encode
+    /// buffer to the worst-case JSON size of `T`.
+    pub fn status_details<T: MaxJsonSize>(self, status_details: &'a T) -> Update<'a, T> {
         Update {
             status: self.status,
             client_token: self.client_token,
@@ -167,9 +176,9 @@ impl<'a, S: Serialize> Update<'a, S> {
     }
 }
 
-impl<S: Serialize> ToPayload for Update<'_, S> {
+impl<S: MaxJsonSize> ToPayload for Update<'_, S> {
     fn max_size(&self) -> usize {
-        512
+        S::MAX_JSON_SIZE + UPDATE_FRAMING_OVERHEAD
     }
 
     fn encode(&self, buf: &mut [u8]) -> Result<usize, PayloadError> {
@@ -247,6 +256,9 @@ mod test {
         struct TestStatus {
             self_test: &'static str,
             progress: &'static str,
+        }
+        impl MaxJsonSize for TestStatus {
+            const MAX_JSON_SIZE: usize = 128;
         }
 
         let status = TestStatus {

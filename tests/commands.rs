@@ -93,7 +93,7 @@ async fn run_happy_path(ctx: &aws_commands::CommandTestContext) -> Result<(), St
         .keepalive_interval(embassy_time::Duration::from_secs(50))
         .build();
 
-    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 4 }>> = StaticCell::new();
+    static STATE: StaticCell<State<NoopRawMutex, 8192, { 4096 * 4 }>> = StaticCell::new();
     let state = STATE.init(State::new());
     let (mut stack, client) = mqttrust::new(state, config);
 

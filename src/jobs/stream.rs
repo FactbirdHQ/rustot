@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
+use crate::mqtt::{
+    MaxJsonSize, Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS,
+};
 
 use super::{
     JobError, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN, Topic,
@@ -97,7 +99,7 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
     ///
     /// QoS 1 so a transient broker disconnect mid-job doesn't silently
     /// drop the progress update.
-    pub async fn report_progress<S: Serialize>(
+    pub async fn report_progress<S: MaxJsonSize>(
         &self,
         job_id: &str,
         status_details: &S,
@@ -123,7 +125,7 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
     /// Publishes a `SUCCEEDED` status update and waits for the cloud to
     /// acknowledge. Optional `status_details` can carry final result
     /// information.
-    pub async fn succeed_job<S: Serialize>(
+    pub async fn succeed_job<S: MaxJsonSize>(
         &self,
         job_id: &str,
         status_details: Option<&S>,
@@ -144,7 +146,7 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
     ///
     /// Publishes a `FAILED` status update and waits for the cloud to
     /// acknowledge. Optional `status_details` can carry failure information.
-    pub async fn fail_job<S: Serialize>(
+    pub async fn fail_job<S: MaxJsonSize>(
         &self,
         job_id: &str,
         status_details: Option<&S>,
@@ -176,7 +178,7 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
     }
 
     /// Publish a job update with QoS 1 and wait for the cloud to acknowledge.
-    async fn publish_and_wait<S: Serialize>(
+    async fn publish_and_wait<S: MaxJsonSize>(
         &self,
         job_id: &str,
         payload: Update<'_, S>,
@@ -236,6 +238,11 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
 #[derive(Serialize)]
 struct RejectDetails<'a> {
     reason: &'a str,
+}
+
+impl MaxJsonSize for RejectDetails<'_> {
+    // `{"reason":"..."}` framing + a generous reason string.
+    const MAX_JSON_SIZE: usize = 1024;
 }
 
 /// Parse a job execution from an MQTT message (from `notify-next` or
