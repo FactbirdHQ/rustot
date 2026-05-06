@@ -1824,6 +1824,177 @@ mod adjacently_tagged {
         let cleanup = pm.desired_cleanup(&delta).unwrap();
         assert!(cleanup.mode.is_absent());
     }
+
+    // =========================================================================
+    // Opaque newtype variants in adjacently-tagged enums
+    // =========================================================================
+    //
+    // Variant fields carrying primitive-like (leaf) types must be marked
+    // `#[shadow_attr(opaque)]`. The attribute drives both wire shape (scalar
+    // under the content key) and the From-impl gating that avoids the E0119
+    // collision when `<T as ShadowNode>::Reported` collapses to `T`.
+
+    // Opaque-only enum: one data variant carrying an opaque string, plus a
+    // unit variant. Wire format must be flat:
+    // {"kind":"named","value":"hello"} or {"kind":"empty"} (no nested content
+    // map, no "value":{} on the unit variant).
+    #[shadow_node]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+    #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
+    pub enum OpaqueEnum {
+        Named(#[shadow_attr(opaque)] heapless::String<32>),
+        #[default]
+        Empty,
+    }
+
+    fn hs<const N: usize>(s: &str) -> heapless::String<N> {
+        heapless::String::try_from(s).unwrap()
+    }
+
+    #[test]
+    fn test_opaque_string_variant_serializes_flat() {
+        let reported = ReportedOpaqueEnum::Named(hs::<32>("hello"));
+        let json = serde_json::to_string(&reported).unwrap();
+        assert_eq!(json, r#"{"kind":"named","value":"hello"}"#);
+    }
+
+    #[test]
+    fn test_opaque_unit_variant_serializes_without_content_key() {
+        let reported = ReportedOpaqueEnum::Empty;
+        let json = serde_json::to_string(&reported).unwrap();
+        assert_eq!(json, r#"{"kind":"empty"}"#);
+    }
+
+    #[tokio::test]
+    async fn test_opaque_string_variant_parse_delta_and_apply() {
+        use crate::shadows::{NullResolver, ShadowNode};
+
+        let json = br#"{"kind":"named","value":"hello"}"#;
+        let delta = OpaqueEnum::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
+        assert_eq!(delta.mode, DeltaMode::Known(OpaqueEnumVariant::Named));
+
+        let mut state = OpaqueEnum::Empty;
+        state.apply_delta(&delta);
+        assert_eq!(state, OpaqueEnum::Named(hs::<32>("hello")));
+    }
+
+    #[tokio::test]
+    async fn test_opaque_unit_variant_parse_delta_and_apply() {
+        use crate::shadows::{NullResolver, ShadowNode};
+
+        let json = br#"{"kind":"empty"}"#;
+        let delta = OpaqueEnum::parse_delta(json, "", &NullResolver)
+            .await
+            .unwrap();
+        assert_eq!(delta.mode, DeltaMode::Known(OpaqueEnumVariant::Empty));
+        assert!(matches!(delta.config, DeltaContent::Absent));
+
+        let mut state = OpaqueEnum::Named(hs::<32>("xxx"));
+        state.apply_delta(&delta);
+        assert_eq!(state, OpaqueEnum::Empty);
+    }
+
+    // Generic struct variant for the mixed-shape test, decoupled from any
+    // domain-specific test fixture in this file.
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    pub struct ToggleConfig {
+        pub enabled: bool,
+    }
+
+    // Mixed enum: one opaque variant, one struct variant, plus a unit
+    // variant. Both shapes must serialize/parse correctly under the same
+    // content key.
+    #[shadow_node]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+    #[serde(tag = "kind", content = "data", rename_all = "lowercase")]
+    pub enum MixedEnum {
+        Label(#[shadow_attr(opaque)] heapless::String<16>),
+        Toggle(ToggleConfig),
+        #[default]
+        None,
+    }
+
+    // Primitive opaque (u32) — confirms `#[shadow_attr(opaque)]` works on
+    // primitive types as well as heapless strings.
+    #[shadow_node]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+    #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
+    pub enum IntEnum {
+        #[default]
+        None,
+        Number(#[shadow_attr(opaque)] u32),
+    }
+
+    #[test]
+    fn test_primitive_opaque_variant_serializes_flat() {
+        let r = ReportedIntEnum::Number(42);
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            r#"{"kind":"number","value":42}"#
+        );
+        let none = ReportedIntEnum::None;
+        // No non-opaque siblings, so unit variant emits no content key.
+        assert_eq!(serde_json::to_string(&none).unwrap(), r#"{"kind":"none"}"#);
+    }
+
+    #[test]
+    fn test_mixed_opaque_and_struct_variants_serialize() {
+        let opaque = ReportedMixedEnum::Label(hs::<16>("hello"));
+        let json = serde_json::to_string(&opaque).unwrap();
+        assert_eq!(json, r#"{"kind":"label","data":"hello"}"#);
+
+        let struct_v = ReportedMixedEnum::Toggle(ReportedToggleConfig {
+            enabled: Some(true),
+        });
+        let struct_json = serde_json::to_string(&struct_v).unwrap();
+        assert!(struct_json.contains(r#""kind":"toggle""#));
+        assert!(struct_json.contains(r#""enabled":true"#));
+
+        let unit = ReportedMixedEnum::None;
+        let unit_json = serde_json::to_string(&unit).unwrap();
+        // None should null-pad the only non-opaque sibling (Toggle) so AWS
+        // clears stale fields when switching from Toggle to None.
+        assert!(unit_json.contains(r#""kind":"none""#));
+        assert!(unit_json.contains(r#""enabled":null"#));
+    }
+
+    #[tokio::test]
+    async fn test_mixed_parse_delta_opaque_then_struct() {
+        use crate::shadows::{NullResolver, ShadowNode};
+
+        let opaque_json = br#"{"kind":"label","data":"abc"}"#;
+        let delta = MixedEnum::parse_delta(opaque_json, "", &NullResolver)
+            .await
+            .unwrap();
+        let mut state = MixedEnum::None;
+        state.apply_delta(&delta);
+        assert_eq!(state, MixedEnum::Label(hs::<16>("abc")));
+
+        let struct_json = br#"{"kind":"toggle","data":{"enabled":true}}"#;
+        let delta = MixedEnum::parse_delta(struct_json, "", &NullResolver)
+            .await
+            .unwrap();
+        state.apply_delta(&delta);
+        assert_eq!(state, MixedEnum::Toggle(ToggleConfig { enabled: true }));
+    }
+
+    // Compile-only check: both arms of the From-impl gating are exercised.
+    // `Toggle(ToggleConfig)` (no `#[shadow_attr(opaque)]`) emits
+    // `From<<ToggleConfig as ShadowNode>::Reported>` — the projection arm.
+    // `Label(#[shadow_attr(opaque)] heapless::String<16>)` emits
+    // `From<heapless::String<16>>` directly, which is what dodges the E0119
+    // collision when the projection would normalize to `Self`.
+    #[test]
+    fn test_from_impls_emitted_for_all_data_variants() {
+        let _: ReportedMixedEnum = ReportedToggleConfig {
+            enabled: Some(true),
+        }
+        .into();
+        let _: ReportedMixedEnum = hs::<16>("hello").into();
+    }
 }
 
 // =========================================================================
