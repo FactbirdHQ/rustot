@@ -5,9 +5,13 @@ pub mod topics;
 use core::future::Future;
 
 use crate::mqtt::{
-    DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, PublishOptions, QoS,
+    DeferredPayload, MaxJsonSize, MqttClient, MqttMessage, MqttSubscription, PayloadError,
+    PublishOptions, QoS,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, de::DeserializeOwned};
+// Used as a method call only on the cbor encoding branch below.
+#[cfg_attr(not(feature = "provision_cbor"), allow(unused_imports))]
+use serde::Serialize;
 
 pub use error::Error;
 
@@ -37,10 +41,10 @@ pub struct Credentials<'a> {
 pub struct FleetProvisioner;
 
 impl FleetProvisioner {
-    pub fn provision<'m, Cfg, M: MqttClient>(
+    pub fn provision<'m, Cfg, M: MqttClient, P: MaxJsonSize + 'm>(
         mqtt: &'m M,
         template_name: &'m str,
-        parameters: Option<impl Serialize + 'm>,
+        parameters: Option<P>,
         credential_handler: &'m mut impl CredentialHandler,
     ) -> impl Future<Output = Result<Option<Cfg>, Error>> + 'm
     where
@@ -56,10 +60,10 @@ impl FleetProvisioner {
         )
     }
 
-    pub fn provision_csr<'m, Cfg, M: MqttClient>(
+    pub fn provision_csr<'m, Cfg, M: MqttClient, P: MaxJsonSize + 'm>(
         mqtt: &'m M,
         template_name: &'m str,
-        parameters: Option<impl Serialize + 'm>,
+        parameters: Option<P>,
         csr: &'m str,
         credential_handler: &'m mut impl CredentialHandler,
     ) -> impl Future<Output = Result<Option<Cfg>, Error>> + 'm
@@ -77,10 +81,10 @@ impl FleetProvisioner {
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub fn provision_cbor<'m, Cfg, M: MqttClient>(
+    pub fn provision_cbor<'m, Cfg, M: MqttClient, P: MaxJsonSize + 'm>(
         mqtt: &'m M,
         template_name: &'m str,
-        parameters: Option<impl Serialize + 'm>,
+        parameters: Option<P>,
         credential_handler: &'m mut impl CredentialHandler,
     ) -> impl Future<Output = Result<Option<Cfg>, Error>> + 'm
     where
@@ -97,10 +101,10 @@ impl FleetProvisioner {
     }
 
     #[cfg(feature = "provision_cbor")]
-    pub fn provision_csr_cbor<'m, Cfg, M: MqttClient>(
+    pub fn provision_csr_cbor<'m, Cfg, M: MqttClient, P: MaxJsonSize + 'm>(
         mqtt: &'m M,
         template_name: &'m str,
-        parameters: Option<impl Serialize + 'm>,
+        parameters: Option<P>,
         csr: &'m str,
         credential_handler: &'m mut impl CredentialHandler,
     ) -> impl Future<Output = Result<Option<Cfg>, Error>> + 'm
@@ -117,10 +121,10 @@ impl FleetProvisioner {
         )
     }
 
-    async fn provision_inner<Cfg, M: MqttClient>(
+    async fn provision_inner<Cfg, M: MqttClient, P: MaxJsonSize>(
         mqtt: &M,
         template_name: &str,
-        parameters: Option<impl Serialize>,
+        parameters: Option<P>,
         csr: Option<&str>,
         credential_handler: &mut impl CredentialHandler,
         payload_format: PayloadFormat,
@@ -198,6 +202,8 @@ impl FleetProvisioner {
             parameters,
         };
 
+        // 512-byte ownership token + framing (~64) + caller's parameters.
+        const REGISTER_FRAMING_OVERHEAD: usize = 576;
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
                 Ok(match payload_format {
@@ -215,7 +221,7 @@ impl FleetProvisioner {
                         .map_err(|_| PayloadError::BufferSize)?,
                 })
             },
-            1024,
+            P::MAX_JSON_SIZE + REGISTER_FRAMING_OVERHEAD,
         );
 
         debug!("Starting RegisterThing");

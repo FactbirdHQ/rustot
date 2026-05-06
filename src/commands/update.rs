@@ -1,17 +1,25 @@
+// Used as a method call (`req.serialize(...)`) only on the cbor encoding branch.
+#[cfg_attr(not(feature = "commands_cbor"), allow(unused_imports))]
 use serde::Serialize;
 
 use crate::commands::data_types::{
     CommandStatus, MAX_REASON_CODE_LEN, MAX_REASON_DESCRIPTION_LEN, StatusReason,
     UpdateCommandExecutionRequest,
 };
-use crate::mqtt::{PayloadError, ToPayload};
+use crate::mqtt::{MaxJsonSize, PayloadError, ToPayload};
+
+/// JSON-framing overhead for [`UpdateCommandExecutionRequest`]: executionId
+/// (≤64), statusReason (≤1024 + ≤64 + framing), status enum, and the JSON
+/// object itself with all its keys.
+const UPDATE_FRAMING_OVERHEAD: usize = 1280;
 
 /// Type-state builder for an `UpdateCommandExecution` payload.
 ///
 /// The generic `R` is the type of the optional `result` field — it evolves on
-/// `result(...)` to accept any user-provided `Serialize` type, mirroring
-/// `crate::jobs::update::Update<'a, S>`.
-pub struct Update<'a, R: Serialize = ()> {
+/// `result(...)` to accept any user-provided [`MaxJsonSize`] type, mirroring
+/// `crate::jobs::update::Update<'a, S>`. The encode buffer is sized from
+/// `R::MAX_JSON_SIZE` plus framing overhead.
+pub struct Update<'a, R: MaxJsonSize = ()> {
     status: CommandStatus,
     execution_id: Option<&'a str>,
     status_reason: Option<StatusReason<'a>>,
@@ -30,7 +38,7 @@ impl<'a> Update<'a, ()> {
     }
 }
 
-impl<'a, R: Serialize> Update<'a, R> {
+impl<'a, R: MaxJsonSize> Update<'a, R> {
     /// Echo the executionId in the payload body. Optional — AWS already knows
     /// the id from the topic path.
     pub fn execution_id(mut self, id: &'a str) -> Self {
@@ -52,7 +60,8 @@ impl<'a, R: Serialize> Update<'a, R> {
     }
 
     /// Attach a `result`. Type-state: the returned builder's `R` becomes `T`.
-    pub fn result<T: Serialize>(self, result: &'a T) -> Update<'a, T> {
+    /// `T` must impl [`MaxJsonSize`] so the encode buffer can be sized to fit.
+    pub fn result<T: MaxJsonSize>(self, result: &'a T) -> Update<'a, T> {
         Update {
             status: self.status,
             execution_id: self.execution_id,
@@ -62,11 +71,9 @@ impl<'a, R: Serialize> Update<'a, R> {
     }
 }
 
-impl<R: Serialize> ToPayload for Update<'_, R> {
+impl<R: MaxJsonSize> ToPayload for Update<'_, R> {
     fn max_size(&self) -> usize {
-        // Upper bound: executionId (64) + statusReason (1024 + 64 + framing)
-        // + status enum + result allocator. Caller pays only what they use.
-        2048
+        R::MAX_JSON_SIZE + UPDATE_FRAMING_OVERHEAD
     }
 
     fn encode(&self, buf: &mut [u8]) -> Result<usize, PayloadError> {
@@ -100,11 +107,17 @@ mod test {
     use crate::commands::data_types::{CommandResultEntry, ResultMap};
 
     #[cfg(not(feature = "commands_cbor"))]
-    fn encode<R: Serialize>(u: &Update<'_, R>) -> heapless::String<2048> {
+    fn encode<R: MaxJsonSize>(u: &Update<'_, R>) -> heapless::String<2048> {
         let mut buf = [0u8; 2048];
         let len = u.encode(&mut buf).unwrap();
         let s = core::str::from_utf8(&buf[..len]).unwrap();
         heapless::String::try_from(s).unwrap()
+    }
+
+    // Test impl: ResultMap entries are short strings/booleans/blobs.
+    #[cfg(not(feature = "commands_cbor"))]
+    impl MaxJsonSize for ResultMap<'_> {
+        const MAX_JSON_SIZE: usize = 1024;
     }
 
     #[cfg(not(feature = "commands_cbor"))]

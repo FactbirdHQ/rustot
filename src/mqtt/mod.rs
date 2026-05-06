@@ -161,6 +161,35 @@ pub trait ToPayload {
     fn encode(&self, buf: &mut [u8]) -> Result<usize, PayloadError>;
 }
 
+/// Upper bound on the JSON-serialized size of `Self`.
+///
+/// Used by [`ToPayload`] implementations on generic-`Serialize` wrapper
+/// types (e.g. [`crate::jobs::Update`], [`crate::commands::Update`],
+/// [`crate::provisioning::RegisterThingRequest`]) to size their encode
+/// buffers. `serde_json_core::to_slice` writes into a fixed buffer and
+/// fails with [`PayloadError::BufferSize`] on overflow — when that happens
+/// inside a publish path the failure surfaces as a generic MQTT-style
+/// error and masks the real cause. Implementing this trait pre-sizes the
+/// buffer to the actual payload's needs without forcing a runtime knob on
+/// the caller.
+///
+/// `Serialize` is a super-trait: a `MAX_JSON_SIZE` only makes sense for
+/// types that actually have a JSON form to bound.
+pub trait MaxJsonSize: serde::Serialize {
+    /// Worst-case JSON-encoded size of `Self`, in bytes.
+    ///
+    /// Pick a generous upper bound — over-estimating wastes only a one-shot
+    /// allocation in the publish path, while under-estimating drops the
+    /// publish with [`PayloadError::BufferSize`].
+    const MAX_JSON_SIZE: usize;
+}
+
+/// `()` serializes to `null` (4 bytes). Keeps `Update<()>` and
+/// `RegisterThingRequest<()>` ergonomic for callers with no payload.
+impl MaxJsonSize for () {
+    const MAX_JSON_SIZE: usize = 4;
+}
+
 impl ToPayload for &[u8] {
     fn max_size(&self) -> usize {
         self.len()
