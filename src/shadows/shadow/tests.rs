@@ -1829,10 +1829,10 @@ mod adjacently_tagged {
     // Opaque newtype variants in adjacently-tagged enums
     // =========================================================================
     //
-    // The codegen detects opaque inner types via `<T as ReportedFields>::FIELD_NAMES`
-    // at const time, so `#[shadow_attr(opaque)]` is not required on the variant
-    // field — any type whose ShadowNode impl is via `impl_opaque!` (or otherwise
-    // sets Delta = Reported = Self) works transparently.
+    // Variant fields carrying primitive-like (leaf) types must be marked
+    // `#[shadow_attr(opaque)]`. The attribute drives both wire shape (scalar
+    // under the content key) and the From-impl gating that avoids the E0119
+    // collision when `<T as ShadowNode>::Reported` collapses to `T`.
 
     // Opaque-only enum: one data variant carrying an opaque string, plus a
     // unit variant. Wire format must be flat:
@@ -1842,7 +1842,7 @@ mod adjacently_tagged {
     #[derive(Debug, Clone, Default, PartialEq, Serialize)]
     #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
     pub enum OpaqueEnum {
-        Named(heapless::String<32>),
+        Named(#[shadow_attr(opaque)] heapless::String<32>),
         #[default]
         Empty,
     }
@@ -1911,21 +1911,21 @@ mod adjacently_tagged {
     #[derive(Debug, Clone, Default, PartialEq, Serialize)]
     #[serde(tag = "kind", content = "data", rename_all = "lowercase")]
     pub enum MixedEnum {
-        Label(heapless::String<16>),
+        Label(#[shadow_attr(opaque)] heapless::String<16>),
         Toggle(ToggleConfig),
         #[default]
         None,
     }
 
-    // Primitive opaque (u32) — exercised without `#[shadow_attr(opaque)]` to
-    // confirm the codegen dispatches purely on the trait, not the attribute.
+    // Primitive opaque (u32) — confirms `#[shadow_attr(opaque)]` works on
+    // primitive types as well as heapless strings.
     #[shadow_node]
     #[derive(Debug, Clone, Default, PartialEq, Serialize)]
     #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
     pub enum IntEnum {
         #[default]
         None,
-        Number(u32),
+        Number(#[shadow_attr(opaque)] u32),
     }
 
     #[test]
@@ -1981,10 +1981,12 @@ mod adjacently_tagged {
         assert_eq!(state, MixedEnum::Toggle(ToggleConfig { enabled: true }));
     }
 
-    // Compile-only check: From impls are emitted for both opaque and struct
-    // variants. The projection `<T as ShadowNode>::Reported` doesn't normalize
-    // during coherence, so emitting `impl From<<u32 as ShadowNode>::Reported>
-    // for ReportedMode` does not conflict with `impl<T> From<T> for T`.
+    // Compile-only check: both arms of the From-impl gating are exercised.
+    // `Toggle(ToggleConfig)` (no `#[shadow_attr(opaque)]`) emits
+    // `From<<ToggleConfig as ShadowNode>::Reported>` — the projection arm.
+    // `Label(#[shadow_attr(opaque)] heapless::String<16>)` emits
+    // `From<heapless::String<16>>` directly, which is what dodges the E0119
+    // collision when the projection would normalize to `Self`.
     #[test]
     fn test_from_impls_emitted_for_all_data_variants() {
         let _: ReportedMixedEnum = ReportedToggleConfig {

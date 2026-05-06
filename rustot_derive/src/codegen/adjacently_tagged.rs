@@ -131,11 +131,14 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // For schema hash
     let mut schema_hash_code = Vec::new();
 
-    // For custom Serialize - flat union
+    // For custom Serialize - flat union. Only non-opaque newtype siblings
+    // appear here; opaque inner types have no field-level Reported shape to
+    // null-pad with.
     let mut inactive_variant_field_nulls = Vec::new(); // field names to null when not active
 
-    // Track which variants have data (for DeltaConfig enum).
-    let mut variants_with_data: Vec<(&syn::Variant, String)> = Vec::new();
+    // Track which variants have data (for DeltaConfig enum). The bool is
+    // `is_opaque`, parsed from `#[shadow_attr(opaque)]` on the variant field.
+    let mut variants_with_data: Vec<(&syn::Variant, String, bool)> = Vec::new();
 
     // For DesiredFoo enum
     let mut desired_variants = Vec::new();
@@ -206,10 +209,23 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 });
             }
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                // Newtype variant - has data
+                // Newtype variant - has data. Opaqueness is opted in via
+                // `#[shadow_attr(opaque)]` on the variant field. It controls
+                // both:
+                //   - Wire shape: opaque variants serialize as a scalar under
+                //     the content key; non-opaque variants serialize as a
+                //     nested map keyed by the inner type's Reported fields,
+                //     with sibling fields nulled.
+                //   - From impls: opaque variants take `#inner_ty` directly to
+                //     avoid the E0119 collision with `impl<T> From<T> for T`
+                //     when the ShadowNode projection collapses to Self (see
+                //     below).
+                let variant_field_attrs =
+                    crate::attr::FieldAttrs::from_attrs(&fields.unnamed[0].attrs);
+                let is_opaque = variant_field_attrs.is_opaque();
                 let inner_ty = &fields.unnamed[0].ty;
 
-                variants_with_data.push((variant, serde_name.clone()));
+                variants_with_data.push((variant, serde_name.clone(), is_opaque));
 
                 // Nested ShadowNode
                 let delta_inner_ty = quote! { <#inner_ty as #krate::shadows::ShadowNode>::Delta };
@@ -220,17 +236,14 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 reported_variants.push(quote! { #variant_ident(#reported_inner_ty), });
                 desired_variants.push(quote! { #variant_ident(#delta_inner_ty), });
 
-                // From impls for #[builder(into)] support. For opaque variant
-                // fields the projection `<#inner_ty as ShadowNode>::Reported`
-                // collapses to `#inner_ty`, producing `impl From<X> for X` which
-                // collides with core's `impl<T> From<T> for T` (E0119). Coherence
-                // works inside this crate because rustc normalizes the projection
-                // through local trait impls, but breaks for external consumers,
-                // so opaque variants take `#inner_ty` directly. Mark the field
-                // with `#[shadow_attr(opaque)]` to opt in.
-                let variant_field_attrs =
-                    crate::attr::FieldAttrs::from_attrs(&fields.unnamed[0].attrs);
-                if variant_field_attrs.is_opaque() {
+                // For opaque variants the projection `<#inner_ty as
+                // ShadowNode>::Reported` collapses to `#inner_ty`, producing
+                // `impl From<X> for X` which collides with core's `impl<T>
+                // From<T> for T` (E0119). Coherence works inside this crate
+                // because rustc normalizes the projection through local trait
+                // impls, but breaks for external consumers — so opaque
+                // variants take `#inner_ty` directly.
+                if is_opaque {
                     reported_from_impls.push(quote! {
                         impl From<#inner_ty> for #reported_name {
                             fn from(inner: #inner_ty) -> Self {
@@ -319,11 +332,11 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 });
 
                 // For flat union serialize - use ReportedFields. Opaque inner
-                // types (Delta = Reported = Self) have empty FIELD_NAMES, so
-                // their entry contributes nothing to null-padding at runtime —
-                // we always include them and let the const FIELD_NAMES iteration
-                // decide.
-                inactive_variant_field_nulls.push((variant_ident.clone(), inner_ty.clone()));
+                // types serialize as scalars and have no field names to null
+                // when sibling variants are active, so they don't appear here.
+                if !is_opaque {
+                    inactive_variant_field_nulls.push((variant_ident.clone(), inner_ty.clone()));
+                }
 
                 // Schema hash for newtype variant
                 let variant_bytes = serde_name.as_bytes();
@@ -531,6 +544,13 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         TokenStream::new()
     };
 
+    // Sibling data variants whose Reported fields should be nulled when this
+    // variant is active. `inactive_variant_field_nulls` already excludes
+    // opaque siblings, so a non-empty list here means at least one non-opaque
+    // sibling exists — used both for unit variants (whether to emit a content
+    // map at all) and newtype variants (which fields to null-pad).
+    let has_non_opaque_sibling = !inactive_variant_field_nulls.is_empty();
+
     // Build serialize match arms - content is nested under content_key with nulls for inactive variants
     let combined_serialize_arms: Vec<TokenStream> = variant_idents
         .iter()
@@ -538,9 +558,6 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         .map(|(i, variant_ident)| {
             let serde_name = &variant_names[i];
 
-            // Sibling data variants whose Reported fields should be nulled when
-            // this variant is active. Opaque siblings have empty FIELD_NAMES
-            // and contribute nothing at runtime.
             let sibling_inner_tys: Vec<&syn::Type> = inactive_variant_field_nulls
                 .iter()
                 .filter(|(other_ident, _)| other_ident != variant_ident)
@@ -559,42 +576,29 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 })
                 .collect();
 
-            // Const expression that is true iff at least one sibling data
-            // variant is non-opaque (has fields to null). Used to decide
-            // whether a unit variant emits a (potentially empty) content map
-            // at all.
-            let has_non_opaque_sibling: TokenStream = if sibling_inner_tys.is_empty() {
-                quote! { false }
-            } else {
-                let terms = sibling_inner_tys.iter().map(|inner_ty| quote! {
-                    !<<#inner_ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedFields>::FIELD_NAMES.is_empty()
-                });
-                quote! { #(#terms)||* }
-            };
-
             let variant_data = variants_with_data
                 .iter()
-                .find(|(v, _)| v.ident == *variant_ident);
+                .find(|(v, _, _)| v.ident == *variant_ident);
 
-            if let Some((variant, _)) = variant_data {
-                // Newtype variant. Dispatch on whether the inner type is
-                // opaque (Delta = Reported = Self, FIELD_NAMES empty) at const
-                // time — opaque inner types serialize as scalars, struct-like
-                // inners serialize as a nested map with sibling nulls.
-                let inner_ty = match &variant.fields {
-                    Fields::Unnamed(f) => &f.unnamed[0].ty,
-                    _ => unreachable!("variants_with_data only contains newtype variants"),
-                };
-                quote! {
-                    Self::#variant_ident(ref content) => {
-                        map.serialize_entry(#tag_key, #serde_name)?;
-                        const __INNER_IS_OPAQUE: bool =
-                            <<#inner_ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedFields>::FIELD_NAMES.is_empty();
-                        if __INNER_IS_OPAQUE {
-                            // Opaque: serialize value directly under content key.
+            if let Some((_, _, is_opaque)) = variant_data {
+                if *is_opaque {
+                    // Opaque newtype variant: serialize the inner value as a
+                    // scalar directly under the content key. No nested map,
+                    // no sibling null-padding (opaque inners have no field
+                    // shape to null against).
+                    quote! {
+                        Self::#variant_ident(ref content) => {
+                            map.serialize_entry(#tag_key, #serde_name)?;
                             map.serialize_entry(#content_key, content)?;
-                        } else {
-                            // Non-opaque: nested content map with sibling nulls.
+                        }
+                    }
+                } else {
+                    // Non-opaque newtype variant: serialize as a nested map of
+                    // the inner type's Reported fields, with sibling fields
+                    // nulled so cloud state clears stale entries on a switch.
+                    quote! {
+                        Self::#variant_ident(ref content) => {
+                            map.serialize_entry(#tag_key, #serde_name)?;
                             struct ContentWrapper<'a, C>(&'a C, core::marker::PhantomData<fn() -> ()>);
                             impl<'a, C: #krate::shadows::ReportedFields + ::serde::Serialize> ::serde::Serialize for ContentWrapper<'a, C> {
                                 fn serialize<SS>(&self, serializer: SS) -> Result<SS::Ok, SS::Error>
@@ -612,30 +616,34 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                         }
                     }
                 }
-            } else {
-                // Unit variant. Emit a null-only content map if and only if
-                // at least one sibling data variant is non-opaque — otherwise
-                // there is nothing to null and the content key would just be
-                // `{}`.
+            } else if has_non_opaque_sibling {
+                // Unit variant with at least one non-opaque sibling: emit a
+                // null-only content map so cloud state clears the previously
+                // active variant's fields.
                 quote! {
                     Self::#variant_ident => {
                         map.serialize_entry(#tag_key, #serde_name)?;
-                        const __HAS_NON_OPAQUE_SIBLING: bool = #has_non_opaque_sibling;
-                        if __HAS_NON_OPAQUE_SIBLING {
-                            struct NullContentWrapper;
-                            impl ::serde::Serialize for NullContentWrapper {
-                                fn serialize<SS>(&self, serializer: SS) -> Result<SS::Ok, SS::Error>
-                                where
-                                    SS: ::serde::Serializer,
-                                {
-                                    use ::serde::ser::SerializeMap;
-                                    let mut content_map = serializer.serialize_map(None)?;
-                                    #(#nulls)*
-                                    content_map.end()
-                                }
+                        struct NullContentWrapper;
+                        impl ::serde::Serialize for NullContentWrapper {
+                            fn serialize<SS>(&self, serializer: SS) -> Result<SS::Ok, SS::Error>
+                            where
+                                SS: ::serde::Serializer,
+                            {
+                                use ::serde::ser::SerializeMap;
+                                let mut content_map = serializer.serialize_map(None)?;
+                                #(#nulls)*
+                                content_map.end()
                             }
-                            map.serialize_entry(#content_key, &NullContentWrapper)?;
                         }
+                        map.serialize_entry(#content_key, &NullContentWrapper)?;
+                    }
+                }
+            } else {
+                // Unit variant with no non-opaque siblings: nothing to null,
+                // so emit just the tag.
+                quote! {
+                    Self::#variant_ident => {
+                        map.serialize_entry(#tag_key, #serde_name)?;
                     }
                 }
             }
@@ -702,7 +710,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
         .iter()
         .zip(variant_names.iter())
         .map(|(ident, serde_name)| {
-            let has_data = variants_with_data.iter().any(|(v, _)| v.ident == *ident);
+            let has_data = variants_with_data.iter().any(|(v, _, _)| v.ident == *ident);
             if has_data {
                 quote! {
                     Self::#ident(_) => {
@@ -734,7 +742,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
             .map(|variant_ident| {
                 let has_data = variants_with_data
                     .iter()
-                    .any(|(v, _)| v.ident == *variant_ident);
+                    .any(|(v, _, _)| v.ident == *variant_ident);
 
                 // Collect FIELD_NAMES references for all OTHER data variants
                 let null_field_refs: Vec<TokenStream> = inactive_variant_field_nulls

@@ -23,8 +23,19 @@ pub struct FieldAttrs {
     /// - `#[shadow_attr(report_only(persist))]` — persisted to KV, included in schema hash
     #[darling(default)]
     pub report_only: Option<ReportOnlySpec>,
-    /// Field is opaque - treated as leaf (primitive-like, no recursive patching)
-    /// Can be just `opaque` (requires MaxSize) or `opaque(max_size = N)` (explicit size)
+    /// Field is opaque - treated as leaf (primitive-like, no recursive patching).
+    /// Can be just `opaque` (requires MaxSize) or `opaque(max_size = N)` (explicit size).
+    ///
+    /// On a struct field: the field is persisted as a single KV blob and
+    /// `apply_delta` overwrites the whole value rather than recursing.
+    ///
+    /// On an adjacently-tagged enum's newtype variant field: the variant
+    /// serializes as a flat scalar under the content key
+    /// (`{"tag":"named","content":"hello"}` rather than a nested map), and
+    /// `From<#inner_ty>` is generated directly instead of through the
+    /// `<T as ShadowNode>::Reported` projection — required to avoid the
+    /// E0119 collision with `impl<T> From<T> for T` when `Reported = Self`
+    /// (i.e., for any leaf type from `src/shadows/impls/`).
     #[darling(default)]
     pub opaque: Option<OpaqueSpec>,
     /// Migration specifications for this field
@@ -77,6 +88,10 @@ impl FromMeta for ReportOnlySpec {
 /// Supports two forms:
 /// - `#[shadow_attr(opaque)]` - field type must implement `MaxSize`
 /// - `#[shadow_attr(opaque(max_size = 64))]` - explicit max serialized size
+///
+/// On adjacently-tagged enum variant fields the `max_size`/`MaxSize` aspect
+/// is unused (no per-variant KV blob is persisted) — the attribute is read
+/// purely as a codegen flag for wire shape and `From`-impl gating.
 #[derive(Clone, Default)]
 pub struct OpaqueSpec {
     /// Explicit maximum serialized size in bytes (only used with kv_persist)
