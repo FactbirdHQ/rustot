@@ -114,12 +114,6 @@ mod test {
         heapless::String::try_from(s).unwrap()
     }
 
-    // Test impl: ResultMap entries are short strings/booleans/blobs.
-    #[cfg(not(feature = "commands_cbor"))]
-    impl MaxJsonSize for ResultMap<'_> {
-        const MAX_JSON_SIZE: usize = 1024;
-    }
-
     #[cfg(not(feature = "commands_cbor"))]
     #[test]
     fn json_in_progress_minimal() {

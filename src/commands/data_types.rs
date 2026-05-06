@@ -67,6 +67,14 @@ pub enum CommandResultEntry<'a> {
 /// Default-sized result map type for ergonomic use.
 pub type ResultMap<'a> = heapless::LinearMap<&'a str, CommandResultEntry<'a>, MAX_RESULT_ENTRIES>;
 
+// Sized for the typical Commands result: up to MAX_RESULT_ENTRIES (10) keys
+// (≤64 chars each) holding short strings, booleans, or base64 blobs (≤512
+// chars). 4 KB covers the worst case with framing while staying well under
+// AWS IoT Commands' per-update size cap.
+impl crate::mqtt::MaxJsonSize for ResultMap<'_> {
+    const MAX_JSON_SIZE: usize = 4096;
+}
+
 /// Outbound payload sent to
 /// `$aws/commands/things/{thing}/executions/{id}/response/{format}`.
 #[derive(Debug, PartialEq, Serialize)]
