@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::mqtt::{MaxJsonSize, Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
+use crate::mqtt::{
+    MaxJsonSize, Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS,
+};
 
 use super::{
     JobError, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN, Topic,

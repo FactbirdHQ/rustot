@@ -8,7 +8,9 @@ use crate::commands::{
     topics::{CommandTopic, MAX_COMMAND_TOPIC_LEN, Topic},
     update::Update,
 };
-use crate::mqtt::{MaxJsonSize, Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
+use crate::mqtt::{
+    MaxJsonSize, Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS,
+};
 
 /// Helper for the AWS IoT Commands subscribe / response lifecycle.
 ///
