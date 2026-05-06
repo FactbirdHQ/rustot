@@ -44,18 +44,25 @@ impl<'a, C: MqttClient> CommandAgent<'a, C> {
         Self { mqtt }
     }
 
-    /// Subscribe to `executions/+/request/{format}` (single topic, QoS 0).
+    /// Subscribe to `executions/+/request/{format}` (single topic).
+    ///
+    /// QoS 1 so the broker can queue incoming command requests across
+    /// transient client disconnects (with a persistent session) — at QoS 0
+    /// the broker drops any request that lands in the disconnect window.
     pub async fn subscribe(&self) -> Result<C::Subscription<'a, 1>, CommandError> {
         let thing = self.mqtt.0.client_id();
         let topic = CommandTopic::Subscribe.format::<MAX_COMMAND_TOPIC_LEN>(thing)?;
         self.mqtt
             .0
-            .subscribe(&[(topic.as_str(), QoS::AtMostOnce)])
+            .subscribe(&[(topic.as_str(), QoS::AtLeastOnce)])
             .await
             .map_err(|_| CommandError::Mqtt)
     }
 
-    /// Fire-and-forget IN_PROGRESS report (QoS 0).
+    /// Report IN_PROGRESS for a command execution.
+    ///
+    /// QoS 1 so a transient broker disconnect doesn't silently drop the
+    /// progress update.
     pub async fn report_in_progress(
         &self,
         execution_id: &str,
@@ -70,7 +77,7 @@ impl<'a, C: MqttClient> CommandAgent<'a, C> {
             .format::<MAX_COMMAND_TOPIC_LEN>(self.mqtt.0.client_id())?;
         self.mqtt
             .0
-            .publish(&topic, upd)
+            .publish_with_options(&topic, upd, PublishOptions::new().qos(QoS::AtLeastOnce))
             .await
             .map_err(|_| CommandError::Mqtt)
     }
