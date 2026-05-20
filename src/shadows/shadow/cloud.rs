@@ -2,12 +2,52 @@
 
 use core::ops::DerefMut;
 
+use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use serde::Serialize;
 
 use crate::mqtt::{
     DeferredPayload, MqttClient, MqttMessage, MqttSubscription, PayloadError, PublishOptions, QoS,
     ToPayload,
 };
+
+/// Drop-guard that clears `Shadow::subscription` unless explicitly disarmed.
+///
+/// `handle_delta`'s lazy-subscribe path installs the delta-topic subscription
+/// before the initial GET drain has finished. If the future is cancelled in
+/// that window (e.g. a `tokio::select!` branch firing), the subscription
+/// would be left in place and every subsequent call would silently wait for
+/// a delta message on the subscription topic — a permanent hang, because
+/// the cloud only publishes deltas when `desired` changes.
+///
+/// This guard restores the invariant `subscription == Some <=> initial sync
+/// has fully completed` by taking the subscription back on any early exit.
+/// `disarm()` is called on the happy path to keep the subscription cached.
+struct ResetSubscriptionOnDrop<'s, M: RawMutex, T> {
+    subscription: &'s Mutex<M, Option<T>>,
+    armed: bool,
+}
+
+impl<M: RawMutex, T> ResetSubscriptionOnDrop<'_, M, T> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<M: RawMutex, T> Drop for ResetSubscriptionOnDrop<'_, M, T> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // `try_lock` is synchronous; Drop cannot await. In practice the lock
+        // is free here: any holder would have been on the cancelled future's
+        // stack and its guard is dropped before ours. If the lock is somehow
+        // contended, skipping the reset is safe — we'd merely miss the
+        // cleanup for this one cancellation, which is better than blocking.
+        if let Ok(mut guard) = self.subscription.try_lock() {
+            guard.take();
+        }
+    }
+}
 
 use crate::shadows::{
     ShadowRoot,
@@ -113,9 +153,20 @@ where
                 let _ = sub_ref.insert(sub);
                 drop(sub_ref);
 
+                // Cancellation-safety: if the future is dropped between the
+                // subscription being cached and the drain completing, clear
+                // the cache on unwind so the next caller re-runs the initial
+                // sync instead of blocking on the delta topic.
+                let mut reset_guard = ResetSubscriptionOnDrop {
+                    subscription: &self.subscription,
+                    armed: true,
+                };
+
                 // Drain pending state via GET. If a delta came through,
                 // return it. Otherwise loop back and await a live one.
                 let (state, delta) = self.sync_shadow().await?;
+                reset_guard.disarm();
+
                 if delta.is_some() {
                     return Ok((state, delta));
                 }
