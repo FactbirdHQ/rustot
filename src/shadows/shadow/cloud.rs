@@ -58,7 +58,7 @@ where
             S::NAME.unwrap_or(CLASSIC_SHADOW)
         );
 
-        self.sync_shadow().await?;
+        self.sync_shadow_inner().await?;
 
         *init_guard = true;
         Ok(())
@@ -507,6 +507,18 @@ where
     /// let state = shadow.sync_shadow().await?;  // Sync with cloud
     /// ```
     pub async fn sync_shadow(&self) -> Result<S, Error> {
+        let state = self.sync_shadow_inner().await?;
+        // A successful sync satisfies the `ensure_initialized` precondition,
+        // so flip the gate. Without this, the next `wait_delta` would re-run
+        // the sync via `ensure_initialized`, consuming the next pending delta
+        // via GET before `handle_delta` ever subscribes.
+        *self.initialized.lock().await = true;
+        Ok(state)
+    }
+
+    /// Inner sync — does the GET/apply/ack but does not flip `initialized`.
+    /// Used by `ensure_initialized`, which holds the `initialized` lock.
+    async fn sync_shadow_inner(&self) -> Result<S, Error> {
         let delta_state = self.get_shadow_from_cloud().await?;
 
         // Prefer `desired` over `delta` to match `wait_delta`. The cloud's
