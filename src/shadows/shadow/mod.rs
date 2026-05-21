@@ -15,6 +15,7 @@ mod cloud;
 mod tests;
 
 use core::marker::PhantomData;
+use core::sync::atomic::AtomicBool;
 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 
@@ -86,7 +87,7 @@ pub struct Shadow<'a, 'm, S: ShadowRoot, C: MqttClient, K: StateStore<S>> {
     pub(crate) subscription: Mutex<NoopRawMutex, Option<C::Subscription<'m, 1>>>,
     /// One-shot gate: `true` once the initial cloud sync has run.
     /// Reset by `delete_shadow`. See `ensure_initialized`.
-    pub(crate) initialized: Mutex<NoopRawMutex, bool>,
+    pub(crate) initialized: AtomicBool,
     /// Marker for the shadow state type.
     _marker: PhantomData<S>,
 }
@@ -121,7 +122,7 @@ where
             store,
             mqtt,
             subscription: Mutex::new(None),
-            initialized: Mutex::new(false),
+            initialized: AtomicBool::new(false),
             _marker: PhantomData,
         }
     }
