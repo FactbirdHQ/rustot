@@ -153,10 +153,8 @@ where
                 let _ = sub_ref.insert(sub);
                 drop(sub_ref);
 
-                // Cancellation-safety: if the future is dropped between the
-                // subscription being cached and the drain completing, clear
-                // the cache on unwind so the next caller re-runs the initial
-                // sync instead of blocking on the delta topic.
+                // If we get cancelled doing the sync_shadow we need to drop the subscription to not skip the sync_shadow
+                // On next iteration. Only when we know sync_shadow has completed we can keep the subscription.
                 let mut reset_guard = ResetSubscriptionOnDrop {
                     subscription: &self.subscription,
                     armed: true,
