@@ -1,7 +1,6 @@
 //! MQTT cloud communication methods for Shadow
 
 use core::ops::DerefMut;
-use core::sync::atomic::Ordering;
 
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use serde::Serialize;
@@ -85,17 +84,15 @@ where
     // Private MQTT Helper Methods (ported from ShadowHandler)
     // =========================================================================
 
-    /// Ensure the cloud doc exists. Short-circuits if the gate is set; otherwise
-    /// runs a GET (with 404→`create_shadow_inner` fallback). The delta from the
-    /// GET is intentionally discarded — `wait_delta` and `sync_shadow` do their
-    /// own GET to retrieve and apply any pending delta. Publish-side callers
-    /// (`update_reported`, etc.) only need the doc to exist.
-    ///
-    /// Concurrent first-time callers may both run a GET; both are safe and
-    /// idempotent on the cloud side. The cost is one extra round-trip in the
-    /// race window, traded for not holding a mutex across the GET.
+    /// Ensure the cloud doc exists. Holds a mutex so only one caller per
+    /// shadow runs the initial GET; the rest wait, then short-circuit on the
+    /// flag. The delta from the GET is intentionally discarded — `wait_delta`
+    /// and `sync_shadow` do their own GET to retrieve and apply any pending
+    /// delta. Publish-side callers (`update_reported`, etc.) only need the
+    /// doc to exist.
     pub(crate) async fn ensure_initialized(&self) -> Result<(), Error> {
-        if self.initialized.load(Ordering::Acquire) {
+        let mut init_guard = self.initialized.lock().await;
+        if *init_guard {
             return Ok(());
         }
 
@@ -107,7 +104,7 @@ where
         // GET (404 falls back to `create_shadow_inner`). Discard the delta.
         let _ = self.get_shadow_from_cloud().await?;
 
-        self.initialized.store(true, Ordering::Release);
+        *init_guard = true;
         Ok(())
     }
 
@@ -582,7 +579,7 @@ where
         let delta_state = self.get_shadow_from_cloud().await?;
         // A successful GET (or 404→create) confirms the cloud doc exists,
         // so the gate flips.
-        self.initialized.store(true, Ordering::Release);
+        *self.initialized.lock().await = true;
         let delta = delta_state.desired.or(delta_state.delta);
 
         let state = if let Some(ref d) = delta {
@@ -616,7 +613,7 @@ where
         // cloud doc now exists with our defaults, so the gate flips. Locks
         // outside the get_shadow_from_cloud → 404 path (which uses _inner
         // directly and avoids the relock that would deadlock).
-        self.initialized.store(true, Ordering::Release);
+        *self.initialized.lock().await = true;
         Ok(r)
     }
 
@@ -702,7 +699,7 @@ where
             .map_err(|_| Error::DaoWrite)?;
 
         // Reset the gate so the next publish re-initializes the cloud doc.
-        self.initialized.store(false, Ordering::Release);
+        *self.initialized.lock().await = false;
 
         Ok(())
     }
