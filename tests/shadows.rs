@@ -276,7 +276,7 @@ async fn test_shadow_end_to_end() {
         }
 
         // Sync creates shadow with defaults
-        let state = shadow.sync_shadow().await.expect("Failed to sync shadow");
+        let (state, _) = shadow.sync_shadow().await.expect("Failed to sync shadow");
         log::info!("Synced shadow: {:?}", state);
 
         // Assert defaults
