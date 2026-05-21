@@ -206,17 +206,8 @@ where
                         "[{:?}] Delta reports new desired value. Changing local value...",
                         S::NAME.unwrap_or(CLASSIC_SHADOW),
                     );
-                    match self.apply_delta_and_ack(&delta).await {
-                        Ok(state) => return Ok((state, Some(delta))),
-                        Err(e) => {
-                            // Force re-subscribe on next call — without
-                            // this, the subscription survives MQTT
-                            // reconnection (clean_start = false) and the
-                            // delta is never re-delivered.
-                            self.subscription.lock().await.take();
-                            return Err(e);
-                        }
-                    }
+                    let state = self.apply_delta_and_ack(&delta).await?;
+                    return Ok((state, Some(delta)));
                 }
                 Ok(None) => continue,
                 Err(()) => {
