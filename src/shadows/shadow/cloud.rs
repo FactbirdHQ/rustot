@@ -10,6 +10,18 @@ use crate::mqtt::{
     ToPayload,
 };
 
+use crate::shadows::{
+    ShadowRoot,
+    data_types::{
+        AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
+    },
+    error::{Error, ShadowError},
+    store::StateStore,
+    topics::{Topic, max_topic_len},
+};
+
+use super::Shadow;
+
 /// Drop-guard that clears `Shadow::subscription` unless explicitly disarmed.
 ///
 /// `handle_delta`'s lazy-subscribe path installs the delta-topic subscription
@@ -48,18 +60,6 @@ impl<M: RawMutex, T> Drop for ResetSubscriptionOnDrop<'_, M, T> {
         }
     }
 }
-
-use crate::shadows::{
-    ShadowRoot,
-    data_types::{
-        AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
-    },
-    error::{Error, ShadowError},
-    store::StateStore,
-    topics::{Topic, max_topic_len},
-};
-
-use super::Shadow;
 
 /// Overhead for partial request JSON formatting.
 const PARTIAL_REQUEST_OVERHEAD: usize = 64;
