@@ -24,12 +24,12 @@ use super::Shadow;
 
 /// Drop-guard that clears `Shadow::subscription` unless explicitly disarmed.
 ///
-/// `wait_delta`'s first-call path installs the delta-topic subscription before
-/// the initial get + apply + ack has finished. If the future is cancelled in
-/// that window (e.g. by a `tokio::select!` branch firing), the subscription
-/// would be left in place and every subsequent call would silently wait for a
-/// delta message on the subscription topic — a permanent hang, because the
-/// cloud only publishes deltas when `desired` changes.
+/// `handle_delta`'s lazy-subscribe path installs the delta-topic subscription
+/// before the initial GET drain has finished. If the future is cancelled in
+/// that window (e.g. a `tokio::select!` branch firing), the subscription
+/// would be left in place and every subsequent call would silently wait for
+/// a delta message on the subscription topic — a permanent hang, because
+/// the cloud only publishes deltas when `desired` changes.
 ///
 /// This guard restores the invariant `subscription == Some <=> initial sync
 /// has fully completed` by taking the subscription back on any early exit.
@@ -84,12 +84,53 @@ where
     // Private MQTT Helper Methods (ported from ShadowHandler)
     // =========================================================================
 
-    /// Subscribe to delta topic and wait for message.
+    /// Ensure the cloud doc exists. Holds a mutex so only one caller per
+    /// shadow runs the initial GET; the rest wait, then short-circuit on the
+    /// flag. The delta from the GET is intentionally discarded — `wait_delta`
+    /// and `sync_shadow` do their own GET to retrieve and apply any pending
+    /// delta. Publish-side callers (`update_reported`, etc.) only need the
+    /// doc to exist.
+    pub(crate) async fn ensure_initialized(&self) -> Result<(), Error> {
+        let mut init_guard = self.initialized.lock().await;
+        if *init_guard {
+            return Ok(());
+        }
+
+        warn!(
+            "[{:?}] shadow not initialized — running initial GET",
+            S::NAME.unwrap_or(CLASSIC_SHADOW)
+        );
+
+        // GET (404 falls back to `create_shadow_inner`). Discard the delta.
+        let _ = self.get_shadow_from_cloud().await?;
+
+        *init_guard = true;
+        Ok(())
+    }
+
+    /// Apply a delta to local state, then ack the cloud with the resulting
+    /// partial reported (plus any desired-side cleanup for variant switches).
+    async fn apply_delta_and_ack(&self, delta: &S::Delta) -> Result<S, Error> {
+        let state = self
+            .apply_and_save(delta)
+            .await
+            .map_err(|_| Error::DaoWrite)?;
+        let reported = state.into_partial_reported(delta);
+        let cleanup = state.desired_cleanup(delta);
+        self.update_shadow(cleanup, Some(reported)).await?;
+        Ok(state)
+    }
+
+    /// Await the next delta and return both it and the resulting state.
     ///
-    /// On first call, subscribes to the delta topic and fetches current shadow
-    /// state from cloud. On subsequent calls, waits for delta messages.
-    async fn handle_delta(&self) -> Result<Option<S::Delta>, Error> {
-        // Loop to automatically retry on clean session
+    /// Lazily (re)subscribes to the delta topic on first call and on
+    /// clean-session reconnect; each (re)subscribe is followed by a GET so
+    /// that any pending cloud state — including deltas that occurred while
+    /// not subscribed — is drained as a delta immediately. Returns as soon
+    /// as a delta is available, either from the GET drain or from a live
+    /// subscription message. Echo messages and empty-state messages are
+    /// silently looped over.
+    async fn handle_delta(&self) -> Result<(S, Option<S::Delta>), Error> {
         loop {
             let mut sub_ref = self.subscription.lock().await;
 
@@ -110,20 +151,30 @@ where
                     .map_err(|_| Error::Mqtt)?;
 
                 let _ = sub_ref.insert(sub);
+                drop(sub_ref);
 
-                let delta_state = self.get_shadow_from_cloud().await?;
+                // If we get cancelled doing the sync_shadow we need to drop the subscription to not skip the sync_shadow
+                // On next iteration. Only when we know sync_shadow has completed we can keep the subscription.
+                let mut reset_guard = ResetSubscriptionOnDrop {
+                    subscription: &self.subscription,
+                    armed: true,
+                };
 
-                // Prefer desired over delta on initial sync. The delta is
-                // computed against cloud's reported state which may be stale
-                // (e.g. after factory reset). Using the full desired ensures
-                // the device converges to the correct state regardless.
-                return Ok(delta_state.desired.or(delta_state.delta));
+                // Drain pending state via GET. If a delta came through,
+                // return it. Otherwise loop back and await a live one.
+                let (state, delta) = self.sync_shadow().await?;
+                reset_guard.disarm();
+
+                if delta.is_some() {
+                    return Ok((state, delta));
+                }
+                continue;
             }
 
             // Scope the mutable borrow so we can call sub_ref.take() on
             // clean-session below. The parsed DeltaResponse borrows from
             // the message payload, so everything must resolve in this block.
-            let result = {
+            let result: Result<Option<S::Delta>, ()> = {
                 let sub = sub_ref.deref_mut().as_mut().unwrap();
                 match sub.next_message().await {
                     Some(delta_message) => {
@@ -141,7 +192,7 @@ where
                         if parsed.client_token == Some(self.mqtt.client_id()) {
                             Ok(None)
                         } else {
-                            Ok(Some(parsed.state))
+                            Ok(parsed.state)
                         }
                     }
                     None => Err(()),
@@ -149,10 +200,17 @@ where
             };
 
             match result {
-                Ok(Some(state)) => return Ok(state),
+                Ok(Some(delta)) => {
+                    drop(sub_ref);
+                    debug!(
+                        "[{:?}] Delta reports new desired value. Changing local value...",
+                        S::NAME.unwrap_or(CLASSIC_SHADOW),
+                    );
+                    let state = self.apply_delta_and_ack(&delta).await?;
+                    return Ok((state, Some(delta)));
+                }
                 Ok(None) => continue,
                 Err(()) => {
-                    // Clean session — resubscribe
                     info!(
                         "[{:?}] Clean session detected, resubscribing to delta topic",
                         S::NAME.unwrap_or(CLASSIC_SHADOW)
@@ -297,7 +355,7 @@ where
 
         match result? {
             Some(state) => Ok(state),
-            None => self.create_shadow().await,
+            None => self.create_shadow_inner().await,
         }
     }
 
@@ -387,57 +445,10 @@ where
             S::NAME.unwrap_or(CLASSIC_SHADOW)
         );
 
-        // If this is a first call, arm a drop-guard that clears the
-        // subscription on any early exit (cancellation, error, panic). This
-        // preserves the invariant that `subscription == Some` implies the
-        // initial sync completed: without it, cancellation between
-        // `handle_delta` installing the subscription and `update_shadow`
-        // finishing the ack leaves the next caller to wait forever on a
-        // delta topic that only fires when `desired` changes cloud-side.
-        let is_first_call = self.subscription.lock().await.is_none();
-        let mut reset_guard = ResetSubscriptionOnDrop {
-            subscription: &self.subscription,
-            armed: is_first_call,
-        };
-
-        let delta = self.handle_delta().await?;
-
-        let state = if let Some(ref delta) = delta {
-            debug!(
-                "[{:?}] Delta reports new desired value. Changing local value...",
-                S::NAME.unwrap_or(CLASSIC_SHADOW),
-            );
-
-            // Apply and persist using StateStore
-            let state = self
-                .apply_and_save(delta)
-                .await
-                .map_err(|_| Error::DaoWrite)?;
-
-            // Acknowledge to cloud with only the changed fields,
-            // including desired cleanup to null stale fields after variant switches
-            let reported = state.into_partial_reported(delta);
-            let cleanup = state.desired_cleanup(delta);
-            if let Err(e) = self.update_shadow(cleanup, Some(reported)).await {
-                // Force re-fetch on next call — without this, the subscription
-                // survives MQTT reconnection (clean_start=false) and the delta
-                // is never re-delivered, causing permanent desync.
-                self.subscription.lock().await.take();
-                reset_guard.disarm();
-                return Err(e);
-            }
-
-            state
-        } else {
-            // No delta, just get current state
-            self.store
-                .get_state(Self::prefix())
-                .await
-                .map_err(|_| Error::DaoWrite)?
-        };
-
-        // Initial sync succeeded — keep the cached subscription for the loop.
-        reset_guard.disarm();
+        // No `ensure_initialized` here — `handle_delta`'s drain path GETs
+        // via `sync_shadow`, which handles 404→create and flips the
+        // `initialized` gate itself.
+        let (state, delta) = self.handle_delta().await?;
 
         info!(
             "[{:?}] wait_delta: return has_delta={}",
@@ -471,6 +482,8 @@ where
     /// shadow.update_reported(state).await?;
     /// ```
     pub async fn update_reported(&self, reported: impl Into<S::Reported>) -> Result<(), Error> {
+        self.ensure_initialized().await?;
+
         let reported: S::Reported = reported.into();
 
         // Persist any report_only(persist) fields to KV before sending to cloud.
@@ -513,6 +526,8 @@ where
     /// ).await?;
     /// ```
     pub async fn update_desired(&self, desired: impl Into<S::Delta>) -> Result<(), Error> {
+        self.ensure_initialized().await?;
+
         let state: S = self
             .store
             .get_state(Self::prefix())
@@ -533,39 +548,31 @@ where
         Ok(())
     }
 
-    /// Fetch and synchronize state from the cloud.
+    /// GET the shadow, apply any pending delta, ack it, and return the
+    /// resulting local state and the delta (if any). Flips the `initialized`
+    /// gate so subsequent publish-side callers can skip their own GET. Use
+    /// on startup to reconcile local state with the cloud.
     ///
-    /// Fetches the current shadow state from the cloud and applies any
-    /// delta to local state. Use this on startup to ensure local state
-    /// matches the cloud.
+    /// Prefer `desired` over `delta` — `delta` is a diff against the cloud's
+    /// possibly-stale reported, so applying only the diff can leave local
+    /// fields inconsistent (e.g. a URL updated while its parent variant
+    /// discriminator is unchanged). The full `desired` converges reliably.
     ///
     /// ## Example
     ///
     /// ```ignore
-    /// shadow.load().await?;  // Load from storage
-    /// let state = shadow.sync_shadow().await?;  // Sync with cloud
+    /// shadow.load().await?;                              // Load from storage
+    /// let (state, _) = shadow.sync_shadow().await?;      // Sync with cloud
     /// ```
-    pub async fn sync_shadow(&self) -> Result<S, Error> {
+    pub async fn sync_shadow(&self) -> Result<(S, Option<S::Delta>), Error> {
         let delta_state = self.get_shadow_from_cloud().await?;
+        // A successful GET (or 404→create) confirms the cloud doc exists,
+        // so the gate flips.
+        *self.initialized.lock().await = true;
+        let delta = delta_state.desired.or(delta_state.delta);
 
-        // Prefer `desired` over `delta` to match `wait_delta`. The cloud's
-        // `delta` is a diff against its current `reported`, which may be
-        // stale or missing entirely on first boot — applying only the diff
-        // leaves local fields in an inconsistent state (e.g. a URL updated
-        // while its parent variant discriminator is unchanged), and the
-        // subsequent reported ack writes those inconsistent defaults back
-        // to the cloud. The full `desired` converges reliably in all cases.
-        let state = if let Some(delta) = delta_state.desired.or(delta_state.delta) {
-            let state = self
-                .apply_and_save(&delta)
-                .await
-                .map_err(|_| Error::DaoWrite)?;
-            // Acknowledge with only the changed fields,
-            // including desired cleanup to null stale fields after variant switches
-            let reported = state.into_partial_reported(&delta);
-            let cleanup = state.desired_cleanup(&delta);
-            self.update_shadow(cleanup, Some(reported)).await?;
-            state
+        let state = if let Some(ref d) = delta {
+            self.apply_delta_and_ack(d).await?
         } else {
             self.store
                 .get_state(Self::prefix())
@@ -573,7 +580,7 @@ where
                 .map_err(|_| Error::DaoWrite)?
         };
 
-        Ok(state)
+        Ok((state, delta))
     }
 
     /// Create a new shadow in the cloud with the current device state.
@@ -590,6 +597,20 @@ where
     /// let delta_state = shadow.create_shadow().await?;
     /// ```
     pub async fn create_shadow(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
+        let r = self.create_shadow_inner().await?;
+        // External callers have explicitly chosen to push full state; the
+        // cloud doc now exists with our defaults, so the gate flips. Locks
+        // outside the get_shadow_from_cloud → 404 path (which uses _inner
+        // directly and avoids the relock that would deadlock).
+        *self.initialized.lock().await = true;
+        Ok(r)
+    }
+
+    /// Inner create — publishes the current local state as full desired +
+    /// reported. Does not touch `initialized`, so it's safe to call from
+    /// `get_shadow_from_cloud`'s 404 fallback while `ensure_initialized`
+    /// holds the lock.
+    async fn create_shadow_inner(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
         debug!(
             "[{:?}] Creating initial shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
@@ -635,9 +656,19 @@ where
                     )
                     .map_err(|_| Error::ShadowError(ShadowError::NotFound))?;
 
-                    Err(Error::ShadowError(
-                        error_response.try_into().unwrap_or(ShadowError::NotFound),
-                    ))
+                    // 404 means the cloud doc is already gone — treat as
+                    // success so delete is idempotent.
+                    if error_response.code == 404 {
+                        debug!(
+                            "[{:?}] Shadow already absent in cloud — treating delete as success.",
+                            S::NAME.unwrap_or(CLASSIC_SHADOW)
+                        );
+                        Ok(())
+                    } else {
+                        Err(Error::ShadowError(
+                            error_response.try_into().unwrap_or(ShadowError::NotFound),
+                        ))
+                    }
                 }
                 _ => {
                     error!(
@@ -655,6 +686,9 @@ where
             .delete_state(Self::prefix())
             .await
             .map_err(|_| Error::DaoWrite)?;
+
+        // Reset the gate so the next publish re-initializes the cloud doc.
+        *self.initialized.lock().await = false;
 
         Ok(())
     }
