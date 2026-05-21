@@ -15,6 +15,9 @@ pub struct TestStatusDetails {
 }
 
 impl StatusDetailsExt for TestStatusDetails {
+    // `"firmware_version":"<short string>"` plus comma framing — generous bound.
+    const MAX_EXTRA_JSON_SIZE: usize = 64;
+
     fn serialize_into_map<S: SerializeMap>(&self, map: &mut S) -> Result<(), S::Error> {
         map.serialize_entry("firmware_version", self.firmware_version)?;
         Ok(())

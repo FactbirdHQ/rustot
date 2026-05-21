@@ -8,6 +8,8 @@ use core::fmt::Write;
 
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
+use crate::mqtt::MaxJsonSize;
+
 /// Trait for types that can contribute fields to status details.
 ///
 /// Implement this trait to add custom fields to the job status details
@@ -31,6 +33,13 @@ use serde::{Serialize, Serializer, ser::SerializeMap};
 /// }
 /// ```
 pub trait StatusDetailsExt: Default {
+    /// Worst-case JSON size of the fields this extension contributes via
+    /// [`serialize_into_map`](Self::serialize_into_map). Used to size the
+    /// encode buffer when this extension is combined with the base
+    /// [`StatusDetails`] in [`CombinedStatusDetails`]. Pick a generous upper
+    /// bound — under-estimating drops the publish.
+    const MAX_EXTRA_JSON_SIZE: usize;
+
     /// Serialize this type's fields into an existing map.
     fn serialize_into_map<S: SerializeMap>(&self, map: &mut S) -> Result<(), S::Error>;
 
@@ -49,6 +58,8 @@ pub trait StatusDetailsExt: Default {
 
 /// Default implementation for `()` - no extra fields.
 impl StatusDetailsExt for () {
+    const MAX_EXTRA_JSON_SIZE: usize = 0;
+
     fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
         Ok(())
     }
@@ -162,6 +173,24 @@ impl<E: StatusDetailsExt> Serialize for CombinedStatusDetails<'_, E> {
     }
 }
 
+/// Worst-case JSON size of the base [`StatusDetails`] fields.
+///
+/// Each optional field contributes its key + quoted value + comma:
+/// - `self_test` (heapless::String<12>): ~28 bytes
+/// - `progress`  (heapless::String<16>): ~32 bytes
+/// - `reason`    (heapless::String<24>): ~36 bytes
+/// - `error_code` (u16, up to 5 digits): ~21 bytes
+/// Plus enclosing `{}` and a few bytes of slack for commas/whitespace.
+const STATUS_DETAILS_MAX_JSON_SIZE: usize = 192;
+
+impl MaxJsonSize for StatusDetails {
+    const MAX_JSON_SIZE: usize = STATUS_DETAILS_MAX_JSON_SIZE;
+}
+
+impl<E: StatusDetailsExt> MaxJsonSize for CombinedStatusDetails<'_, E> {
+    const MAX_JSON_SIZE: usize = STATUS_DETAILS_MAX_JSON_SIZE + E::MAX_EXTRA_JSON_SIZE;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +227,9 @@ mod tests {
     }
 
     impl StatusDetailsExt for TestContext {
+        // `"device_temp":<3 digits>` plus a comma — generous bound.
+        const MAX_EXTRA_JSON_SIZE: usize = 32;
+
         fn serialize_into_map<S: SerializeMap>(&self, map: &mut S) -> Result<(), S::Error> {
             map.serialize_entry("device_temp", &self.device_temp)?;
             Ok(())

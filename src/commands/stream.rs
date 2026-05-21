@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::commands::data_types::CommandRequest;
 use crate::commands::{
@@ -8,7 +8,9 @@ use crate::commands::{
     topics::{CommandTopic, MAX_COMMAND_TOPIC_LEN, Topic},
     update::Update,
 };
-use crate::mqtt::{Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS};
+use crate::mqtt::{
+    MaxJsonSize, Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS,
+};
 
 /// Helper for the AWS IoT Commands subscribe / response lifecycle.
 ///
@@ -83,7 +85,7 @@ impl<'a, C: MqttClient> CommandAgent<'a, C> {
     }
 
     /// Publish `SUCCEEDED` and wait for cloud `accepted`/`rejected`.
-    pub async fn succeed<R: Serialize>(
+    pub async fn succeed<R: MaxJsonSize>(
         &self,
         execution_id: &str,
         result: Option<&R>,
@@ -129,7 +131,7 @@ impl<'a, C: MqttClient> CommandAgent<'a, C> {
         self.publish_and_wait(execution_id, upd).await
     }
 
-    async fn publish_and_wait<R: Serialize>(
+    async fn publish_and_wait<R: MaxJsonSize>(
         &self,
         execution_id: &str,
         payload: Update<'_, R>,

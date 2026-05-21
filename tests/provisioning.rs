@@ -51,6 +51,11 @@ struct Parameters<'a> {
     signature: &'a str,
 }
 
+impl rustot::mqtt::MaxJsonSize for Parameters<'_> {
+    // `{"uuid":"<36-char uuid>","signature":"<short>"}` plus framing — small.
+    const MAX_JSON_SIZE: usize = 256;
+}
+
 #[derive(Debug, Deserialize, PartialEq)]
 struct DeviceConfig {
     #[serde(rename = "SoftwareId")]
@@ -96,14 +101,14 @@ async fn test_provisioning() {
     let mut credential_handler = CredentialDAO { creds: None };
 
     #[cfg(not(feature = "provision_cbor"))]
-    let provision_fut = FleetProvisioner::provision::<DeviceConfig, _>(
+    let provision_fut = FleetProvisioner::provision::<DeviceConfig, _, _>(
         &client,
         &template_name,
         Some(parameters),
         &mut credential_handler,
     );
     #[cfg(feature = "provision_cbor")]
-    let provision_fut = FleetProvisioner::provision_cbor::<DeviceConfig, _>(
+    let provision_fut = FleetProvisioner::provision_cbor::<DeviceConfig, _, _>(
         &client,
         &template_name,
         Some(parameters),
