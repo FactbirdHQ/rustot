@@ -118,6 +118,8 @@ pub(crate) fn generate_simple_enum_code(
     // Track if we have any newtype variants (requires special parse_delta)
     let mut has_newtype_variants = false;
     let mut parse_delta_arms: Vec<TokenStream> = Vec::new();
+    // Bare-string match arms for unit variants; only used by externally-tagged enums.
+    let mut bare_string_unit_arms: Vec<TokenStream> = Vec::new();
 
     // Collect variant info
     let mut delta_variants = Vec::new();
@@ -196,6 +198,12 @@ pub(crate) fn generate_simple_enum_code(
                     // Externally-tagged: check if variant name is a key
                     parse_delta_arms.push(quote! {
                         if scanner.field_bytes(#serde_name).is_some() {
+                            return Ok(Self::Delta::#variant_ident);
+                        }
+                    });
+                    let quoted = format!("\"{}\"", serde_name);
+                    bare_string_unit_arms.push(quote! {
+                        if trimmed == #quoted.as_bytes() {
                             return Ok(Self::Delta::#variant_ident);
                         }
                     });
@@ -526,14 +534,20 @@ pub(crate) fn generate_simple_enum_code(
                 }
             }
         } else {
-            // Externally-tagged enum: variant name is the object key
-            // JSON: { "Wpa": { "ssid": "...", "password": "..." } }
+            // Externally-tagged enum: serde emits unit variants as `"name"`
+            // and newtype variants as `{"name": ...}`, so accept both shapes
+            // here. Anything that does not start with `"` falls through to
+            // the object-form scanner.
             quote! {
-                // Scan for variant names as keys
+                let trimmed = json.trim_ascii();
+                if let Some(&b'"') = trimmed.first() {
+                    #(#bare_string_unit_arms)*
+                    return Err(#krate::shadows::ParseError::UnknownVariant);
+                }
+
                 let scanner = #krate::shadows::tag_scanner::FieldScanner::scan(json, &[#(#variant_name_strs),*])
                     .map_err(#krate::shadows::ParseError::Scan)?;
 
-                // Try each variant (arms include the if-let checks)
                 #(#parse_delta_arms)*
 
                 Err(#krate::shadows::ParseError::MissingVariant)

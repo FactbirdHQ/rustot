@@ -954,6 +954,76 @@ async fn test_enum_serde_rename_affects_variant_key() {
 }
 
 // =========================================================================
+// 6.4 parse_delta accepts both bare-string and object forms
+// =========================================================================
+//
+// Serde emits externally-tagged unit variants as `"bar"` and newtype
+// variants as `{"baz": {...}}`. parse_delta has to accept both so
+// round-tripping its own output through the shadow does not break.
+
+#[shadow_node]
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct BazInner {
+    qux: u32,
+}
+
+#[shadow_node]
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Foo {
+    #[default]
+    Bar,
+    Baz(BazInner),
+}
+
+#[tokio::test]
+async fn test_externally_tagged_parse_delta_bare_string_unit_variant() {
+    use crate::shadows::NullResolver;
+
+    let delta = Foo::parse_delta(br#""bar""#, "", &NullResolver)
+        .await
+        .unwrap();
+    let mut state = Foo::Baz(BazInner::default());
+    state.apply_delta(&delta);
+    assert!(matches!(state, Foo::Bar));
+}
+
+#[tokio::test]
+async fn test_externally_tagged_parse_delta_bare_string_with_whitespace() {
+    use crate::shadows::NullResolver;
+
+    let delta = Foo::parse_delta(b"  \n\"bar\"\t ", "", &NullResolver)
+        .await
+        .unwrap();
+    let mut state = Foo::Baz(BazInner::default());
+    state.apply_delta(&delta);
+    assert!(matches!(state, Foo::Bar));
+}
+
+#[tokio::test]
+async fn test_externally_tagged_parse_delta_object_newtype_variant() {
+    use crate::shadows::NullResolver;
+
+    let delta = Foo::parse_delta(br#"{"baz": {"qux": 42}}"#, "", &NullResolver)
+        .await
+        .unwrap();
+    let mut state = Foo::Bar;
+    state.apply_delta(&delta);
+    match state {
+        Foo::Baz(inner) => assert_eq!(inner.qux, 42),
+        _ => panic!("expected Baz"),
+    }
+}
+
+#[tokio::test]
+async fn test_externally_tagged_parse_delta_unknown_bare_string_errors() {
+    use crate::shadows::{NullResolver, ParseError};
+
+    let result = Foo::parse_delta(br#""qux""#, "", &NullResolver).await;
+    assert!(matches!(result, Err(ParseError::UnknownVariant)));
+}
+
+// =========================================================================
 // Phase 7 Tests: Delta Apply and Save
 // =========================================================================
 
