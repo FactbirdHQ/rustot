@@ -954,6 +954,79 @@ async fn test_enum_serde_rename_affects_variant_key() {
 }
 
 // =========================================================================
+// 6.4 parse_delta accepts both bare-string and object forms
+// =========================================================================
+//
+// For an externally-tagged enum with mixed unit + newtype variants, serde
+// serializes the unit variants as a bare string (`"dhcp"`) and the newtype
+// variants as `{"static": {...}}`. Both shapes come back from AWS via the
+// shadow desired/delta payload, so parse_delta must accept both — otherwise
+// the device loops forever on InvalidPayload.
+
+#[shadow_node]
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum IpSettingsLc {
+    #[default]
+    Dhcp,
+    Static(StaticIpCfg),
+}
+
+#[tokio::test]
+async fn test_externally_tagged_parse_delta_bare_string_unit_variant() {
+    use crate::shadows::NullResolver;
+
+    let delta = IpSettingsLc::parse_delta(br#""dhcp""#, "", &NullResolver)
+        .await
+        .expect("bare-string form should parse");
+
+    let mut state = IpSettingsLc::Static(StaticIpCfg::default());
+    state.apply_delta(&delta);
+    assert!(matches!(state, IpSettingsLc::Dhcp));
+}
+
+#[tokio::test]
+async fn test_externally_tagged_parse_delta_bare_string_with_whitespace() {
+    use crate::shadows::NullResolver;
+
+    let delta = IpSettingsLc::parse_delta(b"  \n\"dhcp\"\t ", "", &NullResolver)
+        .await
+        .expect("whitespace around bare string should be tolerated");
+
+    let mut state = IpSettingsLc::Static(StaticIpCfg::default());
+    state.apply_delta(&delta);
+    assert!(matches!(state, IpSettingsLc::Dhcp));
+}
+
+#[tokio::test]
+async fn test_externally_tagged_parse_delta_object_newtype_variant() {
+    use crate::shadows::NullResolver;
+
+    let json = br#"{"static": {"address": [192, 168, 1, 50], "gateway": [192, 168, 1, 1]}}"#;
+    let delta = IpSettingsLc::parse_delta(json, "", &NullResolver)
+        .await
+        .expect("object form should still parse");
+
+    let mut state = IpSettingsLc::Dhcp;
+    state.apply_delta(&delta);
+    match state {
+        IpSettingsLc::Static(cfg) => {
+            assert_eq!(cfg.address.as_slice(), &[192, 168, 1, 50]);
+            assert_eq!(cfg.gateway.as_slice(), &[192, 168, 1, 1]);
+        }
+        _ => panic!("expected Static after applying object-form delta"),
+    }
+}
+
+#[tokio::test]
+async fn test_externally_tagged_parse_delta_unknown_bare_string_errors() {
+    use crate::shadows::{NullResolver, ParseError};
+
+    let result = IpSettingsLc::parse_delta(br#""bogus""#, "", &NullResolver).await;
+    assert!(matches!(result, Err(ParseError::UnknownVariant)));
+}
+
+// =========================================================================
 // Phase 7 Tests: Delta Apply and Save
 // =========================================================================
 

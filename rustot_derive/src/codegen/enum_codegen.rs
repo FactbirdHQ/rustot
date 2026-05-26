@@ -118,6 +118,9 @@ pub(crate) fn generate_simple_enum_code(
     // Track if we have any newtype variants (requires special parse_delta)
     let mut has_newtype_variants = false;
     let mut parse_delta_arms: Vec<TokenStream> = Vec::new();
+    // Bare-string fast-path arms for externally-tagged enums: serde serializes
+    // unit variants as `"name"` (no surrounding object), so accept that form.
+    let mut bare_string_unit_arms: Vec<TokenStream> = Vec::new();
 
     // Collect variant info
     let mut delta_variants = Vec::new();
@@ -196,6 +199,13 @@ pub(crate) fn generate_simple_enum_code(
                     // Externally-tagged: check if variant name is a key
                     parse_delta_arms.push(quote! {
                         if scanner.field_bytes(#serde_name).is_some() {
+                            return Ok(Self::Delta::#variant_ident);
+                        }
+                    });
+                    // Bare-string form: serde emits unit variants as `"name"`.
+                    let quoted = format!("\"{}\"", serde_name);
+                    bare_string_unit_arms.push(quote! {
+                        if trimmed == #quoted.as_bytes() {
                             return Ok(Self::Delta::#variant_ident);
                         }
                     });
@@ -526,9 +536,20 @@ pub(crate) fn generate_simple_enum_code(
                 }
             }
         } else {
-            // Externally-tagged enum: variant name is the object key
-            // JSON: { "Wpa": { "ssid": "...", "password": "..." } }
+            // Externally-tagged enum: variant name is the object key for
+            // newtype variants (`{"static": {...}}`) and a bare string for
+            // unit variants (`"dhcp"`). Both forms come back from AWS because
+            // that's exactly what serde serializes.
             quote! {
+                // Bare-string fast-path for unit variants. Anything else
+                // (objects, null, whitespace-only) falls through to the
+                // FieldScanner below.
+                let trimmed = json.trim_ascii();
+                if let Some(&b'"') = trimmed.first() {
+                    #(#bare_string_unit_arms)*
+                    return Err(#krate::shadows::ParseError::UnknownVariant);
+                }
+
                 // Scan for variant names as keys
                 let scanner = #krate::shadows::tag_scanner::FieldScanner::scan(json, &[#(#variant_name_strs),*])
                     .map_err(#krate::shadows::ParseError::Scan)?;
