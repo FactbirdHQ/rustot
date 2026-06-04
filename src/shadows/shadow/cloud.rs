@@ -549,27 +549,25 @@ where
     }
 
     /// GET the shadow, apply any pending delta, ack it, and return the
-    /// resulting local state and the delta (if any). Flips the `initialized`
-    /// gate so subsequent publish-side callers can skip their own GET. Use
-    /// on startup to reconcile local state with the cloud.
+    /// resulting state and delta. Flips the `initialized` gate so
+    /// publish-side callers can skip their own GET. Use on startup.
     ///
-    /// Prefer `desired` over `delta` — `delta` is a diff against the cloud's
-    /// possibly-stale reported, so applying only the diff can leave local
-    /// fields inconsistent (e.g. a URL updated while its parent variant
-    /// discriminator is unchanged). The full `desired` converges reliably.
+    /// The delta is AWS's `delta` field (only fields where desired
+    /// differs from reported), so it is `None` when desired matches
+    /// reported. Callers can use that to gate side-effects.
     ///
     /// ## Example
     ///
     /// ```ignore
-    /// shadow.load().await?;                              // Load from storage
-    /// let (state, _) = shadow.sync_shadow().await?;      // Sync with cloud
+    /// shadow.load().await?;
+    /// let (state, _) = shadow.sync_shadow().await?;
     /// ```
     pub async fn sync_shadow(&self) -> Result<(S, Option<S::Delta>), Error> {
         let delta_state = self.get_shadow_from_cloud().await?;
         // A successful GET (or 404→create) confirms the cloud doc exists,
         // so the gate flips.
         *self.initialized.lock().await = true;
-        let delta = delta_state.desired.or(delta_state.delta);
+        let delta = delta_state.delta;
 
         let state = if let Some(ref d) = delta {
             self.apply_delta_and_ack(d).await?
