@@ -304,13 +304,19 @@ where
 pub struct DeltaHashMap<K: Eq + Hash, D>(pub Option<HashMap<K, Patch<D>>>);
 
 /// Reported type for `HashMap`-based shadow fields.
+///
+/// Entries are [`Patch`] so the partial-reported acknowledgment of an
+/// `Unset` delta can serialize the removed key as `null` — AWS deletes
+/// nulled keys from the reported document, keeping it in sync with the
+/// device after an entry removal. `Patch::Set` serializes transparently,
+/// so present entries keep the plain `key: value` wire format.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[serde(transparent)]
-pub struct ReportedHashMap<K: Eq + Hash, R>(pub HashMap<K, R>);
+pub struct ReportedHashMap<K: Eq + Hash, R>(pub HashMap<K, Patch<R>>);
 
 impl<K: Eq + Hash, R> From<HashMap<K, R>> for ReportedHashMap<K, R> {
     fn from(map: HashMap<K, R>) -> Self {
-        Self(map)
+        Self(map.into_iter().map(|(k, v)| (k, Patch::Set(v))).collect())
     }
 }
 
@@ -337,9 +343,11 @@ impl<K: Eq + Hash, R: crate::shadows::ReportedDiff> crate::shadows::ReportedDiff
     for ReportedHashMap<K, R>
 {
     fn diff(&mut self, old: &Self) -> bool {
-        self.0.retain(|k, v| match old.0.get(k) {
-            Some(old_v) => v.diff(old_v),
-            None => true,
+        // `Unset` entries are always retained — a removal must reach the
+        // cloud regardless of what was previously reported for the key.
+        self.0.retain(|k, v| match (v, old.0.get(k)) {
+            (Patch::Set(v), Some(Patch::Set(old_v))) => v.diff(old_v),
+            _ => true,
         });
         !self.0.is_empty()
     }
@@ -432,7 +440,7 @@ where
     fn into_reported(&self) -> Self::Reported {
         let mut reported = HashMap::new();
         for (key, value) in self.iter() {
-            reported.insert(key.clone(), value.into_reported());
+            reported.insert(key.clone(), Patch::Set(value.into_reported()));
         }
         ReportedHashMap(reported)
     }
@@ -452,19 +460,28 @@ where
                 match patch {
                     Patch::Set(inner_delta) => {
                         if let Some(v) = self.get(key) {
-                            reported.insert(key.clone(), v.into_partial_reported(inner_delta));
+                            reported.insert(
+                                key.clone(),
+                                Patch::Set(v.into_partial_reported(inner_delta)),
+                            );
                         } else {
                             // New key not yet in state — use default with delta
                             // applied, mirroring the apply_delta pattern.
                             let mut new_val = V::default();
                             new_val.apply_delta(inner_delta);
-                            reported
-                                .insert(key.clone(), new_val.into_partial_reported(inner_delta));
+                            reported.insert(
+                                key.clone(),
+                                Patch::Set(new_val.into_partial_reported(inner_delta)),
+                            );
                         }
                     }
                     Patch::Unset => {
-                        // Unset entries cannot be represented in ReportedHashMap
-                        // The user must handle explicit null reporting separately
+                        // Acknowledge the removal as `null` so AWS deletes the
+                        // key from the reported document. Without this the
+                        // stale entry lingers, and re-adding an identical
+                        // entry later produces no delta (desired == stale
+                        // reported), so the device would never see the re-add.
+                        reported.insert(key.clone(), Patch::Unset);
                     }
                 }
             }
@@ -478,12 +495,22 @@ where
             let mut has_cleanup = false;
 
             for (key, patch) in patches.iter() {
-                if let Patch::Set(inner_delta) = patch {
-                    if let Some(v) = self.get(key) {
-                        if let Some(inner_cleanup) = v.desired_cleanup(inner_delta) {
-                            result.insert(key.clone(), Patch::Set(inner_cleanup));
-                            has_cleanup = true;
+                match patch {
+                    Patch::Set(inner_delta) => {
+                        if let Some(v) = self.get(key) {
+                            if let Some(inner_cleanup) = v.desired_cleanup(inner_delta) {
+                                result.insert(key.clone(), Patch::Set(inner_cleanup));
+                                has_cleanup = true;
+                            }
                         }
+                    }
+                    Patch::Unset => {
+                        // Null the `"unset"` tombstone in desired alongside the
+                        // reported-side null: otherwise desired keeps a value
+                        // for a key reported no longer has, leaving a pending
+                        // delta that re-fires on every shadow change.
+                        result.insert(key.clone(), Patch::Unset);
+                        has_cleanup = true;
                     }
                 }
             }
@@ -921,8 +948,40 @@ mod flatten_tests {
 
         let reported = state.into_reported();
         assert_eq!(reported.brightness, Some(50));
-        let connector_reported = &reported.connectors.as_ref().unwrap().0["HDMI-A-1"];
+        let connector_reported = match &reported.connectors.as_ref().unwrap().0["HDMI-A-1"] {
+            crate::shadows::Patch::Set(r) => r,
+            crate::shadows::Patch::Unset => panic!("expected Set entry for a present connector"),
+        };
         assert_eq!(connector_reported.enabled, Some(true));
+    }
+
+    #[test]
+    fn test_hash_map_unset_acks_null_in_reported_and_desired() {
+        use crate::shadows::Patch;
+
+        let mut map: HashMap<String, ConnectorConfig> = HashMap::new();
+        map.insert("HDMI-A-1".to_string(), ConnectorConfig { enabled: true });
+
+        let mut patches = HashMap::new();
+        patches.insert("HDMI-A-1".to_string(), Patch::<DeltaConnectorConfig>::Unset);
+        let delta = super::DeltaHashMap(Some(patches));
+        map.apply_delta(&delta);
+        assert!(map.is_empty());
+
+        // Reported ack must null the removed key so AWS deletes it — leaving
+        // it out would keep the stale entry, and a later re-add of an
+        // identical entry would produce no delta.
+        let reported = map.into_partial_reported(&delta);
+        let json = serde_json::to_string(&reported).unwrap();
+        assert_eq!(json, r#"{"HDMI-A-1":null}"#);
+
+        // Desired cleanup must null the "unset" tombstone, or it lingers as a
+        // permanent pending delta.
+        let cleanup = map
+            .desired_cleanup(&delta)
+            .expect("unset must produce desired cleanup");
+        let json = serde_json::to_string(&cleanup).unwrap();
+        assert_eq!(json, r#"{"HDMI-A-1":null}"#);
     }
 
     #[test]
