@@ -323,12 +323,22 @@ pub struct DeltaLinearMap<K: Eq, D, const N: usize>(
 );
 
 /// Reported type for `heapless::LinearMap`-based shadow fields.
+///
+/// Entries are [`Patch`] so the partial-reported acknowledgment of an
+/// `Unset` delta can serialize the removed key as `null` — AWS deletes
+/// nulled keys from the reported document, keeping it in sync with the
+/// device after an entry removal. `Patch::Set` serializes transparently,
+/// so present entries keep the plain `key: value` wire format.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
-pub struct ReportedLinearMap<K: Eq, R, const N: usize>(pub heapless::LinearMap<K, R, N>);
+pub struct ReportedLinearMap<K: Eq, R, const N: usize>(pub heapless::LinearMap<K, Patch<R>, N>);
 
 impl<K: Eq, R, const N: usize> From<heapless::LinearMap<K, R, N>> for ReportedLinearMap<K, R, N> {
     fn from(map: heapless::LinearMap<K, R, N>) -> Self {
-        Self(map)
+        let mut reported = heapless::LinearMap::new();
+        for (key, value) in map.into_iter() {
+            let _ = reported.insert(key, Patch::Set(value));
+        }
+        Self(reported)
     }
 }
 
@@ -354,12 +364,14 @@ impl<K: Eq + Clone, R: crate::shadows::ReportedDiff, const N: usize> crate::shad
     for ReportedLinearMap<K, R, N>
 {
     fn diff(&mut self, old: &Self) -> bool {
-        // Collect keys to remove (unchanged entries)
+        // Collect keys to remove (unchanged entries). `Unset` entries are
+        // always retained — a removal must reach the cloud regardless of
+        // what was previously reported for the key.
         let remove_keys: heapless::Vec<K, N> = self
             .0
             .iter_mut()
-            .filter_map(|(k, v)| match old.0.get(k) {
-                Some(old_v) if !v.diff(old_v) => Some(k.clone()),
+            .filter_map(|(k, v)| match (v, old.0.get(k)) {
+                (Patch::Set(v), Some(Patch::Set(old_v))) => (!v.diff(old_v)).then(|| k.clone()),
                 _ => None,
             })
             .collect();
@@ -457,7 +469,7 @@ where
     fn into_reported(&self) -> Self::Reported {
         let mut reported = heapless::LinearMap::new();
         for (key, value) in self.iter() {
-            let _ = reported.insert(key.clone(), value.into_reported());
+            let _ = reported.insert(key.clone(), Patch::Set(value.into_reported()));
         }
         ReportedLinearMap(reported)
     }
@@ -477,20 +489,28 @@ where
                 match patch {
                     Patch::Set(inner_delta) => {
                         if let Some(v) = self.get(key) {
-                            let _ =
-                                reported.insert(key.clone(), v.into_partial_reported(inner_delta));
+                            let _ = reported.insert(
+                                key.clone(),
+                                Patch::Set(v.into_partial_reported(inner_delta)),
+                            );
                         } else {
                             // New key not yet in state — use default with delta
                             // applied, mirroring the apply_delta pattern.
                             let mut new_val = V::default();
                             new_val.apply_delta(inner_delta);
-                            let _ = reported
-                                .insert(key.clone(), new_val.into_partial_reported(inner_delta));
+                            let _ = reported.insert(
+                                key.clone(),
+                                Patch::Set(new_val.into_partial_reported(inner_delta)),
+                            );
                         }
                     }
                     Patch::Unset => {
-                        // Unset entries cannot be represented in ReportedLinearMap
-                        // The user must handle explicit null reporting separately
+                        // Acknowledge the removal as `null` so AWS deletes the
+                        // key from the reported document. Without this the
+                        // stale entry lingers, and re-adding an identical
+                        // entry later produces no delta (desired == stale
+                        // reported), so the device would never see the re-add.
+                        let _ = reported.insert(key.clone(), Patch::Unset);
                     }
                 }
             }
@@ -504,12 +524,23 @@ where
             let mut has_cleanup = false;
 
             for (key, patch) in patches.iter() {
-                if let Patch::Set(inner_delta) = patch
-                    && let Some(v) = self.get(key)
-                    && let Some(inner_cleanup) = v.desired_cleanup(inner_delta)
-                {
-                    let _ = result.insert(key.clone(), Patch::Set(inner_cleanup));
-                    has_cleanup = true;
+                match patch {
+                    Patch::Set(inner_delta) => {
+                        if let Some(v) = self.get(key)
+                            && let Some(inner_cleanup) = v.desired_cleanup(inner_delta)
+                        {
+                            let _ = result.insert(key.clone(), Patch::Set(inner_cleanup));
+                            has_cleanup = true;
+                        }
+                    }
+                    Patch::Unset => {
+                        // Null the `"unset"` tombstone in desired alongside the
+                        // reported-side null: otherwise desired keeps a value
+                        // for a key reported no longer has, leaving a pending
+                        // delta that re-fires on every shadow change.
+                        let _ = result.insert(key.clone(), Patch::Unset);
+                        has_cleanup = true;
+                    }
                 }
             }
 
@@ -984,6 +1015,57 @@ mod tests {
             map.get(&heapless::String::<4>::try_from("a").unwrap())
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_linear_map_unset_acks_null_in_reported_and_desired() {
+        let mut map: heapless::LinearMap<heapless::String<4>, u32, 4> = heapless::LinearMap::new();
+        let _ = map.insert(heapless::String::try_from("p1").unwrap(), 100);
+
+        let mut patches = heapless::LinearMap::new();
+        let _ = patches.insert(
+            heapless::String::try_from("p1").unwrap(),
+            Patch::<u32>::Unset,
+        );
+        let delta = DeltaLinearMap(Some(patches));
+        map.apply_delta(&delta);
+
+        // Reported ack must null the removed key so AWS deletes it — leaving
+        // it out would keep the stale entry, and a later re-add of an
+        // identical entry would produce no delta.
+        let reported = map.into_partial_reported(&delta);
+        let json = serde_json_core::to_string::<_, 64>(&reported).unwrap();
+        assert_eq!(json.as_str(), r#"{"p1":null}"#);
+
+        // Desired cleanup must null the "unset" tombstone, or it lingers as a
+        // permanent pending delta.
+        let cleanup = map
+            .desired_cleanup(&delta)
+            .expect("unset must produce desired cleanup");
+        let json = serde_json_core::to_string::<_, 64>(&cleanup).unwrap();
+        assert_eq!(json.as_str(), r#"{"p1":null}"#);
+    }
+
+    #[test]
+    fn test_reported_linear_map_diff_retains_unset() {
+        use crate::shadows::ReportedDiff;
+
+        let key = heapless::String::<4>::try_from("p1").unwrap();
+
+        let mut old: ReportedLinearMap<heapless::String<4>, u32, 4> = ReportedLinearMap::default();
+        let _ = old.0.insert(key.clone(), Patch::Set(100));
+
+        // Unset entries survive diff even when the old report had the key
+        let mut new: ReportedLinearMap<heapless::String<4>, u32, 4> = ReportedLinearMap::default();
+        let _ = new.0.insert(key.clone(), Patch::Unset);
+        assert!(new.diff(&old));
+        assert!(matches!(new.0.get(&key), Some(Patch::Unset)));
+
+        // Unchanged Set entries are still pruned
+        let mut unchanged: ReportedLinearMap<heapless::String<4>, u32, 4> =
+            ReportedLinearMap::default();
+        let _ = unchanged.0.insert(key.clone(), Patch::Set(100));
+        assert!(!unchanged.diff(&old));
     }
 
     #[test]

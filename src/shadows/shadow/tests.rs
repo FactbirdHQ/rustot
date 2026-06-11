@@ -2078,6 +2078,38 @@ struct MapShadow {
     ports: heapless::LinearMap<heapless::String<4>, u32, 4>,
 }
 
+/// Regression: acknowledging a map-entry `"unset"` delta must null the key in
+/// BOTH sections of the update — `reported` (so AWS deletes the stale entry;
+/// otherwise re-adding an identical entry later produces no delta and the
+/// device never sees it) and `desired` (so the `"unset"` tombstone doesn't
+/// linger as a permanent pending delta). These are exactly the two values
+/// `apply_delta_and_ack` passes to `update_shadow`.
+#[tokio::test]
+async fn test_map_unset_ack_nulls_reported_and_desired() {
+    use crate::shadows::NullResolver;
+
+    let mut state = MapShadow::default();
+    let _ = state
+        .ports
+        .insert(heapless::String::try_from("p1").unwrap(), 100u32);
+
+    let delta = MapShadow::parse_delta(br#"{"ports":{"p1":"unset"}}"#, "", &NullResolver)
+        .await
+        .unwrap();
+    state.apply_delta(&delta);
+    assert!(state.ports.is_empty(), "entry must be removed locally");
+
+    let reported = state.into_partial_reported(&delta);
+    let json = serde_json_core::to_string::<_, 256>(&reported).unwrap();
+    assert_eq!(json.as_str(), r#"{"ports":{"p1":null}}"#);
+
+    let cleanup = state
+        .desired_cleanup(&delta)
+        .expect("unset tombstone must be cleaned from desired");
+    let json = serde_json_core::to_string::<_, 256>(&cleanup).unwrap();
+    assert_eq!(json.as_str(), r#"{"ports":{"p1":null}}"#);
+}
+
 #[tokio::test]
 async fn test_commit_preserves_map_entries_and_removes_orphans() {
     // Populate a LinearMap with two entries plus an orphaned key from old schema
