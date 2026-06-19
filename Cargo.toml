@@ -181,7 +181,7 @@ shadows_multi = [
 # MQTT client implementations (all optional, feature-gated)
 mqtt_mqttrust = ["dep:mqttrust"]
 mqtt_rumqttc = ["std", "dep:rumqttc", "tokio/time"]
-mqtt_greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes", "dep:futures"]
+mqtt_greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes", "dep:futures", "tokio/time"]
 
 [patch.crates-io]
 serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core", rev = "a435f78" }
