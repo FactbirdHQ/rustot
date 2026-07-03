@@ -696,6 +696,25 @@ struct ReportOnlyStaticTest {
     status: &'static str,
 }
 
+// Regression (compile-guard): `report_only(persist)` must honor an explicit
+// `opaque(max_size = N)` and NOT require the field type to implement `MaxSize`.
+// `PersistedBlob` deliberately does not derive `MaxSize`; before the fix the
+// generated `persist_report_only` arm referenced `<PersistedBlob as MaxSize>`
+// and this failed to compile.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+struct PersistedBlob {
+    value: heapless::String<16>,
+}
+
+#[allow(dead_code)]
+#[shadow_root(name = "persist_opaque")]
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct ReportOnlyPersistOpaqueTest {
+    normal: u32,
+    #[shadow_attr(report_only(persist), opaque(max_size = 64))]
+    blob: PersistedBlob,
+}
+
 #[shadow_root(name = "wifi")]
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct WifiCfg {

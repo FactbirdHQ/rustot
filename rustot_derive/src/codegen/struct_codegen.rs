@@ -468,11 +468,23 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> syn::Result<FieldCo
     // --- persist_report_only arm (only for report_only(persist) leaf fields) ---
     let persist_report_only_arm = if attrs.is_report_only_persist() {
         let field_kv_path = format!("/{}", serde_name);
+        // Honor an explicit `opaque(max_size = N)` bound; only fall back to the
+        // `MaxSize` trait when no explicit size is given (mirrors the ValueBuf
+        // sizing below). This lets `report_only(persist)` hold types that don't
+        // implement `MaxSize` (e.g. `String`-carrying enums) as long as the field
+        // is `opaque(max_size = N)`.
+        let buf_size = if let Some(explicit_size) = attrs.opaque_max_size() {
+            quote! { #explicit_size }
+        } else {
+            quote! {
+                <#field_ty as #krate::__macro_support::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
+            }
+        };
         Some(quote! {
             if let Some(ref val) = self.#field_name {
                 let __saved_len = __key_buf.len();
                 let _ = __key_buf.push_str(#field_kv_path);
-                let mut __buf = [0u8; <#field_ty as #krate::__macro_support::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE];
+                let mut __buf = [0u8; #buf_size];
                 let bytes = #krate::__macro_support::postcard::to_slice(val, &mut __buf)
                     .map_err(|_| #krate::shadows::KvError::Serialization)?;
                 __kv.store(__key_buf.as_str(), bytes).await.map_err(#krate::shadows::KvError::Kv)?;
