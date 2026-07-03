@@ -103,11 +103,20 @@ where
                     S::NAME,
                 )?;
 
-                let sub = self
+                // match + early return, not `.map_err(|e| ..)`: binding `e` in a closure
+                // under the downstream `generic_const_exprs` build trips a normalization
+                // ICE on this impl's const-generic bounds. Same at the publish sites.
+                let sub = match self
                     .mqtt
                     .subscribe(&[(topic.as_str(), QoS::AtLeastOnce)])
                     .await
-                    .map_err(|_| Error::Mqtt)?;
+                {
+                    Ok(sub) => sub,
+                    Err(e) => {
+                        warn!("Shadow delta subscribe failed for {}: {:?}", topic.as_str(), e);
+                        return Err(Error::Mqtt);
+                    }
+                };
 
                 let _ = sub_ref.insert(sub);
 
@@ -329,14 +338,26 @@ where
             S::NAME,
         )?;
 
-        let sub = self
+        // match, not `.map_err(|e| ..)`: closure-binding `e` trips an ICE — see handle_delta.
+        let sub = match self
             .mqtt
             .subscribe(&[
                 (accepted_topic.as_str(), QoS::AtLeastOnce),
                 (rejected_topic.as_str(), QoS::AtLeastOnce),
             ])
             .await
-            .map_err(|_| Error::Mqtt)?;
+        {
+            Ok(sub) => sub,
+            Err(e) => {
+                warn!(
+                    "Shadow subscribe failed for {} / {}: {:?}",
+                    accepted_topic.as_str(),
+                    rejected_topic.as_str(),
+                    e
+                );
+                return Err(Error::Mqtt);
+            }
+        };
 
         //*** PUBLISH REQUEST ***/
         let topic_name = topic.format::<{ max_topic_len(S::PREFIX, S::NAME) }>(
@@ -344,14 +365,18 @@ where
             self.mqtt.client_id(),
             S::NAME,
         )?;
-        self.mqtt
+        if let Err(e) = self
+            .mqtt
             .publish_with_options(
                 topic_name.as_str(),
                 payload,
                 PublishOptions::new().qos(QoS::AtLeastOnce),
             )
             .await
-            .map_err(|_| Error::Mqtt)?;
+        {
+            warn!("Shadow publish failed for {}: {:?}", topic_name.as_str(), e);
+            return Err(Error::Mqtt);
+        }
 
         Ok(sub)
     }
