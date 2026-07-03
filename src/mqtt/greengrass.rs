@@ -27,7 +27,7 @@ use std::task::Poll;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
-use crate::mqtt::{MqttMessage, MqttSubscription, PublishOptions, QoS, ToPayload};
+use crate::mqtt::{MqttMessage, MqttSubscription, PayloadError, PublishOptions, QoS, ToPayload};
 
 type TopicChannel = mpsc::UnboundedSender<greengrass_ipc_rust::MqttMessage>;
 
@@ -175,12 +175,15 @@ impl crate::mqtt::MqttClient for GreengrassClient {
         let client = self.client.clone();
         let topic = topic.to_string();
         async move {
-            // Encode payload to Bytes
-            let mut buf = vec![0u8; payload.max_size()];
-            let len = payload.encode(&mut buf).map_err(|_| {
-                greengrass_ipc_rust::Error::SerializationError(
-                    "Payload encoding failed".to_string(),
-                )
+            // Preserve which PayloadError occurred so a too-small buffer (the common
+            // cause) stays distinguishable from a real serialization failure.
+            let cap = payload.max_size();
+            let mut buf = vec![0u8; cap];
+            let len = payload.encode(&mut buf).map_err(|e| {
+                greengrass_ipc_rust::Error::SerializationError(match e {
+                    PayloadError::BufferSize => format!("payload exceeds {cap}-byte encode buffer"),
+                    PayloadError::EncodingFailed => "payload serialization failed".to_string(),
+                })
             })?;
             buf.truncate(len);
 

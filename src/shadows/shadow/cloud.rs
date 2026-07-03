@@ -194,7 +194,9 @@ where
 
         let payload = DeferredPayload::new(
             |buf: &mut [u8]| {
-                serde_json_core::to_slice(&request, buf).map_err(|_| PayloadError::EncodingFailed)
+                // serde_json_core only returns BufferFull, so failure here means the
+                // request outgrew MAX_PAYLOAD_SIZE — report BufferSize, not EncodingFailed.
+                serde_json_core::to_slice(&request, buf).map_err(|_| PayloadError::BufferSize)
             },
             S::MAX_PAYLOAD_SIZE + PARTIAL_REQUEST_OVERHEAD,
         );
