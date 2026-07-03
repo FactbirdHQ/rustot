@@ -118,6 +118,10 @@ pub(crate) fn generate_simple_enum_code(
     // Track if we have any newtype variants (requires special parse_delta)
     let mut has_newtype_variants = false;
     let mut parse_delta_arms: Vec<TokenStream> = Vec::new();
+    // Externally-tagged enums serialize UNIT variants as a bare JSON string
+    // (e.g. "custom"), but the object FieldScanner used for newtype variants
+    // cannot match a bare string. These arms match the string form first.
+    let mut unit_string_arms: Vec<TokenStream> = Vec::new();
 
     // Collect variant info
     let mut delta_variants = Vec::new();
@@ -193,7 +197,14 @@ pub(crate) fn generate_simple_enum_code(
                         #serde_name => Ok(Self::Delta::#variant_ident),
                     });
                 } else {
-                    // Externally-tagged: check if variant name is a key
+                    // Externally-tagged: check if variant name is a key. serde
+                    // also permits the bare-string form for a unit variant (and
+                    // in fact serializes it that way), so match that first.
+                    unit_string_arms.push(quote! {
+                        if __inner == #serde_name.as_bytes() {
+                            return Ok(Self::Delta::#variant_ident);
+                        }
+                    });
                     parse_delta_arms.push(quote! {
                         if scanner.field_bytes(#serde_name).is_some() {
                             return Ok(Self::Delta::#variant_ident);
@@ -528,7 +539,25 @@ pub(crate) fn generate_simple_enum_code(
         } else {
             // Externally-tagged enum: variant name is the object key
             // JSON: { "Wpa": { "ssid": "...", "password": "..." } }
+            //
+            // serde serializes UNIT variants as a bare JSON string (e.g.
+            // "custom") but newtype variants as an object ({"Wpa": {...}}).
+            // `FieldScanner::scan` below expects an object and errors on a bare
+            // string, so first handle the bare-string unit-variant form.
+            let unit_string_prelude = if unit_string_arms.is_empty() {
+                TokenStream::new()
+            } else {
+                quote! {
+                    let __t = json.trim_ascii();
+                    if let [b'"', __inner @ .., b'"'] = __t {
+                        #(#unit_string_arms)*
+                        return Err(#krate::shadows::ParseError::UnknownVariant);
+                    }
+                }
+            };
             quote! {
+                #unit_string_prelude
+
                 // Scan for variant names as keys
                 let scanner = #krate::shadows::tag_scanner::FieldScanner::scan(json, &[#(#variant_name_strs),*])
                     .map_err(#krate::shadows::ParseError::Scan)?;
