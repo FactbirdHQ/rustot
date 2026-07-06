@@ -715,6 +715,101 @@ struct ReportOnlyPersistOpaqueTest {
     blob: PersistedBlob,
 }
 
+// Round-trip for a nested adjacently-tagged `report_only(persist)` enum, plus the
+// partial-report merge (below).
+#[shadow_node]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct ActiveParams {
+    #[shadow_attr(opaque(max_size = 32))]
+    label: String,
+    counter: u32,
+}
+
+#[shadow_node]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "params", rename_all = "snake_case")]
+enum NodeMode {
+    #[default]
+    Idle,
+    Active(ActiveParams),
+}
+
+#[shadow_root(name = "node_persist")]
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct NodeShadow {
+    threshold: String,
+    #[shadow_attr(report_only(persist))]
+    mode: NodeMode,
+}
+
+#[tokio::test]
+async fn test_report_only_persist_nested_enum_roundtrips_and_merges() {
+    use crate::shadows::{KVPersist, ReportedFields, ShadowNode};
+
+    let kv = FileKVStore::temp().unwrap();
+    let prefix = "node_persist";
+
+    async fn load(kv: &FileKVStore, prefix: &str) -> NodeMode {
+        let mut state = NodeShadow::default();
+        let mut kb = heapless::String::<64>::new();
+        kb.push_str(prefix).unwrap();
+        state.load_from_kv(&mut kb, kv).await.unwrap();
+        state.mode
+    }
+
+    // 1. Full report of the data variant → decomposed persist → load round-trips.
+    let full = ReportedNodeShadow {
+        mode: Some(
+            NodeMode::Active(ActiveParams {
+                label: "alpha".into(),
+                counter: 2,
+            })
+            .into_reported(),
+        ),
+        ..Default::default()
+    };
+    full.persist_report_only(prefix, &kv).await.unwrap();
+
+    match load(&kv, prefix).await {
+        NodeMode::Active(p) => {
+            assert_eq!(p.label, "alpha");
+            assert_eq!(p.counter, 2);
+        }
+        other => panic!("expected Active, got {other:?}"),
+    }
+
+    // 2. Partial report (counter only) must PRESERVE label — the merge happens at
+    //    load because the unreported (`None`) key keeps its prior value.
+    let partial = ReportedNodeShadow {
+        mode: Some(ReportedNodeMode::Active(ReportedActiveParams {
+            label: None,
+            counter: Some(3),
+        })),
+        ..Default::default()
+    };
+    partial.persist_report_only(prefix, &kv).await.unwrap();
+
+    match load(&kv, prefix).await {
+        NodeMode::Active(p) => {
+            assert_eq!(
+                p.label, "alpha",
+                "partial report must not clobber unreported field"
+            );
+            assert_eq!(p.counter, 3);
+        }
+        other => panic!("expected Active, got {other:?}"),
+    }
+
+    // 3. Variant switch to a unit variant — tag-driven load ignores the now-stale
+    //    `active/*` keys still in KV.
+    let idle = ReportedNodeShadow {
+        mode: Some(ReportedNodeMode::Idle),
+        ..Default::default()
+    };
+    idle.persist_report_only(prefix, &kv).await.unwrap();
+    assert_eq!(load(&kv, prefix).await, NodeMode::Idle);
+}
+
 #[shadow_root(name = "wifi")]
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct WifiCfg {

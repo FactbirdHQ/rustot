@@ -105,6 +105,8 @@ struct FieldCodegen {
 
     /// persist_report_only() arm for report_only(persist) fields (None otherwise)
     persist_report_only_arm: Option<TokenStream>,
+    /// persist_reported_kv() arm — every field in the KV layout (None for transient report_only)
+    persist_reported_kv_arm: Option<TokenStream>,
 
     /// Whether this field is flattened
     is_flatten: bool,
@@ -123,6 +125,49 @@ struct FieldCodegen {
 /// Leaf fields are serialized directly as their type. Nested fields delegate
 /// to their inner ShadowNode implementation for Delta/Reported types and
 /// KV operations.
+/// A skip-`None` KV-persist arm for one `Reported` field. Must mirror the State
+/// `persist_to_kv` key layout exactly, or `load_from_kv` can't read it back.
+/// Expects `self` = the `Reported` struct, with `__key_buf`/`__kv` in scope.
+fn reported_persist_arm(
+    krate: &TokenStream,
+    serde_name: &str,
+    field_name: &syn::Ident,
+    field_ty: &syn::Type,
+    is_leaf: bool,
+    attrs: &FieldAttrs,
+) -> TokenStream {
+    let field_kv_path = format!("/{}", serde_name);
+    if is_leaf {
+        let buf_size = if let Some(explicit_size) = attrs.opaque_max_size() {
+            quote! { #explicit_size }
+        } else {
+            quote! {
+                <#field_ty as #krate::__macro_support::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
+            }
+        };
+        quote! {
+            if let Some(ref val) = self.#field_name {
+                let __saved_len = __key_buf.len();
+                let _ = __key_buf.push_str(#field_kv_path);
+                let mut __buf = [0u8; #buf_size];
+                let bytes = #krate::__macro_support::postcard::to_slice(val, &mut __buf)
+                    .map_err(|_| #krate::shadows::KvError::Serialization)?;
+                __kv.store(__key_buf.as_str(), bytes).await.map_err(#krate::shadows::KvError::Kv)?;
+                __key_buf.truncate(__saved_len);
+            }
+        }
+    } else {
+        quote! {
+            if let Some(ref val) = self.#field_name {
+                let __saved_len = __key_buf.len();
+                let _ = __key_buf.push_str(#field_kv_path);
+                #krate::shadows::ReportedFields::persist_reported_kv(val, __key_buf, __kv).await?;
+                __key_buf.truncate(__saved_len);
+            }
+        }
+    }
+}
+
 fn process_field(field: &syn::Field, krate: &TokenStream) -> syn::Result<FieldCodegen> {
     let field_name = field.ident.as_ref().unwrap();
     let field_ty = &field.ty;
@@ -465,34 +510,23 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> syn::Result<FieldCo
         })
     };
 
-    // --- persist_report_only arm (only for report_only(persist) leaf fields) ---
+    // Skip-`None` persist over the partial `Reported`: a `None` field keeps its
+    // prior KV value, so a partial report merges with prior state at load. Replaces
+    // the old whole-value blob, which couldn't round-trip a nested `#[shadow_node]`
+    // against the decomposed `load_from_kv`.
+    let reported_persist_arm =
+        reported_persist_arm(krate, &serde_name, field_name, field_ty, is_leaf, &attrs);
+    // Entry point: only `report_only(persist)` fields.
     let persist_report_only_arm = if attrs.is_report_only_persist() {
-        let field_kv_path = format!("/{}", serde_name);
-        // Honor an explicit `opaque(max_size = N)` bound; only fall back to the
-        // `MaxSize` trait when no explicit size is given (mirrors the ValueBuf
-        // sizing below). This lets `report_only(persist)` hold types that don't
-        // implement `MaxSize` (e.g. `String`-carrying enums) as long as the field
-        // is `opaque(max_size = N)`.
-        let buf_size = if let Some(explicit_size) = attrs.opaque_max_size() {
-            quote! { #explicit_size }
-        } else {
-            quote! {
-                <#field_ty as #krate::__macro_support::postcard::experimental::max_size::MaxSize>::POSTCARD_MAX_SIZE
-            }
-        };
-        Some(quote! {
-            if let Some(ref val) = self.#field_name {
-                let __saved_len = __key_buf.len();
-                let _ = __key_buf.push_str(#field_kv_path);
-                let mut __buf = [0u8; #buf_size];
-                let bytes = #krate::__macro_support::postcard::to_slice(val, &mut __buf)
-                    .map_err(|_| #krate::shadows::KvError::Serialization)?;
-                __kv.store(__key_buf.as_str(), bytes).await.map_err(#krate::shadows::KvError::Kv)?;
-                __key_buf.truncate(__saved_len);
-            }
-        })
+        Some(reported_persist_arm.clone())
     } else {
         None
+    };
+    // Recursive walker: every field in the KV layout (all but transient report_only).
+    let persist_reported_kv_arm = if attrs.is_report_only() && !attrs.is_report_only_persist() {
+        None
+    } else {
+        Some(reported_persist_arm)
     };
 
     Ok(FieldCodegen {
@@ -515,6 +549,7 @@ fn process_field(field: &syn::Field, krate: &TokenStream) -> syn::Result<FieldCo
         reported_builder_assign,
         reported_diff_arm,
         persist_report_only_arm,
+        persist_reported_kv_arm,
         is_flatten,
         parse_delta_match_arm,
     })
@@ -622,6 +657,10 @@ pub(crate) fn generate_struct_code(
     let persist_report_only_arms: Vec<_> = field_codegens
         .iter()
         .filter_map(|f| f.persist_report_only_arm.clone())
+        .collect();
+    let persist_reported_kv_arms: Vec<_> = field_codegens
+        .iter()
+        .filter_map(|f| f.persist_reported_kv_arm.clone())
         .collect();
 
     // Generate Delta type - always use FieldScanner, no Deserialize needed
@@ -1109,23 +1148,39 @@ pub(crate) fn generate_struct_code(
         #kv_persist_impl
     };
 
-    // Generate persist_report_only override if there are report_only(persist) fields
     #[cfg(not(feature = "kv_persist"))]
     let persist_report_only_method = quote! {};
     #[cfg(feature = "kv_persist")]
-    let persist_report_only_method = if persist_report_only_arms.is_empty() {
-        quote! {}
-    } else {
+    let persist_report_only_method = {
+        let persist_report_only_entry = if persist_report_only_arms.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                fn persist_report_only<__K: #krate::shadows::KVStore>(
+                    &self,
+                    __prefix: &str,
+                    __kv: &__K,
+                ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<__K::Error>>> {
+                    async move {
+                        let mut __key_buf_owned = #krate::__macro_support::heapless::String::<64>::new();
+                        let _ = __key_buf_owned.push_str(__prefix);
+                        let __key_buf = &mut __key_buf_owned;
+                        #(#persist_report_only_arms)*
+                        Ok(())
+                    }
+                }
+            }
+        };
         quote! {
-            fn persist_report_only<__K: #krate::shadows::KVStore>(
+            #persist_report_only_entry
+
+            fn persist_reported_kv<__K: #krate::shadows::KVStore, const KEY_LEN: usize>(
                 &self,
-                __prefix: &str,
+                __key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
                 __kv: &__K,
             ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<__K::Error>>> {
                 async move {
-                    let mut __key_buf = #krate::__macro_support::heapless::String::<64>::new();
-                    let _ = __key_buf.push_str(__prefix);
-                    #(#persist_report_only_arms)*
+                    #(#persist_reported_kv_arms)*
                     Ok(())
                 }
             }

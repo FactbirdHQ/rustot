@@ -280,6 +280,24 @@ pub trait ReportedFields: Serialize {
     ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>> {
         core::future::ready(Ok(()))
     }
+
+    /// Persist this `Reported` subtree to KV, decomposed and skip-`None`, matching
+    /// the State `KVPersist::persist_to_kv` key layout. A `None` field keeps its
+    /// prior KV value, so a partial report merges with prior state at load.
+    ///
+    /// The default errors with [`KvError::Unsupported`] instead of silently
+    /// dropping data. Types where a decomposed persist would force `T: MaxSize`
+    /// onto their `ShadowNode` impl (`heapless::Vec`/`LinearMap`/arrays), plus maps
+    /// and non-adjacently-tagged enums, keep it — mark such a field `opaque` to
+    /// store it as a whole-value blob instead.
+    #[cfg(feature = "shadows_kv_persist")]
+    fn persist_reported_kv<K: KVStore, const KEY_LEN: usize>(
+        &self,
+        _key_buf: &mut heapless::String<KEY_LEN>,
+        _kv: &K,
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>> {
+        core::future::ready(Err(KvError::Unsupported))
+    }
 }
 
 /// Trait for diffing Reported types in-place.

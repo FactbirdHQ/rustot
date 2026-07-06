@@ -59,6 +59,17 @@ impl ReportedFields for String {
     fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
         Ok(())
     }
+
+    // Covers a bare (non-`opaque`) `String` nested in a `report_only(persist)`
+    // value, which is recursed into rather than written inline.
+    #[cfg(feature = "shadows_kv_persist")]
+    fn persist_reported_kv<K: KVStore, const KEY_LEN: usize>(
+        &self,
+        key_buf: &mut heapless::String<KEY_LEN>,
+        kv: &K,
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>> {
+        <Self as KVPersist>::persist_to_kv::<K, KEY_LEN>(self, key_buf, kv)
+    }
 }
 
 impl crate::shadows::ReportedDiff for String {
@@ -191,6 +202,16 @@ where
 
     fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
         Ok(())
+    }
+
+    // `Vec` persists as an atomic blob (`Reported == Self`); reuse the State write.
+    #[cfg(feature = "shadows_kv_persist")]
+    fn persist_reported_kv<K: KVStore, const KEY_LEN: usize>(
+        &self,
+        key_buf: &mut heapless::String<KEY_LEN>,
+        kv: &K,
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>> {
+        <Self as KVPersist>::persist_to_kv::<K, KEY_LEN>(self, key_buf, kv)
     }
 }
 

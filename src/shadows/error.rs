@@ -47,6 +47,12 @@ pub enum KvError<E: Debug> {
     /// Invalid stored variant data
     InvalidVariant,
 
+    /// A non-`opaque` type nested in a `report_only(persist)` value has no
+    /// decomposed KV persist — `heapless::Vec`/`LinearMap`/arrays (would force
+    /// `T: MaxSize` onto `ShadowNode`), maps, and non-adjacently-tagged enums.
+    /// Mark the field `opaque` to store it as a whole-value blob instead.
+    Unsupported,
+
     /// Migration error
     Migration(super::migration::MigrationError),
 }
@@ -67,6 +73,7 @@ impl<E: Debug> core::fmt::Display for KvError<E> {
             KvError::VariantMismatch => write!(f, "variant mismatch"),
             KvError::UnknownVariant => write!(f, "unknown variant"),
             KvError::InvalidVariant => write!(f, "invalid variant"),
+            KvError::Unsupported => write!(f, "unsupported report_only(persist) nested type"),
             KvError::Migration(e) => write!(f, "migration error: {:?}", e),
         }
     }

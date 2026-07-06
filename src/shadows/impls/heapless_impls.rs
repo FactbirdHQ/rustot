@@ -22,7 +22,10 @@ use crate::shadows::data_types::Patch;
 // heapless::String<N>
 // =============================================================================
 
-impl<const N: usize> ShadowNode for heapless::String<N> {
+impl<const N: usize> ShadowNode for heapless::String<N>
+where
+    [(); N + 5]:,
+{
     type Delta = heapless::String<N>;
     type Reported = heapless::String<N>;
 
@@ -55,11 +58,26 @@ impl<const N: usize> ShadowNode for heapless::String<N> {
     }
 }
 
-impl<const N: usize> ReportedFields for heapless::String<N> {
+#[cfg_attr(feature = "shadows_kv_persist", allow(incomplete_features))]
+impl<const N: usize> ReportedFields for heapless::String<N>
+where
+    [(); N + 5]:,
+{
     const FIELD_NAMES: &'static [&'static str] = &[];
 
     fn serialize_into_map<S: SerializeMap>(&self, _map: &mut S) -> Result<(), S::Error> {
         Ok(())
+    }
+
+    // `Reported == Self`; reuse the exact-sized State write. The `[(); N + 5]:`
+    // bound is the same one the `KVPersist` impl already carries.
+    #[cfg(feature = "shadows_kv_persist")]
+    fn persist_reported_kv<K: KVStore, const KEY_LEN: usize>(
+        &self,
+        key_buf: &mut heapless::String<KEY_LEN>,
+        kv: &K,
+    ) -> impl core::future::Future<Output = Result<(), KvError<K::Error>>> {
+        <Self as KVPersist>::persist_to_kv::<K, KEY_LEN>(self, key_buf, kv)
     }
 }
 
