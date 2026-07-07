@@ -43,7 +43,7 @@ sequential-storage = { version = "7.0", features = [
 serde-json-core = { version = "0.6" }
 rustot-derive = { path = "rustot_derive", version = "0.2.1" }
 embedded-storage-async = { version = "0.4", optional = true }
-mqttrust = { git = "https://github.com/FactbirdHQ/mqttrust", rev = "04e4a0c", optional = true }
+mqttrust = { git = "https://github.com/FactbirdHQ/mqttrust", rev = "cdffe16", optional = true }
 
 embassy-time = { version = "0.5.0" }
 embassy-sync = "0.8"
