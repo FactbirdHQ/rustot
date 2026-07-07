@@ -87,6 +87,18 @@ macro_rules! impl_opaque {
             ) -> Result<(), S::Error> {
                 Ok(())
             }
+
+            // Needed because a non-`opaque` scalar (e.g. `u32`) nested in a
+            // `report_only(persist)` value is recursed into, not written inline.
+            // `Reported == Self`, so it's the same write as the State path.
+            #[cfg(feature = "shadows_kv_persist")]
+            fn persist_reported_kv<K: $crate::shadows::KVStore, const KEY_LEN: usize>(
+                &self,
+                key_buf: &mut heapless::String<KEY_LEN>,
+                kv: &K,
+            ) -> impl ::core::future::Future<Output = Result<(), $crate::shadows::KvError<K::Error>>> {
+                <Self as $crate::shadows::KVPersist>::persist_to_kv::<K, KEY_LEN>(self, key_buf, kv)
+            }
         }
 
         impl $crate::shadows::ReportedDiff for $ty {

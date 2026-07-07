@@ -1131,6 +1131,64 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // =========================================================================
     // 6. Generate ReportedFields Implementation
     // =========================================================================
+    // Must mirror the State enum's `persist_to_kv` layout (`/_variant` + active
+    // variant) so a nested adjacently-tagged `report_only(persist)` enum round-trips
+    // against `load_from_kv` — otherwise a whole-enum blob, which can't.
+    #[cfg(not(feature = "kv_persist"))]
+    let persist_reported_kv_method = quote! {};
+    #[cfg(feature = "kv_persist")]
+    let persist_reported_kv_method = {
+        let mut variant_name_arms = Vec::new();
+        let mut inner_persist_arms = Vec::new();
+        for (variant, serde_name) in variants.iter().zip(variant_names.iter()) {
+            let variant_ident = &variant.ident;
+            match &variant.fields {
+                Fields::Unit => {
+                    variant_name_arms
+                        .push(quote! { #reported_name::#variant_ident => #serde_name, });
+                    inner_persist_arms.push(quote! { #reported_name::#variant_ident => {} });
+                }
+                Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                    let variant_path = format!("/{}", serde_name);
+                    variant_name_arms
+                        .push(quote! { #reported_name::#variant_ident(_) => #serde_name, });
+                    inner_persist_arms.push(quote! {
+                        #reported_name::#variant_ident(ref __inner) => {
+                            let __saved_len = __key_buf.len();
+                            let _ = __key_buf.push_str(#variant_path);
+                            #krate::shadows::ReportedFields::persist_reported_kv(__inner, __key_buf, __kv).await?;
+                            __key_buf.truncate(__saved_len);
+                        }
+                    });
+                }
+                _ => {}
+            }
+        }
+        quote! {
+            fn persist_reported_kv<__K: #krate::shadows::KVStore, const KEY_LEN: usize>(
+                &self,
+                __key_buf: &mut #krate::__macro_support::heapless::String<KEY_LEN>,
+                __kv: &__K,
+            ) -> impl ::core::future::Future<Output = Result<(), #krate::shadows::KvError<__K::Error>>> {
+                async move {
+                    let __saved_len = __key_buf.len();
+                    let _ = __key_buf.push_str(#VARIANT_KEY_PATH);
+                    let __variant_name: &str = match self {
+                        #(#variant_name_arms)*
+                    };
+                    __kv.store(__key_buf.as_str(), __variant_name.as_bytes())
+                        .await
+                        .map_err(#krate::shadows::KvError::Kv)?;
+                    __key_buf.truncate(__saved_len);
+                    match self {
+                        #(#inner_persist_arms)*
+                    }
+                    Ok(())
+                }
+            }
+        }
+    };
+
     let reported_union_fields_impl = quote! {
         impl #krate::shadows::ReportedFields for #reported_name {
             const FIELD_NAMES: &'static [&'static str] = &[#tag_key];
@@ -1142,6 +1200,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 // Adjacently-tagged enums serialize via their custom Serialize impl
                 Ok(())
             }
+
+            #persist_reported_kv_method
         }
 
         impl #krate::shadows::ReportedDiff for #reported_name {
