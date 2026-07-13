@@ -238,7 +238,7 @@ impl FleetProvisioner {
             .await
             .map_err(|_| Error::Mqtt)?;
 
-        let publish_topic = Topic::RegisterThing(template_name, payload_format).format::<69>()?;
+        let publish_topic = Topic::RegisterThing(template_name, payload_format).format::<150>()?;
         mqtt.publish_with_options(
             publish_topic.as_str(),
             payload,
