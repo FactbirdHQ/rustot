@@ -22,6 +22,17 @@ use crate::shadows::{
 
 use super::Shadow;
 
+/// Upper bound on how long `apply_delta_and_ack` waits for the cloud to accept
+/// the reported ack after a delta has already been applied to local storage.
+///
+/// The delta is persisted before the ack is published, so a link drop right
+/// after publish (the `UpdateAccepted`/`Rejected` response is lost and AWS does
+/// not re-send it) would otherwise park the ack wait forever and strand the
+/// applied delta — the caller never learns the state changed. On timeout we
+/// keep the applied state and let the reported side reconcile on a later
+/// sync/reconnect.
+const DELTA_ACK_TIMEOUT: embassy_time::Duration = embassy_time::Duration::from_secs(30);
+
 /// Drop-guard that clears `Shadow::subscription` unless explicitly disarmed.
 ///
 /// `handle_delta`'s lazy-subscribe path installs the delta-topic subscription
@@ -117,7 +128,27 @@ where
             .map_err(|_| Error::DaoWrite)?;
         let reported = state.into_partial_reported(delta);
         let cleanup = state.desired_cleanup(delta);
-        self.update_shadow(cleanup, Some(reported)).await?;
+        // The delta is already committed to local storage above. Bound the cloud
+        // ack so a link drop right after the update is published can't park the
+        // wait indefinitely and strand the applied delta (see DELTA_ACK_TIMEOUT).
+        // On timeout keep the applied state; the reported side reconciles on the
+        // next sync (the delta stays pending cloud-side until reported).
+        match embassy_time::with_timeout(
+            DELTA_ACK_TIMEOUT,
+            self.update_shadow(cleanup, Some(reported)),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_timeout) => {
+                warn!(
+                    "[{:?}] delta ack timed out after {}s; state applied locally, reported ack deferred",
+                    S::NAME.unwrap_or(CLASSIC_SHADOW),
+                    DELTA_ACK_TIMEOUT.as_secs(),
+                );
+            }
+        }
         Ok(state)
     }
 
