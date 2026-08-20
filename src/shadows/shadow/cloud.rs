@@ -33,6 +33,19 @@ use super::Shadow;
 /// sync/reconnect.
 const DELTA_ACK_TIMEOUT: embassy_time::Duration = embassy_time::Duration::from_secs(30);
 
+/// Upper bound on how long a request/response round-trip (`Get`, `Update`)
+/// waits for its `Accepted`/`Rejected` reply.
+///
+/// These replies are one-shot: AWS publishes them once and never re-sends. If
+/// the link drops between our publish and the reply, the reply is gone, and a
+/// session resumed with `session_present = 1` keeps the subscription alive so
+/// the wait is never woken by a clean-session `None` either. Unbounded, that
+/// parks the caller forever — and because `handle_delta`'s resubscribe path
+/// recovers missed deltas via a GET, a parked GET silently kills every
+/// subsequent delta for that shadow. Bounding it turns a permanent stall into
+/// a retry.
+const REQUEST_TIMEOUT: embassy_time::Duration = embassy_time::Duration::from_secs(30);
+
 /// Drop-guard that clears `Shadow::subscription` unless explicitly disarmed.
 ///
 /// `handle_delta`'s lazy-subscribe path installs the delta-topic subscription
@@ -140,14 +153,19 @@ where
         .await
         {
             Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(_timeout) => {
+            // `update_shadow` bounds its own response wait, so a lost
+            // UpdateAccepted now surfaces as `Error::Timeout` instead of the
+            // outer elapsed arm. Both mean the same thing here — the delta is
+            // already committed to storage, so defer the reported ack rather
+            // than fail the delta.
+            Ok(Err(Error::Timeout)) | Err(_) => {
                 warn!(
                     "[{:?}] delta ack timed out after {}s; state applied locally, reported ack deferred",
                     S::NAME.unwrap_or(CLASSIC_SHADOW),
                     DELTA_ACK_TIMEOUT.as_secs(),
                 );
             }
+            Ok(Err(e)) => return Err(e),
         }
         Ok(state)
     }
@@ -288,7 +306,19 @@ where
         debug!("Wait for Accepted or Rejected");
 
         let result = loop {
-            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+            let message =
+                match embassy_time::with_timeout(REQUEST_TIMEOUT, sub.next_message()).await {
+                    Ok(Some(message)) => message,
+                    Ok(None) => return Err(Error::InvalidPayload),
+                    Err(_elapsed) => {
+                        warn!(
+                            "[{:?}] update response timed out after {}s",
+                            S::NAME.unwrap_or(CLASSIC_SHADOW),
+                            REQUEST_TIMEOUT.as_secs(),
+                        );
+                        return Err(Error::Timeout);
+                    }
+                };
 
             match Topic::from_str(S::PREFIX, message.topic_name()) {
                 Some((Topic::UpdateAccepted, _, _)) => {
@@ -341,7 +371,19 @@ where
         // Returns Ok(Some(state)) on success, Ok(None) on 404 (needs create),
         // or Err on other failures.
         let result = {
-            let get_message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+            let get_message =
+                match embassy_time::with_timeout(REQUEST_TIMEOUT, sub.next_message()).await {
+                    Ok(Some(get_message)) => get_message,
+                    Ok(None) => return Err(Error::InvalidPayload),
+                    Err(_elapsed) => {
+                        warn!(
+                            "[{:?}] get response timed out after {}s",
+                            S::NAME.unwrap_or(CLASSIC_SHADOW),
+                            REQUEST_TIMEOUT.as_secs(),
+                        );
+                        return Err(Error::Timeout);
+                    }
+                };
 
             match Topic::from_str(S::PREFIX, get_message.topic_name()) {
                 Some((Topic::GetAccepted, _, _)) => {
@@ -673,7 +715,19 @@ where
         let mut sub = self.publish_and_subscribe(Topic::Delete, b"").await?;
 
         let result = {
-            let message = sub.next_message().await.ok_or(Error::InvalidPayload)?;
+            let message =
+                match embassy_time::with_timeout(REQUEST_TIMEOUT, sub.next_message()).await {
+                    Ok(Some(message)) => message,
+                    Ok(None) => return Err(Error::InvalidPayload),
+                    Err(_elapsed) => {
+                        warn!(
+                            "[{:?}] delete response timed out after {}s",
+                            S::NAME.unwrap_or(CLASSIC_SHADOW),
+                            REQUEST_TIMEOUT.as_secs(),
+                        );
+                        return Err(Error::Timeout);
+                    }
+                };
 
             match Topic::from_str(S::PREFIX, message.topic_name()) {
                 Some((Topic::DeleteAccepted, _, _)) => Ok(()),
