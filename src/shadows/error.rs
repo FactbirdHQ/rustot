@@ -13,6 +13,11 @@ pub enum Error {
     InvalidPayload,
     WrongShadowName,
     Mqtt,
+    /// A request/response round-trip to the cloud (`Get`, `Update`) exceeded
+    /// its bound without an `Accepted`/`Rejected` reply — almost always a link
+    /// drop between publish and reply, since AWS never re-sends either.
+    /// Retryable: republish the request.
+    Timeout,
     ShadowError(ShadowError),
 }
 
@@ -157,6 +162,7 @@ impl core::fmt::Display for Error {
             Error::InvalidPayload => write!(f, "invalid payload"),
             Error::WrongShadowName => write!(f, "wrong shadow name"),
             Error::Mqtt => write!(f, "MQTT error"),
+            Error::Timeout => write!(f, "cloud request timed out"),
             Error::ShadowError(e) => write!(f, "shadow error: {:?}", e),
         }
     }
