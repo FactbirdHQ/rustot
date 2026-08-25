@@ -19,8 +19,11 @@ pub enum TransferError {
     UpdateRejected(ErrorCode),
     WriteFailed,
     Mqtt,
+    /// Fatal range-request failure, carrying the HTTP status if any (e.g.
+    /// `Some(403)`). Transient faults retry instead; exhausting them yields
+    /// [`MomentumAbort`](Self::MomentumAbort).
     #[cfg(feature = "transfer_http")]
-    Http,
+    Http(Option<u16>),
     Encoding,
     Pal(PalError),
     Timeout,

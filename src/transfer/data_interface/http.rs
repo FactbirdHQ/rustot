@@ -5,6 +5,18 @@ use crate::transfer::{
     error::TransferError,
 };
 
+/// Classification of a failed [`HttpClient::get_range`] call, used by the
+/// transfer engine to decide whether to retry the same block or fail fast.
+pub struct HttpFault {
+    /// `true` if retrying the same range request could plausibly succeed
+    /// (transport reset, timeout, 5xx, 429); `false` for a definitively fatal
+    /// failure (4xx other than 429, malformed range).
+    pub transient: bool,
+    /// The HTTP status code, if the failure carried one. Preserved so a fatal
+    /// error surfaces its cause even when logging is compiled out.
+    pub status: Option<u16>,
+}
+
 /// Minimal HTTP client trait for OTA Range-based downloads.
 ///
 /// No_std compatible — the caller provides the buffer. Implementations
@@ -23,6 +35,20 @@ pub trait HttpClient {
         end: usize,
         buf: &mut [u8],
     ) -> Result<usize, Self::Error>;
+
+    /// Classify a `get_range` error as transient (worth retrying the same
+    /// block) or fatal (fail fast), and extract its HTTP status if any.
+    ///
+    /// Defaults to transient, so a client that doesn't override this still gets
+    /// bounded per-block retry (capped by `max_request_momentum`) rather than
+    /// aborting on the first blip. Override to fail fast on genuinely fatal
+    /// responses (e.g. 4xx other than 429) and to surface the status code.
+    fn classify(&self, _err: &Self::Error) -> HttpFault {
+        HttpFault {
+            transient: true,
+            status: None,
+        }
+    }
 }
 
 impl<C: HttpClient> HttpClient for &C {
@@ -36,6 +62,10 @@ impl<C: HttpClient> HttpClient for &C {
         buf: &mut [u8],
     ) -> Result<usize, Self::Error> {
         C::get_range(self, url, start, end, buf).await
+    }
+
+    fn classify(&self, err: &Self::Error) -> HttpFault {
+        C::classify(self, err)
     }
 }
 
@@ -110,6 +140,19 @@ mod reqwest_impl {
             buf[..len].copy_from_slice(&bytes);
             Ok(len)
         }
+
+        fn classify(&self, err: &reqwest::Error) -> HttpFault {
+            let status = err.status().map(|s| s.as_u16());
+            let transient = match status {
+                // A status was returned: only 5xx and 429 are worth retrying;
+                // other 4xx (403 expired URL, 404, malformed range) are fatal.
+                Some(code) => code >= 500 || code == 429,
+                // No status = transport-level fault (connection reset, timeout,
+                // pool hiccup, body read error) — retry the block.
+                None => true,
+            };
+            HttpFault { transient, status }
+        }
     }
 }
 
@@ -154,6 +197,11 @@ mod transfer {
         bitmap: Bitmap,
         block_offset: u32,
         buf: Vec<u8>,
+        // Per-block "momentum" retry (mirrors the MQTT interface): a transient
+        // failure retries up to `max_momentum` times, `request_wait` apart.
+        request_wait: embassy_time::Duration,
+        max_momentum: u8,
+        momentum: u8,
     }
 
     impl<C: HttpClient> BlockTransfer for HttpTransfer<C> {
@@ -173,18 +221,49 @@ mod transfer {
             let start = block_id * self.block_size;
             let end = (start + self.block_size).min(self.file_size);
 
+            // Copied out before the split borrow below so the retry branch can
+            // read them without holding a borrow of `self`.
+            let request_wait = self.request_wait;
+            let max_momentum = self.max_momentum;
+
             // Destructure for split borrows across the async client call
             let HttpTransfer {
-                client, url, buf, ..
+                client,
+                url,
+                buf,
+                momentum,
+                ..
             } = self;
 
-            let len = client
-                .get_range(url.as_str(), start, end, buf)
-                .await
-                .map_err(|e| {
-                    error!("HTTP range request failed: {:?}", e);
-                    TransferError::Http
-                })?;
+            let len = match client.get_range(url.as_str(), start, end, buf).await {
+                Ok(len) => {
+                    // Block fetched — reset the consecutive-failure counter.
+                    *momentum = 0;
+                    len
+                }
+                Err(e) => {
+                    let fault = client.classify(&e);
+                    error!(
+                        "HTTP range request failed (block {}, momentum {}/{}): {:?} (status={:?}, transient={})",
+                        block_id, *momentum, max_momentum, e, fault.status, fault.transient
+                    );
+
+                    // Fatal (e.g. 403 expired URL, 404): fail fast, carrying the
+                    // status so the cause survives even with logging compiled out.
+                    if !fault.transient {
+                        return Err(TransferError::Http(fault.status));
+                    }
+
+                    // Transient: retry the same block (bitmap is untouched, so the
+                    // orchestrator re-requests it) until the momentum budget is spent.
+                    *momentum += 1;
+                    if *momentum > max_momentum {
+                        return Err(TransferError::MomentumAbort);
+                    }
+                    embassy_time::Timer::after(request_wait).await;
+                    return Err(TransferError::Momentum);
+                }
+            };
 
             Ok(Some(HttpRawBlock {
                 payload: &self.buf[..len],
@@ -235,7 +314,66 @@ mod transfer {
                 bitmap: progress.bitmap.clone(),
                 block_offset: progress.block_offset,
                 buf: vec![0u8; config.block_size],
+                request_wait: config.request_wait,
+                max_momentum: config.max_request_momentum,
+                momentum: 0,
             })
+        }
+    }
+
+    #[cfg(test)]
+    mod retry_tests {
+        use super::*;
+        use core::cell::Cell;
+
+        /// Fails its first `n` `get_range` calls with a transient fault, then succeeds.
+        struct FlakyClient(Cell<u32>);
+
+        impl HttpClient for FlakyClient {
+            type Error = ();
+
+            async fn get_range(
+                &self,
+                _url: &str,
+                start: usize,
+                end: usize,
+                buf: &mut [u8],
+            ) -> Result<usize, ()> {
+                if self.0.get() > 0 {
+                    self.0.set(self.0.get() - 1);
+                    return Err(());
+                }
+                buf[..end - start].fill(0);
+                Ok(end - start)
+            }
+            // classify() left to the trait default (transient), which is what
+            // this test exercises.
+        }
+
+        // The point of the fix: transient faults on a block are retried (each a
+        // retryable `Momentum`) and the transfer recovers on the succeeding
+        // attempt instead of aborting, with the counter reset once the block lands.
+        #[tokio::test]
+        async fn transient_fault_is_retried_and_recovers() {
+            let block_size = 16;
+            let mut t = HttpTransfer {
+                client: FlakyClient(Cell::new(2)),
+                url: alloc::string::String::from("http://example/x"),
+                file_id: 0,
+                block_size,
+                file_size: block_size, // one block is enough to drive next_block
+                bitmap: Bitmap::new(block_size, block_size, 0),
+                block_offset: 0,
+                buf: vec![0u8; block_size],
+                request_wait: embassy_time::Duration::from_ticks(0), // no real backoff in tests
+                max_momentum: 3,
+                momentum: 0,
+            };
+
+            assert!(matches!(t.next_block().await, Err(TransferError::Momentum)));
+            assert!(matches!(t.next_block().await, Err(TransferError::Momentum)));
+            assert!(matches!(t.next_block().await, Ok(Some(_))));
+            assert_eq!(t.momentum, 0);
         }
     }
 }
