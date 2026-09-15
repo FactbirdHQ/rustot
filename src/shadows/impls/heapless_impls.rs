@@ -6,7 +6,9 @@
 //!
 //! All implementations are strictly no_std / no_alloc.
 
-use crate::shadows::{ParseError, ReportedFields, ShadowNode, VariantResolver, fnv1a_hash};
+use crate::shadows::{
+    ParseError, ReportedFields, ShadowNode, VariantResolver, fnv1a_hash, fnv1a_u64,
+};
 use serde::ser::SerializeMap;
 
 #[cfg(feature = "shadows_kv_persist")]
@@ -410,7 +412,9 @@ where
     type Delta = DeltaLinearMap<K, V::Delta, N>;
     type Reported = ReportedLinearMap<K, V::Reported, N>;
 
-    const SCHEMA_HASH: u64 = fnv1a_hash(b"heapless::LinearMap");
+    // Values persist decomposed under `/{key}/...`, so a change inside `V`
+    // changes the stored layout and must change this hash with it.
+    const SCHEMA_HASH: u64 = fnv1a_u64(fnv1a_hash(b"heapless::LinearMap"), V::SCHEMA_HASH);
 
     async fn parse_delta<R: VariantResolver>(
         json: &[u8],
@@ -1000,6 +1004,17 @@ impl_array_kv_persist!(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the map hash used to be a constant, so a change to the
+    /// value type never changed the root shadow's hash and `load()` never took
+    /// the migration path for decomposed map values.
+    #[test]
+    fn linear_map_schema_hash_covers_value_type() {
+        assert_ne!(
+            <heapless::LinearMap<heapless::String<4>, u32, 4> as ShadowNode>::SCHEMA_HASH,
+            <heapless::LinearMap<heapless::String<4>, bool, 4> as ShadowNode>::SCHEMA_HASH
+        );
+    }
 
     #[test]
     fn test_linear_map_apply_delta_set() {

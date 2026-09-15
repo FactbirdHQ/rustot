@@ -4,7 +4,9 @@
 //! - `Vec<T>` — opaque leaf type
 //! - `HashMap<K, V>` — map collection with per-entry Patch deltas
 
-use crate::shadows::{ParseError, ReportedFields, ShadowNode, VariantResolver, fnv1a_hash};
+use crate::shadows::{
+    ParseError, ReportedFields, ShadowNode, VariantResolver, fnv1a_hash, fnv1a_u64,
+};
 use serde::ser::SerializeMap;
 use std::collections::HashMap;
 use std::string::String;
@@ -388,7 +390,9 @@ where
     type Delta = DeltaHashMap<K, V::Delta>;
     type Reported = ReportedHashMap<K, V::Reported>;
 
-    const SCHEMA_HASH: u64 = fnv1a_hash(b"HashMap");
+    // Values persist decomposed under `/{key}/...`, so a change inside `V`
+    // changes the stored layout and must change this hash with it.
+    const SCHEMA_HASH: u64 = fnv1a_u64(fnv1a_hash(b"HashMap"), V::SCHEMA_HASH);
 
     async fn parse_delta<R: VariantResolver>(
         json: &[u8],
@@ -734,6 +738,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: see `linear_map_schema_hash_covers_value_type`.
+    #[test]
+    fn hashmap_schema_hash_covers_value_type() {
+        assert_ne!(
+            <HashMap<String, u32> as ShadowNode>::SCHEMA_HASH,
+            <HashMap<String, bool> as ShadowNode>::SCHEMA_HASH
+        );
+    }
 
     #[test]
     fn test_hashmap_apply_delta_set() {
