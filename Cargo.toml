@@ -36,7 +36,7 @@ postcard = { git = "https://github.com/jamesmunns/postcard", rev = "f8a4064", de
 ] }
 
 # KV-based shadow storage (optional, enabled by shadows_kv_persist feature)
-sequential-storage = { version = "7.0", features = [
+sequential-storage = { version = "8.0", features = [
     "heapless-09",
 ], optional = true }
 

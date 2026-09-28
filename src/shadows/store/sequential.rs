@@ -1,4 +1,4 @@
-//! SequentialKVStore implementation using sequential-storage crate (v7.x)
+//! SequentialKVStore implementation using sequential-storage crate (v8)
 //!
 //! Uses MapStorage for flash-based key-value storage.
 //! Interior mutability via embassy_sync::Mutex allows sharing between multiple Shadow instances.
@@ -8,7 +8,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex;
 use embedded_storage_async::nor_flash::{MultiwriteNorFlash, NorFlash};
 use heapless::String;
-use sequential_storage::cache::{KeyCacheImpl, NoCache};
+use sequential_storage::cache::{Cache, CacheImpl, Uncached};
 use sequential_storage::map::{MapConfig, MapStorage};
 
 use super::{ApplyJsonError, KVStore, StateStore};
@@ -20,6 +20,11 @@ use crate::shadows::{KVPersist, VariantResolver};
 
 /// Suffix for schema hash keys.
 const SCHEMA_HASH_SUFFIX: &str = "/__schema_hash__";
+
+/// The cache used by [`SequentialKVStore::new`]: no page-state, page-pointer or
+/// key-pointer caching, i.e. what sequential-storage 7 called `NoCache`.
+pub type NoCache<const MAX_KEY_LEN: usize = 128> =
+    Cache<Uncached, Uncached, Uncached, String<MAX_KEY_LEN>>;
 
 /// KVStore error type for sequential storage
 #[derive(Debug)]
@@ -39,13 +44,13 @@ impl<E> From<sequential_storage::Error<E>> for SequentialKVStoreError<E> {
 
 /// Internal storage co-locating map, scratch buffer, and key buffer to keep
 /// them off async stacks.
-struct Inner<S: NorFlash, C: KeyCacheImpl<String<MAX_KEY_LEN>>, const MAX_KEY_LEN: usize> {
+struct Inner<S: NorFlash, const MAX_KEY_LEN: usize, C: CacheImpl<String<MAX_KEY_LEN>>> {
     map: MapStorage<String<MAX_KEY_LEN>, S, C>,
     scratch: [u8; 512],
     key_tmp: String<MAX_KEY_LEN>,
 }
 
-/// A KVStore implementation backed by NOR flash using sequential-storage v7.x.
+/// A KVStore implementation backed by NOR flash using sequential-storage v8.
 ///
 /// This is suitable for embedded systems with limited RAM. Keys are stored
 /// as `heapless::String<MAX_KEY_LEN>` to avoid allocation.
@@ -58,8 +63,9 @@ struct Inner<S: NorFlash, C: KeyCacheImpl<String<MAX_KEY_LEN>>, const MAX_KEY_LE
 /// # Type Parameters
 /// - `S`: The flash storage type (must implement `NorFlash` and `MultiwriteNorFlash`)
 /// - `M`: The mutex type (e.g., `NoopRawMutex`, `CriticalSectionRawMutex`)
-/// - `C`: The cache type (use `NoCache` for minimal RAM)
 /// - `MAX_KEY_LEN`: Maximum key length (default 128 bytes)
+/// - `C`: The sequential-storage cache (default [`NoCache`] for minimal RAM; see
+///   `sequential_storage::cache::Cache` for the page/key caching options)
 ///
 /// # Mutex Type Selection
 ///
@@ -71,14 +77,14 @@ struct Inner<S: NorFlash, C: KeyCacheImpl<String<MAX_KEY_LEN>>, const MAX_KEY_LE
 pub struct SequentialKVStore<
     S: NorFlash,
     M: RawMutex,
-    C: KeyCacheImpl<String<MAX_KEY_LEN>> = NoCache,
     const MAX_KEY_LEN: usize = 128,
+    C: CacheImpl<String<MAX_KEY_LEN>> = NoCache<MAX_KEY_LEN>,
 > {
-    inner: Mutex<M, Inner<S, C, MAX_KEY_LEN>>,
+    inner: Mutex<M, Inner<S, MAX_KEY_LEN, C>>,
 }
 
 impl<S: NorFlash, M: RawMutex, const MAX_KEY_LEN: usize>
-    SequentialKVStore<S, M, NoCache, MAX_KEY_LEN>
+    SequentialKVStore<S, M, MAX_KEY_LEN, NoCache<MAX_KEY_LEN>>
 {
     /// Create a new SequentialKVStore with no cache.
     ///
@@ -87,7 +93,7 @@ impl<S: NorFlash, M: RawMutex, const MAX_KEY_LEN: usize>
     /// - `flash_range`: The byte range within flash to use for storage
     pub fn new(flash: S, flash_range: Range<u32>) -> Self {
         let config = MapConfig::new(flash_range);
-        let map = MapStorage::new(flash, config, NoCache::new());
+        let map = MapStorage::new(flash, config, Cache::new_uncached());
         Self {
             inner: Mutex::new(Inner {
                 map,
@@ -98,8 +104,8 @@ impl<S: NorFlash, M: RawMutex, const MAX_KEY_LEN: usize>
     }
 }
 
-impl<S: NorFlash, M: RawMutex, C: KeyCacheImpl<String<MAX_KEY_LEN>>, const MAX_KEY_LEN: usize>
-    SequentialKVStore<S, M, C, MAX_KEY_LEN>
+impl<S: NorFlash, M: RawMutex, const MAX_KEY_LEN: usize, C: CacheImpl<String<MAX_KEY_LEN>>>
+    SequentialKVStore<S, M, MAX_KEY_LEN, C>
 {
     /// Create a new SequentialKVStore with a custom cache.
     ///
@@ -127,9 +133,9 @@ impl<S: NorFlash, M: RawMutex, C: KeyCacheImpl<String<MAX_KEY_LEN>>, const MAX_K
 impl<
     S: NorFlash + MultiwriteNorFlash,
     M: RawMutex,
-    C: KeyCacheImpl<String<MAX_KEY_LEN>>,
     const MAX_KEY_LEN: usize,
-> KVStore for SequentialKVStore<S, M, C, MAX_KEY_LEN>
+    C: CacheImpl<String<MAX_KEY_LEN>>,
+> KVStore for SequentialKVStore<S, M, MAX_KEY_LEN, C>
 {
     type Error = SequentialKVStoreError<S::Error>;
 
@@ -259,9 +265,9 @@ impl<
     St: KVPersist + Default,
     S: NorFlash + MultiwriteNorFlash,
     M: RawMutex,
-    C: KeyCacheImpl<String<MAX_KEY_LEN>>,
     const MAX_KEY_LEN: usize,
-> StateStore<St> for SequentialKVStore<S, M, C, MAX_KEY_LEN>
+    C: CacheImpl<String<MAX_KEY_LEN>>,
+> StateStore<St> for SequentialKVStore<S, M, MAX_KEY_LEN, C>
 {
     type Error = SequentialKVStoreError<S::Error>;
 
