@@ -8,7 +8,10 @@ use serde::Deserialize;
 use crate::transfer::config::Config;
 use crate::transfer::status_details::StatusDetailsExt;
 
-use super::{encoding::JobContext, error::TransferError};
+use super::{
+    encoding::{FileContext, JobContext},
+    error::TransferError,
+};
 
 use super::encoding::Bitmap;
 
@@ -100,14 +103,15 @@ pub trait DataInterface {
     where
         Self: 't;
 
-    /// Establish a transfer session.
+    /// Establish a transfer session for one file of the job.
     ///
     /// For MQTT: subscribes to data stream + notify-next topics and publishes
     /// the initial block request.
     /// For HTTP: validates the pre-signed URL and prepares the range fetcher.
-    async fn begin_transfer(
+    async fn begin_transfer<const N: usize>(
         &self,
-        job: &JobContext<'_, impl StatusDetailsExt>,
+        job: &JobContext<'_, impl StatusDetailsExt, N>,
+        file: &FileContext<'_>,
         config: &Config,
         progress: &BlockProgress,
     ) -> Result<Self::Transfer<'_>, TransferError>;

@@ -8,9 +8,13 @@ Two entry points:
 
 - [`Transfer::perform`] — generic file transfer; needs only a
   [`TransferPal`].
-- [`Transfer::perform_ota`] — OTA firmware update; needs an [`OtaPal`]
+- [`Transfer::perform_ota`] — OTA update; needs an [`OtaPal`]
   (which extends [`TransferPal`]) and adds self-test, image-state, and
   reset/activation hooks.
+
+A job may contain several files. They are downloaded in document order and
+the job is all-or-nothing: activation happens once after every file has been
+downloaded and closed, and any failure aborts the whole job.
 
 The OTA path is wire-compatible with the Amazon FreeRTOS [`afr_ota`][afr]
 job-document format produced by AWS's [`CreateOTAUpdate`][create-ota]
@@ -24,18 +28,27 @@ control-plane API.
 1. Receive a job document via [`crate::jobs`] and deserialize it (an
    [`OtaJob`] for the FreeRTOS format, or your own [`JobDocument`]
    implementation).
-2. Build a [`JobContext`] from the parsed execution.
+2. Build a [`JobContext`] from the parsed execution. Its `N` parameter
+   (default `1`) caps the number of files per job.
 3. Pick a data interface (MQTT streams or HTTP pre-signed URL) — the engine
    negotiates against the `protocols` field in the job document.
 4. Call [`Transfer::perform`] (generic) or [`Transfer::perform_ota`]
-   (firmware). The engine:
+   (with activation). For each file in the job, the engine:
    - drives block requests over the chosen data interface,
-   - tracks completed blocks via a [`Bitmap`] for resumption / retry,
-   - reports progress (`IN_PROGRESS` with `statusDetails`) back to Jobs,
-   - calls into your `Pal` to write blocks, finalize, abort, or activate,
-   - publishes a terminal Jobs status on completion or failure.
-5. (OTA only) After reset, the device re-enters self-test; your `OtaPal`
-   accepts or rejects the new image and reports the outcome.
+   - tracks completed blocks via a [`Bitmap`] for retry within a session,
+   - reports progress (`IN_PROGRESS` with `statusDetails`, summed over all
+     files) back to Jobs,
+   - calls into your `Pal` to create, write and close the file.
+
+   Once every file is closed it publishes a single terminal status. If no
+   file requires activation the job is `SUCCEEDED`; otherwise it stays
+   `IN_PROGRESS` (self-test `ready`). On any failure it calls `abort` once
+   and marks the job `FAILED`.
+5. (OTA only) `perform_ota` fires `OtaEvent::Activate`. After activation
+   (typically a reset), the device re-enters self-test; your `OtaPal`
+   accepts or rejects the update and reports the outcome. With plain
+   `perform`, finishing an activated job is up to the caller (e.g.
+   `JobAgent::succeed_job`).
 
 ## Data interfaces
 
@@ -52,7 +65,7 @@ document advertises.
 
 | Format | Type | Notes |
 |---|---|---|
-| Amazon FreeRTOS `afr_ota` | [`OtaJob`] | Default for OTA. Compatible with `CreateOTAUpdate`. |
+| Amazon FreeRTOS `afr_ota` | [`OtaJob`] | Default for OTA. Compatible with `CreateOTAUpdate`. `OtaJob<'a, N>` accepts up to `N` files (default `1`). |
 | Custom | impl [`JobDocument`] | For non-OTA file transfers or custom OTA shapes. |
 
 The wire-format fields (`fileid`, `filesize`, `streamname`, `update_data_url`,
@@ -63,12 +76,44 @@ The wire-format fields (`fileid`, `filesize`, `streamname`, `update_data_url`,
 The platform abstraction layer (your code) handles flash / filesystem writes
 and image lifecycle. Two traits, one extending the other:
 
-- [`TransferPal`] — `create_file`, `write_block`, `close_file`, `abort`,
-  `status_details`. All that's needed for generic file transfer.
+- [`TransferPal`] — `create_file_for_rx` / `close_file` (per file,
+  signature verification belongs in `close_file`), `abort` (per job: discard
+  everything staged for it), `requires_activation` (per file, defaults to
+  `fileType == 0`) and `status_details`. All that's needed for generic file
+  transfer.
 - [`OtaPal`] — adds `set_platform_image_state`, `get_platform_image_state`,
-  `activate_new_image`, `reset_device`, plus signature verification hooks. The
-  engine drives the [`ImageState`] state machine
-  (`Unknown` → `Testing` → `Accepted` / `Rejected` / `Aborted`).
+  `activate_new_image`, `reset_device` and `complete_callback`. The engine
+  drives the [`ImageState`] state machine
+  (`Unknown` → `Testing` → `Accepted` / `Rejected` / `Aborted`) once per job.
+
+Override `requires_activation` to put non-firmware files (e.g. ML models
+deployed with a custom `fileType`) through activation, self-test and
+rollback.
+
+## Status details
+
+Every job update carries a flat `statusDetails` map (AWS IoT Jobs only
+accepts string values):
+
+| Key | Content |
+|---|---|
+| `self_test` | `receiving`, `ready`, `active`, `accepted`, `rejected`, `aborted` |
+| `progress` | `"received/total"` blocks, summed over all files in the job |
+| `reason`, `error_code` | Failure reason and code, on `rejected` / `aborted` |
+| `files` | Multi-file jobs only (never present for single-file jobs): a JSON array, encoded as a string, with one entry per file |
+
+A `files` entry looks like
+`{"id":1,"status":"failed","progress":"3/3","reason":"sig_check_failed","error_code":1001}`,
+where `id` is the job document's `fileid` and `status` is `pending`,
+`in_progress`, `succeeded` or `failed`. `reason` and `error_code` only
+appear on the failed file. AWS limits each value to 1024 characters, which
+caps `N` at 10 files on 64-bit targets and 14 on 32-bit targets; a larger
+`N` fails to compile.
+
+Use [`JobAgent::parse_or_reject`] to receive jobs: a document that doesn't
+deserialize is rejected instead of staying queued and blocking every later
+job. The same applies to errors from [`JobContext::new`] (e.g. more files
+than `N`) — reject the job with `JobAgent::reject_job`.
 
 OTA reasons surface through [`ImageStateReason`] and [`PalError`], with
 numeric error codes:
@@ -81,9 +126,15 @@ numeric error codes:
 ## Example (OTA, MQTT)
 
 ```rust
-use rustot::jobs::stream::{JobAgent, parse_job_message};
+use rustot::jobs::stream::JobAgent;
 use rustot::mqtt::{Mqtt, OwnedMessage};
 use rustot::transfer::{Transfer, config::Config, encoding::afr_ota::OtaJob, error::TransferError};
+
+#[derive(serde::Deserialize)]
+enum Jobs<'a> {
+    #[serde(rename = "afr_ota", borrow)]
+    Ota(OtaJob<'a>),
+}
 
 async fn run_ota<C: rustot::mqtt::MqttClient, P: rustot::transfer::pal::OtaPal>(
     mqtt: Mqtt<&C>,
@@ -97,8 +148,13 @@ async fn run_ota<C: rustot::mqtt::MqttClient, P: rustot::transfer::pal::OtaPal>(
     drop(message);
     sub.unsubscribe().await.ok();
 
-    let execution = parse_job_message::<OtaJob>(&mut owned)
-        .ok_or(TransferError::InvalidJobDocument)?;
+    // Rejects the job in the cloud if its document doesn't parse into `Jobs`,
+    // so it can't stay queued and block later jobs.
+    let execution = agent
+        .parse_or_reject::<Jobs>(&owned)
+        .await
+        .map_err(|_| TransferError::Mqtt)?
+        .ok_or(TransferError::NoActiveJob)?;
 
     let ctx = build_job_context(execution)?; // user code, see tests/common
     let cfg = Config { block_size: 4096, ..Default::default() };
@@ -121,8 +177,9 @@ A complete working PAL is in
 ## Limitations
 
 - **CBOR only on the MQTT data interface.** AWS IoT Streams require CBOR.
-- **One file per job.** The `afr_ota` schema allows multiple files but the
-  engine tracks one active transfer at a time.
+- **No resume across reboots.** Download progress is not restored from the
+  job's `statusDetails`; a job interrupted by a reboot restarts from the
+  first block of the first file.
 - **Self-test policy is delegated to the PAL.** The engine drives the state
   transitions; your code decides whether the new image passes self-test.
 
@@ -159,3 +216,5 @@ RUST_LOG=trace \
 [`ImageStateReason`]: https://docs.rs/rustot/latest/rustot/transfer/pal/enum.ImageStateReason.html
 [`PalError`]: https://docs.rs/rustot/latest/rustot/transfer/pal/enum.PalError.html
 [`crate::jobs`]: ../jobs
+[`JobAgent::parse_or_reject`]: https://docs.rs/rustot/latest/rustot/jobs/stream/struct.JobAgent.html#method.parse_or_reject
+[`JobContext::new`]: https://docs.rs/rustot/latest/rustot/transfer/encoding/struct.JobContext.html#method.new
