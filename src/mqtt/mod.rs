@@ -137,6 +137,13 @@ pub trait MqttSubscription {
     fn next_message(&mut self) -> impl Future<Output = Option<Self::Message<'_>>>;
 
     /// Unsubscribe and close this subscription.
+    ///
+    /// Once this returns, no further message reaches this subscription, and a
+    /// later subscribe to the same topic receives every message published after
+    /// that subscribe returns. On a direct broker connection this is the
+    /// UNSUBACK. Greengrass IPC has no unsubscribe acknowledgement; its client
+    /// detaches locally and keeps the stream for reuse instead, so the
+    /// broker-side subscription may outlive this call (see `mqtt_greengrass`).
     fn unsubscribe(self) -> impl Future<Output = Result<(), Self::Error>>;
 }
 
