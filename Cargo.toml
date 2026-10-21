@@ -60,7 +60,7 @@ base64 = { version = "0.22", optional = true }
 
 # MQTT client implementations (optional, feature-gated)
 rumqttc = { version = "0.24", optional = true }
-greengrass-ipc-rust = { version = "0.1", optional = true }
+greengrass-ipc-rust = { version = "0.2", optional = true }
 bytes = { version = "1", optional = true }
 futures = { version = "0.3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = [
@@ -191,5 +191,5 @@ mqtt_greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes", "dep:futures",
 [patch.crates-io]
 # Until greengrass-ipc-rust with the IoT Core subscription pool
 # (FactbirdHQ/greengrass-ipc-rust feat/iot-core-subscription-pool) is on crates.io.
-greengrass-ipc-rust = { git = "https://github.com/FactbirdHQ/greengrass-ipc-rust", rev = "87deae6" }
+greengrass-ipc-rust = { git = "https://github.com/FactbirdHQ/greengrass-ipc-rust", rev = "ac3676d" }
 serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core", rev = "a435f78" }
