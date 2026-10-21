@@ -27,6 +27,9 @@ mod greengrass;
 #[cfg(test)]
 pub mod mock;
 
+#[cfg(all(test, feature = "std"))]
+pub(crate) mod fake_cloud;
+
 #[cfg(feature = "mqtt_mqttrust")]
 pub use self::mqttrust::*;
 

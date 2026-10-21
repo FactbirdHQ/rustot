@@ -394,10 +394,33 @@ impl crate::mqtt::MqttClient for GreengrassClient {
 /// One logical-subscriber handle: a reference to the pooled slot plus the
 /// receiver half of the channel currently installed in that slot. Holds a
 /// clone of its own sender for identity checks on teardown.
+///
+/// Releases its slot on drop. That has to happen per receiver, not per
+/// [`GreengrassSubscription`]: a multi-topic subscribe dropped between two
+/// topics never builds the subscription, and the receivers it already made
+/// would otherwise leave their slots holding a dead sender, never evicted.
 struct SubscriptionReceiver {
     slot: Arc<PooledSlot>,
     tx: TopicChannel,
     rx: mpsc::UnboundedReceiver<greengrass_ipc_rust::MqttMessage>,
+}
+
+impl Drop for SubscriptionReceiver {
+    fn drop(&mut self) {
+        // Only clear the slot if it still holds OUR sender. If someone
+        // else has already resubscribed to the same topic, they installed
+        // a new sender and we must not clobber it. `same_channel` tells us
+        // whether two senders reference the same underlying channel.
+        let mut guard = self.slot.sender.lock().unwrap();
+        let is_ours = matches!(&*guard, Some(current) if current.same_channel(&self.tx));
+        if is_ours {
+            *guard = None;
+            drop(guard);
+            // Slot is now idle. Arm the linger timer; if no one
+            // resubscribes within `linger`, the stream is terminated.
+            self.slot.arm_eviction();
+        }
+    }
 }
 
 /// Subscription wrapper for Greengrass.
@@ -417,7 +440,7 @@ impl GreengrassSubscription {
     /// future messages are discarded until someone subscribes again, and arms
     /// each slot's linger timer (see [`GreengrassSubscription`]).
     pub async fn close(self) -> Result<(), greengrass_ipc_rust::Error> {
-        // Delegated to Drop.
+        // Delegated to each receiver's Drop.
         Ok(())
     }
 }
@@ -454,26 +477,6 @@ impl MqttSubscription for GreengrassSubscription {
 
     async fn unsubscribe(self) -> Result<(), Self::Error> {
         self.close().await
-    }
-}
-
-impl Drop for GreengrassSubscription {
-    fn drop(&mut self) {
-        // Only clear the slot if it still holds OUR sender. If someone
-        // else has already resubscribed to the same topic, they installed
-        // a new sender and we must not clobber it. `same_channel` tells us
-        // whether two senders reference the same underlying channel.
-        for receiver in &self.receivers {
-            let mut guard = receiver.slot.sender.lock().unwrap();
-            let is_ours = matches!(&*guard, Some(current) if current.same_channel(&receiver.tx));
-            if is_ours {
-                *guard = None;
-                drop(guard);
-                // Slot is now idle. Arm the linger timer; if no one
-                // resubscribes within `linger`, the stream is terminated.
-                receiver.slot.arm_eviction();
-            }
-        }
     }
 }
 
@@ -627,6 +630,54 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(60)).await;
 
         assert!(pool.read().unwrap().contains_key("t/c"));
+    }
+
+    /// A receiver dropped on its own (a multi-topic subscribe cancelled
+    /// between topics) releases its slot just like a whole subscription.
+    #[tokio::test]
+    async fn dropped_receiver_releases_its_slot() {
+        let pool: PoolMap = Arc::new(RwLock::new(HashMap::new()));
+        let terminated: TerminatedMap = Arc::new(Mutex::new(HashMap::new()));
+        let slot = make_slot("t/e", &pool, &terminated, Duration::from_millis(20));
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        *slot.sender.lock().unwrap() = Some(tx.clone());
+        let partial = vec![SubscriptionReceiver {
+            slot: slot.clone(),
+            tx,
+            rx,
+        }];
+        drop(partial);
+
+        assert!(slot.sender.lock().unwrap().is_none());
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(!pool.read().unwrap().contains_key("t/e"));
+    }
+
+    /// A receiver whose slot was taken over by a newer subscriber leaves the
+    /// newer sender in place.
+    #[tokio::test]
+    async fn dropped_receiver_keeps_a_newer_sender() {
+        let pool: PoolMap = Arc::new(RwLock::new(HashMap::new()));
+        let terminated: TerminatedMap = Arc::new(Mutex::new(HashMap::new()));
+        let slot = make_slot("t/f", &pool, &terminated, Duration::from_millis(20));
+
+        let (old_tx, old_rx) = mpsc::unbounded_channel();
+        let old = GreengrassSubscription {
+            receivers: vec![SubscriptionReceiver {
+                slot: slot.clone(),
+                tx: old_tx,
+                rx: old_rx,
+            }],
+        };
+        let (new_tx, _new_rx) = mpsc::unbounded_channel();
+        *slot.sender.lock().unwrap() = Some(new_tx.clone());
+        drop(old);
+
+        let current = slot.sender.lock().unwrap().clone();
+        assert!(matches!(current, Some(tx) if tx.same_channel(&new_tx)));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(pool.read().unwrap().contains_key("t/f"));
     }
 
     #[tokio::test]

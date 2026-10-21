@@ -15,6 +15,7 @@ use crate::shadows::{
     data_types::{
         AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
     },
+    delta_order::{DeltaOrder, delta_order},
     error::{Error, ShadowError},
     store::StateStore,
     topics::{Topic, max_topic_len},
@@ -58,6 +59,9 @@ const REQUEST_TIMEOUT: embassy_time::Duration = embassy_time::Duration::from_sec
 /// This guard restores the invariant `subscription == Some <=> initial sync
 /// has fully completed` by taking the subscription back on any early exit.
 /// `disarm()` is called on the happy path to keep the subscription cached.
+///
+/// The same holds for a live delta taken off the subscription but not yet
+/// applied and acked: only a fresh subscribe + GET drain delivers it again.
 struct ResetSubscriptionOnDrop<'s, M: RawMutex, T> {
     subscription: &'s Mutex<M, Option<T>>,
     armed: bool,
@@ -83,6 +87,12 @@ impl<M: RawMutex, T> Drop for ResetSubscriptionOnDrop<'_, M, T> {
             guard.take();
         }
     }
+}
+
+/// A live delta with the shadow document version it came with.
+struct VersionedDelta<D> {
+    delta: D,
+    version: Option<i64>,
 }
 
 /// Overhead for partial request JSON formatting.
@@ -125,7 +135,8 @@ where
             S::NAME.unwrap_or(CLASSIC_SHADOW)
         );
 
-        // GET (404 falls back to `create_shadow_inner`). Discard the delta.
+        // GET (404 falls back to `create_shadow_inner`). Discard the delta,
+        // and its version: the delta was not applied.
         let _ = self.get_shadow_from_cloud().await?;
 
         *init_guard = true;
@@ -134,11 +145,21 @@ where
 
     /// Apply a delta to local state, then ack the cloud with the resulting
     /// partial reported (plus any desired-side cleanup for variant switches).
-    async fn apply_delta_and_ack(&self, delta: &S::Delta) -> Result<S, Error> {
+    ///
+    /// `version` is the shadow document version the delta came with; once the
+    /// delta is in local storage, later copies of it are recognised by it.
+    async fn apply_delta_and_ack(
+        &self,
+        delta: &S::Delta,
+        version: Option<i64>,
+    ) -> Result<S, Error> {
         let state = self
             .apply_and_save(delta)
             .await
             .map_err(|_| Error::DaoWrite)?;
+        if version.is_some() {
+            self.delta_version.set(version);
+        }
         let reported = state.into_partial_reported(delta);
         let cleanup = state.desired_cleanup(delta);
         // The delta is already committed to local storage above. Bound the cloud
@@ -177,8 +198,9 @@ where
     /// that any pending cloud state — including deltas that occurred while
     /// not subscribed — is drained as a delta immediately. Returns as soon
     /// as a delta is available, either from the GET drain or from a live
-    /// subscription message. Echo messages and empty-state messages are
-    /// silently looped over.
+    /// subscription message. Echo messages, empty-state messages and further
+    /// copies of an applied delta are silently looped over; a delta older than
+    /// the applied one triggers a resync GET (see [`DeltaOrder`]).
     async fn handle_delta(&self) -> Result<(S, Option<S::Delta>), Error> {
         loop {
             let mut sub_ref = self.subscription.lock().await;
@@ -223,7 +245,7 @@ where
             // Scope the mutable borrow so we can call sub_ref.take() on
             // clean-session below. The parsed DeltaResponse borrows from
             // the message payload, so everything must resolve in this block.
-            let result: Result<Option<S::Delta>, ()> = {
+            let result: Result<Option<VersionedDelta<S::Delta>>, ()> = {
                 let sub = sub_ref.deref_mut().as_mut().unwrap();
                 match sub.next_message().await {
                     Some(delta_message) => {
@@ -241,7 +263,10 @@ where
                         if parsed.client_token == Some(self.mqtt.client_id()) {
                             Ok(None)
                         } else {
-                            Ok(parsed.state)
+                            Ok(parsed.state.map(|delta| VersionedDelta {
+                                delta,
+                                version: parsed.version,
+                            }))
                         }
                     }
                     None => Err(()),
@@ -249,14 +274,11 @@ where
             };
 
             match result {
-                Ok(Some(delta)) => {
+                Ok(Some(VersionedDelta { delta, version })) => {
                     drop(sub_ref);
-                    debug!(
-                        "[{:?}] Delta reports new desired value. Changing local value...",
-                        S::NAME.unwrap_or(CLASSIC_SHADOW),
-                    );
-                    let state = self.apply_delta_and_ack(&delta).await?;
-                    return Ok((state, Some(delta)));
+                    if let Some(applied) = self.handle_live_delta(delta, version).await? {
+                        return Ok(applied);
+                    }
                 }
                 Ok(None) => continue,
                 Err(()) => {
@@ -273,12 +295,71 @@ where
         }
     }
 
+    /// Apply a delta taken off the live subscription, unless it is a copy of
+    /// the applied one. `None` means keep waiting.
+    async fn handle_live_delta(
+        &self,
+        delta: S::Delta,
+        version: Option<i64>,
+    ) -> Result<Option<(S, Option<S::Delta>)>, Error> {
+        // The message is consumed. If this future is dropped (or fails) before
+        // the delta is applied and acked, the cloud keeps it pending but never
+        // publishes it again, so the next call must resubscribe and drain it
+        // via GET.
+        let mut reset_guard = ResetSubscriptionOnDrop {
+            subscription: &self.subscription,
+            armed: true,
+        };
+        match delta_order(self.delta_version.get(), version) {
+            DeltaOrder::Apply => {}
+            DeltaOrder::Duplicate => {
+                reset_guard.disarm();
+                debug!(
+                    "[{:?}] Delta version {:?} already applied, ignoring this copy",
+                    S::NAME.unwrap_or(CLASSIC_SHADOW),
+                    version,
+                );
+                return Ok(None);
+            }
+            DeltaOrder::Stale => {
+                info!(
+                    "[{:?}] Delta version {:?} is older than the applied {:?}; resyncing",
+                    S::NAME.unwrap_or(CLASSIC_SHADOW),
+                    version,
+                    self.delta_version.get(),
+                );
+                let (state, delta) = self.sync_shadow().await?;
+                reset_guard.disarm();
+                return Ok(delta.is_some().then_some((state, delta)));
+            }
+        }
+        debug!(
+            "[{:?}] Delta reports new desired value. Changing local value...",
+            S::NAME.unwrap_or(CLASSIC_SHADOW),
+        );
+        let state = self.apply_delta_and_ack(&delta, version).await?;
+        reset_guard.disarm();
+        Ok(Some((state, Some(delta))))
+    }
+
     /// Publish an update request to the cloud and wait for response.
     async fn update_shadow<D: Serialize>(
         &self,
         desired: Option<D>,
         reported: Option<S::Reported>,
     ) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
+        self.update_shadow_versioned(desired, reported)
+            .await
+            .map(|(state, _)| state)
+    }
+
+    /// [`update_shadow`](Self::update_shadow), also returning the document
+    /// version the update produced.
+    async fn update_shadow_versioned<D: Serialize>(
+        &self,
+        desired: Option<D>,
+        reported: Option<S::Reported>,
+    ) -> Result<(DeltaState<S::Delta, S::Delta>, Option<i64>), Error> {
         debug!(
             "[{:?}] Updating shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
@@ -331,7 +412,7 @@ where
                         continue;
                     }
 
-                    break Ok(response.state);
+                    break Ok((response.state, response.version));
                 }
                 Some((Topic::UpdateRejected, _, _)) => {
                     let mut buf = [0u8; 64];
@@ -360,8 +441,10 @@ where
         result
     }
 
-    /// Fetch the shadow state from the cloud.
-    async fn get_shadow_from_cloud(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
+    /// Fetch the shadow state from the cloud, with the document version.
+    async fn get_shadow_from_cloud(
+        &self,
+    ) -> Result<(DeltaState<S::Delta, S::Delta>, Option<i64>), Error> {
         // Wait for mqtt to connect
         self.mqtt.wait_connected().await;
 
@@ -393,7 +476,7 @@ where
                             .await
                             .map_err(|_| Error::InvalidPayload)?;
 
-                    Ok(Some(response.state))
+                    Ok(Some((response.state, response.version)))
                 }
                 Some((Topic::GetRejected, _, _)) => {
                     let mut buf = [0u8; 64];
@@ -428,7 +511,7 @@ where
 
         match result? {
             Some(state) => Ok(state),
-            None => self.create_shadow_inner().await,
+            None => self.create_shadow_inner_versioned().await,
         }
     }
 
@@ -636,15 +719,18 @@ where
     /// let (state, _) = shadow.sync_shadow().await?;
     /// ```
     pub async fn sync_shadow(&self) -> Result<(S, Option<S::Delta>), Error> {
-        let delta_state = self.get_shadow_from_cloud().await?;
+        let (delta_state, version) = self.get_shadow_from_cloud().await?;
         // A successful GET (or 404→create) confirms the cloud doc exists,
         // so the gate flips.
         *self.initialized.lock().await = true;
         let delta = delta_state.delta;
 
+        // The GET reflects every delta up to its version, so live copies of
+        // those are covered from here on.
         let state = if let Some(ref d) = delta {
-            self.apply_delta_and_ack(d).await?
+            self.apply_delta_and_ack(d, version).await?
         } else {
+            self.delta_version.set(version);
             self.store
                 .get_state(Self::prefix())
                 .await
@@ -682,6 +768,14 @@ where
     /// `get_shadow_from_cloud`'s 404 fallback while `ensure_initialized`
     /// holds the lock.
     async fn create_shadow_inner(&self) -> Result<DeltaState<S::Delta, S::Delta>, Error> {
+        self.create_shadow_inner_versioned()
+            .await
+            .map(|(state, _)| state)
+    }
+
+    async fn create_shadow_inner_versioned(
+        &self,
+    ) -> Result<(DeltaState<S::Delta, S::Delta>, Option<i64>), Error> {
         debug!(
             "[{:?}] Creating initial shadow value.",
             S::NAME.unwrap_or(CLASSIC_SHADOW),
@@ -696,7 +790,8 @@ where
         let desired = state.into_delta();
         let reported = state.into_reported();
 
-        self.update_shadow(Some(desired), Some(reported)).await
+        self.update_shadow_versioned(Some(desired), Some(reported))
+            .await
     }
 
     /// Delete the shadow from the cloud and remove all persisted state.
@@ -770,8 +865,10 @@ where
             .await
             .map_err(|_| Error::DaoWrite)?;
 
-        // Reset the gate so the next publish re-initializes the cloud doc.
+        // Reset the gate so the next publish re-initializes the cloud doc, and
+        // forget the version: a recreated document starts again at 1.
         *self.initialized.lock().await = false;
+        self.delta_version.set(None);
 
         Ok(())
     }

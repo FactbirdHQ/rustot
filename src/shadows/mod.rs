@@ -1,4 +1,5 @@
 pub mod data_types;
+pub(crate) mod delta_order;
 pub mod error;
 pub mod tag_scanner;
 pub mod topics;

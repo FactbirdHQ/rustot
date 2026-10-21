@@ -9,6 +9,7 @@ use crate::mqtt::{MqttClient, MqttMessage, MqttSubscription, QoS};
 use crate::shadows::data_types::{
     AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
 };
+use crate::shadows::delta_order::{DeltaOrder, delta_order};
 use crate::shadows::store::StateStore;
 use crate::shadows::topics::Topic;
 
@@ -57,6 +58,10 @@ where
     /// Currently managed shadow IDs (without pattern prefix).
     shadow_ids: RwLock<HashSet<String>>,
 
+    /// Per shadow ID: document version of the newest delta applied, or of the
+    /// last GET. See [`crate::shadows::delta_order`].
+    delta_versions: RwLock<HashMap<String, i64>>,
+
     /// Operation timeout.
     operation_timeout: Duration,
 
@@ -85,6 +90,7 @@ where
             thing_name,
             store,
             shadow_ids: RwLock::new(HashSet::new()),
+            delta_versions: RwLock::new(HashMap::new()),
             operation_timeout: DEFAULT_OPERATION_TIMEOUT,
             _marker: PhantomData,
         }
@@ -231,14 +237,19 @@ where
 
     /// Wait for the next delta change from any managed shadow.
     ///
-    /// Returns `(shadow_id, full_state, delta)`.
+    /// Returns `(shadow_id, full_state, delta)`. Deltas of shadows outside
+    /// [`MultiShadowRoot::PATTERN`] and further copies of an applied delta are
+    /// skipped (see [`parse_delta_from_parts`](Self::parse_delta_from_parts)).
     pub async fn wait_delta(&self) -> MultiShadowResult<(String, T, Option<T::Delta>)> {
         let mut sub = self.create_delta_subscription().await?;
 
-        if let Some(msg) = sub.next_message().await {
-            return self
+        while let Some(msg) = sub.next_message().await {
+            if let Some(delta) = self
                 .parse_delta_from_parts(msg.topic_name(), msg.payload())
-                .await;
+                .await?
+            {
+                return Ok(delta);
+            }
         }
 
         Err(MultiShadowError::Timeout)
@@ -262,41 +273,79 @@ where
     ///
     /// Applies the delta to the local state store, reports the updated state,
     /// and auto-tracks the shadow if not already managed.
+    ///
+    /// Returns `Ok(None)` for a message that is not this manager's to apply:
+    /// the delta wildcard `shadow/name/+/update/delta` also matches shadows
+    /// outside [`MultiShadowRoot::PATTERN`], and a delta whose version was
+    /// already applied is another copy of it. A delta older than the applied
+    /// one triggers a GET of that shadow, whose result is returned.
     pub async fn parse_delta_from_parts(
         &self,
         topic: &str,
         payload: &[u8],
-    ) -> MultiShadowResult<(String, T, Option<T::Delta>)> {
+    ) -> MultiShadowResult<Option<(String, T, Option<T::Delta>)>> {
         if let Some((Topic::UpdateDelta, _thing, Some(shadow_name))) =
             Topic::from_str(T::PREFIX, topic)
         {
-            if let Some(id) = shadow_name.strip_prefix(T::PATTERN) {
-                let prefix = Self::shadow_name(id);
-                let resolver = self.store.resolver(&prefix);
-                let delta_response = DeltaResponse::parse::<T, _>(payload, &resolver)
-                    .await
-                    .map_err(|e| {
-                        MultiShadowError::InvalidDocument(format!("Failed to parse delta: {:?}", e))
-                    })?;
+            let Some(id) = shadow_name.strip_prefix(T::PATTERN) else {
+                debug!(
+                    "Ignoring delta of shadow '{}' outside the pattern",
+                    shadow_name
+                );
+                return Ok(None);
+            };
+            let prefix = Self::shadow_name(id);
+            let resolver = self.store.resolver(&prefix);
+            let delta_response = DeltaResponse::parse::<T, _>(payload, &resolver)
+                .await
+                .map_err(|e| {
+                    MultiShadowError::InvalidDocument(format!("Failed to parse delta: {:?}", e))
+                })?;
 
-                let state: T = if let Some(ref delta) = delta_response.state {
-                    self.store.apply_delta(&prefix, delta).await.map_err(|e| {
-                        MultiShadowError::StorageError(format!("Failed to apply delta: {:?}", e))
-                    })?
-                } else {
-                    self.store.get_state(&prefix).await.map_err(|e| {
-                        MultiShadowError::StorageError(format!("Failed to get state: {:?}", e))
-                    })?
-                };
-
-                self.report(id, state.clone().into_reported()).await?;
-
-                if !self.shadow_ids.read().await.contains(id) {
-                    self.add_shadow_id(id).await;
+            let applied = self.delta_versions.read().await.get(id).copied();
+            match delta_order(applied, delta_response.version) {
+                DeltaOrder::Apply => {}
+                DeltaOrder::Duplicate => {
+                    debug!(
+                        "Delta version {:?} of shadow '{}' already applied, ignoring this copy",
+                        delta_response.version, shadow_name
+                    );
+                    return Ok(None);
                 }
-
-                return Ok((id.to_string(), state, delta_response.state));
+                DeltaOrder::Stale => {
+                    info!(
+                        "Delta version {:?} of shadow '{}' is older than the applied {:?}; resyncing",
+                        delta_response.version, shadow_name, applied
+                    );
+                    let (state, delta) = self.get_shadow(id).await?;
+                    return Ok(Some((id.to_string(), state, delta)));
+                }
             }
+
+            let state: T = if let Some(ref delta) = delta_response.state {
+                self.store.apply_delta(&prefix, delta).await.map_err(|e| {
+                    MultiShadowError::StorageError(format!("Failed to apply delta: {:?}", e))
+                })?
+            } else {
+                self.store.get_state(&prefix).await.map_err(|e| {
+                    MultiShadowError::StorageError(format!("Failed to get state: {:?}", e))
+                })?
+            };
+
+            if let Some(version) = delta_response.version {
+                self.delta_versions
+                    .write()
+                    .await
+                    .insert(id.to_string(), version);
+            }
+
+            self.report(id, state.clone().into_reported()).await?;
+
+            if !self.shadow_ids.read().await.contains(id) {
+                self.add_shadow_id(id).await;
+            }
+
+            return Ok(Some((id.to_string(), state, delta_response.state)));
         }
 
         Err(MultiShadowError::InvalidDocument(
@@ -321,6 +370,8 @@ where
                     MultiShadowError::StorageError(format!("Failed to delete state: {:?}", e))
                 })?;
                 self.shadow_ids.write().await.remove(id);
+                // A recreated shadow starts again at version 1.
+                self.delta_versions.write().await.remove(id);
                 return Ok(Some(id.to_string()));
             }
         }
@@ -366,7 +417,7 @@ where
 
         let result = self.wait_for_response(&shadow_name, &mut sub, None).await;
         let _ = sub.unsubscribe().await;
-        let delta_state = result?;
+        let (delta_state, version) = result?;
 
         let prefix = Self::shadow_name(id);
         let mut state: T =
@@ -378,6 +429,17 @@ where
             state = self.store.apply_delta(&prefix, delta).await.map_err(|e| {
                 MultiShadowError::StorageError(format!("Failed to apply delta: {:?}", e))
             })?;
+        }
+        // The GET reflects every delta up to its version, so live copies of
+        // those are covered from here on. A lower version than before means the
+        // shadow was recreated, and replaces the old one.
+        if let Some(version) = version {
+            self.delta_versions
+                .write()
+                .await
+                .insert(id.to_string(), version);
+        }
+        if delta_state.delta.is_some() {
             self.report(id, state.clone().into_reported()).await?;
         }
 
@@ -653,7 +715,7 @@ where
             .wait_for_response(shadow_name, &mut sub, client_token)
             .await;
         let _ = sub.unsubscribe().await;
-        result
+        result.map(|(state, _)| state)
     }
 
     /// Wait for accepted/rejected response on a merged subscription.
@@ -662,7 +724,7 @@ where
         prefix: &str,
         sub: &mut impl MqttSubscription,
         client_token: Option<&str>,
-    ) -> MultiShadowResult<DeltaState<T::Delta, T::Delta>> {
+    ) -> MultiShadowResult<(DeltaState<T::Delta, T::Delta>, Option<i64>)> {
         let result = tokio::time::timeout(self.operation_timeout, async {
             loop {
                 let msg = sub
@@ -693,7 +755,7 @@ where
                             }
                         }
 
-                        return Ok(response.state);
+                        return Ok((response.state, response.version));
                     }
                     Some((Topic::GetRejected | Topic::UpdateRejected, _, _)) => {
                         let error_response: ErrorResponse = serde_json::from_slice(payload)?;
@@ -731,6 +793,133 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::mqtt::fake_cloud::FakeCloud;
+    use crate::shadows::store::InMemory;
+    use postcard::experimental::max_size::MaxSize;
+    use rustot_derive::shadow_node;
+    use serde::Deserialize;
+
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    struct Flow {
+        value: u32,
+    }
+
+    impl MultiShadowRoot for Flow {
+        const PATTERN: &'static str = "flow-";
+    }
+
+    const FLOW_DELTA: &str = "$aws/things/thing/shadow/name/flow-a/update/delta";
+    const NETWORK_DELTA: &str = "$aws/things/thing/shadow/name/network/update/delta";
+
+    fn delta(version: i64, value: u32) -> String {
+        format!(
+            r#"{{"version":{version},"timestamp":1,"state":{{"value":{value}}},"metadata":{{"value":{{"timestamp":1}}}}}}"#
+        )
+    }
+
+    fn manager(cloud: &FakeCloud) -> MultiShadowManager<Flow, &FakeCloud, InMemory<Flow>> {
+        MultiShadowManager::new(cloud, "thing".into(), InMemory::new())
+    }
+
+    /// The `+` wildcard also delivers other components' named shadows.
+    #[tokio::test]
+    async fn delta_outside_the_pattern_is_not_an_error() {
+        let cloud = FakeCloud::new("thing", 1, "{}");
+        let manager = manager(&cloud);
+
+        let parsed = manager
+            .parse_delta_from_parts(NETWORK_DELTA, delta(10, 5).as_bytes())
+            .await
+            .unwrap();
+        assert!(parsed.is_none());
+        assert!(cloud.updates().is_empty());
+    }
+
+    #[tokio::test]
+    async fn copy_of_an_applied_delta_is_ignored() {
+        let cloud = FakeCloud::new("thing", 9, "{}");
+        let manager = manager(&cloud);
+
+        let (id, state, applied) = manager
+            .parse_delta_from_parts(FLOW_DELTA, delta(10, 5).as_bytes())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(id, "a");
+        assert_eq!(state.value, 5);
+        assert_eq!(applied.unwrap().value, Some(5));
+        assert_eq!(cloud.updates().len(), 1);
+
+        let copy = manager
+            .parse_delta_from_parts(FLOW_DELTA, delta(10, 5).as_bytes())
+            .await
+            .unwrap();
+        assert!(copy.is_none());
+        assert_eq!(cloud.updates().len(), 1, "the copy is not reported again");
+    }
+
+    #[tokio::test]
+    async fn older_version_resyncs_from_the_cloud() {
+        let cloud = FakeCloud::new("thing", 9, "{}");
+        let manager = manager(&cloud);
+        manager
+            .parse_delta_from_parts(FLOW_DELTA, delta(10, 5).as_bytes())
+            .await
+            .unwrap();
+
+        cloud.set_document(
+            2,
+            r#"{"desired":{"value":9},"reported":{"value":5},"delta":{"value":9}}"#,
+        );
+        let (_, state, applied) = manager
+            .parse_delta_from_parts(FLOW_DELTA, delta(2, 9).as_bytes())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.value, 9);
+        assert_eq!(applied.unwrap().value, Some(9));
+        assert_eq!(cloud.gets(), 1, "resolved by a GET");
+    }
+
+    /// A deleted shadow's next life starts again at version 1.
+    #[tokio::test]
+    async fn deletion_forgets_the_applied_version() {
+        let cloud = FakeCloud::new("thing", 9, "{}");
+        let manager = manager(&cloud);
+        manager
+            .parse_delta_from_parts(FLOW_DELTA, delta(10, 5).as_bytes())
+            .await
+            .unwrap();
+
+        manager
+            .handle_deletion_from_parts("$aws/things/thing/shadow/name/flow-a/delete/accepted")
+            .await
+            .unwrap();
+        let parsed = manager
+            .parse_delta_from_parts(FLOW_DELTA, delta(1, 3).as_bytes())
+            .await
+            .unwrap();
+        assert_eq!(parsed.unwrap().2.unwrap().value, Some(3));
+        assert_eq!(cloud.gets(), 0, "applied directly, no resync");
+    }
+
+    /// `wait_delta` keeps waiting past messages that are not its to apply.
+    #[tokio::test]
+    async fn wait_delta_skips_foreign_shadows() {
+        let cloud = FakeCloud::new("thing", 9, "{}");
+        let manager = manager(&cloud);
+
+        let (next, ()) = tokio::join!(manager.wait_delta(), async {
+            cloud.wait_subscribed(FLOW_DELTA).await;
+            cloud.deliver(NETWORK_DELTA, &delta(10, 1));
+            cloud.deliver(FLOW_DELTA, &delta(10, 5));
+        });
+        let (id, _, applied) = next.unwrap();
+        assert_eq!((id.as_str(), applied.unwrap().value), ("a", Some(5)));
+    }
+
     #[test]
     fn test_shadow_name_generation() {
         let pattern = "flow-";
