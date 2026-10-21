@@ -1,6 +1,5 @@
 //! Platform abstraction traits for file transfers and OTA updates.
-use super::StatusDetailsExt;
-use super::encoding::JobContext;
+use super::encoding::{FileContext, FileType};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -213,16 +212,23 @@ impl BlockWriter for FileWriter {
 /// This covers storage creation, finalization, cleanup on abort, and
 /// optional extra status details for job status reporting.
 ///
-/// For OTA firmware updates that also need image state management and
+/// A job may contain several files. The engine downloads them in document
+/// order, calling [`create_file_for_rx`](Self::create_file_for_rx) and
+/// [`close_file`](Self::close_file) once per file. Nothing should be applied
+/// until the whole job has completed: if any file fails, the engine calls
+/// [`abort`](Self::abort) once and every file staged for the job must be
+/// discarded.
+///
+/// For OTA updates that also need image state management, self-test and
 /// device reset, implement [`OtaPal`] (which extends this trait).
 pub trait TransferPal {
     type BlockWriter: BlockWriter;
 
     /// Extra status details to include in job status updates.
     ///
-    /// Implement [`StatusDetailsExt`] on a custom struct to add
-    /// platform-specific fields (e.g. device temperature, battery level)
-    /// to every job status update sent to AWS IoT.
+    /// Implement [`StatusDetailsExt`](super::StatusDetailsExt) on a custom
+    /// struct to add platform-specific fields (e.g. device temperature,
+    /// battery level) to every job status update sent to AWS IoT.
     ///
     /// Use `()` if no extra fields are needed.
     type StatusDetails: super::StatusDetailsExt + Clone;
@@ -230,33 +236,50 @@ pub trait TransferPal {
     /// Returns the extra status details.
     fn status_details(&self) -> Self::StatusDetails;
 
+    /// Whether a completed job containing `file` must be activated before it
+    /// can succeed.
+    ///
+    /// If any file in the job requires activation, the job is left
+    /// `IN_PROGRESS` with self-test `ready` once all files are downloaded,
+    /// instead of being marked `SUCCEEDED`. [`Transfer::perform_ota`] then
+    /// fires [`OtaEvent::Activate`]; with [`Transfer::perform`] the caller
+    /// finishes the job itself (e.g. via
+    /// [`JobAgent::succeed_job`](crate::jobs::stream::JobAgent::succeed_job)).
+    ///
+    /// Defaults to `true` for [`FileType::Firmware`] (`fileType == 0`).
+    ///
+    /// [`Transfer::perform`]: super::Transfer::perform
+    /// [`Transfer::perform_ota`]: super::Transfer::perform_ota
+    fn requires_activation(&self, file: &FileContext<'_>) -> bool {
+        file.file_type == Some(FileType::Firmware)
+    }
+
     /// Create or open the file to store received data.
     async fn create_file_for_rx(
         &mut self,
-        file: &JobContext<'_, impl StatusDetailsExt>,
+        file: &FileContext<'_>,
     ) -> Result<&mut Self::BlockWriter, PalError>;
 
     /// Authenticate and close the received file.
     ///
     /// If signature verification fails, file close should still be attempted.
-    async fn close_file(
-        &mut self,
-        file: &JobContext<'_, impl StatusDetailsExt>,
-    ) -> Result<(), PalError>;
+    async fn close_file(&mut self, file: &FileContext<'_>) -> Result<(), PalError>;
 
-    /// Abort the current transfer and clean up resources.
+    /// Abort the job and discard everything staged for it.
     ///
-    /// Called when a transfer fails or is cancelled. Use this to delete
-    /// partially written files, release file handles, etc.
-    async fn abort(&mut self, file: &JobContext<'_, impl StatusDetailsExt>)
-    -> Result<(), PalError>;
+    /// Called once when a transfer fails or is cancelled, regardless of how
+    /// many files were already closed. Delete partially written and completed
+    /// files from this job, release file handles, etc.
+    async fn abort(&mut self, job_name: &str) -> Result<(), PalError>;
 }
 
-/// Platform abstraction for OTA firmware updates.
+/// Platform abstraction for OTA updates.
 ///
-/// Extends [`TransferPal`] with firmware image state management, device
-/// reset, and OTA lifecycle callbacks. Only implement this if your target
-/// performs actual firmware updates (file_type == 0).
+/// Extends [`TransferPal`] with image state management, self-test, device
+/// reset, and OTA lifecycle callbacks. Activation applies to the job as a
+/// whole: it happens once, after every file has been downloaded and
+/// verified. Which files require it is decided by
+/// [`TransferPal::requires_activation`].
 pub trait OtaPal: TransferPal {
     /// Get the state of the OTA update image.
     ///
@@ -290,7 +313,7 @@ pub trait OtaPal: TransferPal {
     /// - `Activate`: update is authenticated and ready to activate
     /// - `Fail`: update failed
     /// - `StartTest`: job is ready for optional self tests
-    /// - `UpdateComplete`: non-firmware file transfer completed
+    /// - `UpdateComplete`: transfer completed and no file requires activation
     async fn complete_callback(&mut self, event: OtaEvent) -> Result<(), PalError> {
         match event {
             OtaEvent::Activate => self.activate_new_image().await,

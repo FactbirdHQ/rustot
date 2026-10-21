@@ -12,10 +12,16 @@ pub mod mqtt;
 // Interfaces required for OTA
 pub trait ControlInterface {
     async fn request_job(&self) -> Result<(), TransferError>;
-    async fn update_job_status<E: StatusDetailsExt>(
+
+    /// Publish a job execution update.
+    ///
+    /// `progress.status_details` is already filled in for `status` and
+    /// `reason`; implementations only transport it, combined with
+    /// `progress.files` and `progress.extra_status`.
+    async fn update_job_status<E: StatusDetailsExt, const N: usize>(
         &self,
-        job: &JobContext<'_, E>,
-        progress: &mut ProgressState<E>,
+        job: &JobContext<'_, E, N>,
+        progress: &ProgressState<E, N>,
         status: JobStatus,
         reason: JobStatusReason,
     ) -> Result<(), TransferError>;

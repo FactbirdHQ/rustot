@@ -172,7 +172,7 @@ mod transfer {
     use crate::transfer::{
         config::Config,
         data_interface::{BlockProgress, DataInterface, Protocol},
-        encoding::{Bitmap, JobContext},
+        encoding::{Bitmap, FileContext, JobContext},
         status_details::StatusDetailsExt,
     };
 
@@ -290,27 +290,28 @@ mod transfer {
         where
             Self: 't;
 
-        async fn begin_transfer(
+        async fn begin_transfer<const N: usize>(
             &self,
-            job: &JobContext<'_, impl StatusDetailsExt>,
+            _job: &JobContext<'_, impl StatusDetailsExt, N>,
+            file: &FileContext<'_>,
             config: &Config,
             progress: &BlockProgress,
         ) -> Result<Self::Transfer<'_>, TransferError> {
-            let url = job.update_data_url.ok_or(TransferError::InvalidFile)?;
+            let url = file.update_data_url.ok_or(TransferError::InvalidFile)?;
 
             info!(
                 "[OTA-HTTP] Beginning transfer: url_len={} block_size={} file_size={}",
                 url.len(),
                 config.block_size,
-                job.filesize
+                file.filesize
             );
 
             Ok(HttpTransfer {
                 client: &self.client,
                 url: alloc::string::String::from(url),
-                file_id: job.fileid,
+                file_id: file.fileid,
                 block_size: config.block_size,
-                file_size: job.filesize,
+                file_size: file.filesize,
                 bitmap: progress.bitmap.clone(),
                 block_offset: progress.block_offset,
                 buf: vec![0u8; config.block_size],

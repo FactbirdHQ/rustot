@@ -92,18 +92,20 @@ async fn run_ota_http() -> Result<(), transfer::error::TransferError> {
     let job_agent = JobAgent::new(&mqtt);
 
     let mut sub = job_agent.subscribe().await?;
-    let mut message = sub.next_message().await.unwrap();
+    let message = sub.next_message().await.unwrap();
 
-    let execution = parse_job_message::<common::OtaJobs>(&mut message)
+    let execution = parse_job_message::<common::OtaJobs>(&message)
+        .expect("Invalid OTA job document")
         .expect("Failed to parse OTA job document — check logs for details");
 
-    let job_ctx =
-        common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(execution)?;
+    let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails, 1>(
+        execution,
+    )?;
 
     log::info!(
         "OTA job received! Protocols: {:?}, update_data_url present: {}",
         job_ctx.protocols,
-        job_ctx.update_data_url.is_some()
+        job_ctx.files[0].update_data_url.is_some()
     );
 
     let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
