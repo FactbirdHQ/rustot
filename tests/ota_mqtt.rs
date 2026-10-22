@@ -99,16 +99,18 @@ async fn run_ota_happy_path() -> Result<(), transfer::error::TransferError> {
 
         let mut sub = job_agent.subscribe().await?;
         let message = sub.next_message().await.unwrap();
-        let mut owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
+        let owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
         drop(message);
         sub.unsubscribe().await.unwrap();
 
-        let execution = parse_job_message::<common::OtaJobs>(&mut owned)
+        let execution = parse_job_message::<common::OtaJobs>(&owned)
+            .expect("Invalid OTA job document")
             .expect("Failed to parse OTA job document");
 
-        let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
-            execution,
-        )?;
+        let job_ctx = common::ota_context_from_execution::<
+            common::file_handler::TestStatusDetails,
+            1,
+        >(execution)?;
 
         let ota_config = transfer::config::Config {
             block_size: 4096,
@@ -125,6 +127,146 @@ async fn run_ota_happy_path() -> Result<(), transfer::error::TransferError> {
         // Run it twice in this particular integration test, in order to
         // simulate image commit after bootloader swap.
         // Construct a new context with self_test set to "active".
+        let mut status = rustot::transfer::StatusDetails::new();
+        status.set_self_test("active");
+        let job_ctx2 = rustot::transfer::encoding::JobContext {
+            status,
+            ..job_ctx.clone()
+        };
+
+        Transfer::perform_ota(&mqtt, &mqtt, &job_ctx2, &mut file_handler, &ota_config).await?;
+
+        Ok::<_, transfer::error::TransferError>(())
+    };
+
+    let mut transport = NalTransport::new(network, broker);
+
+    match embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(120),
+        select::select(stack.run(&mut transport), ota_fut),
+    )
+    .await
+    .unwrap()
+    {
+        select::Either::First(_) => {
+            unreachable!()
+        }
+        select::Either::Second(result) => result.unwrap(),
+    };
+
+    assert_eq!(file_handler.plateform_state, FileHandlerState::Boot);
+
+    Ok(())
+}
+
+/// Multi-file OTA job: a firmware file plus a non-firmware file in one job.
+/// Both must download over the same stream before activation, and the cloud
+/// job must end SUCCEEDED once after the self-test.
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn test_mqtt_ota_multi_file() {
+    let _ = env_logger::Builder::from_default_env()
+        .filter_module("serial_test", log::LevelFilter::Warn)
+        .try_init();
+
+    log::info!("Starting multi-file OTA test...");
+
+    let ctx =
+        match common::aws_ota::setup_with_files(&[aws_sdk_iot::types::Protocol::Mqtt], &[0, 1])
+            .await
+        {
+            Some(ctx) => ctx,
+            None => {
+                log::info!("Skipping OTA test: no valid AWS credentials or role assumption failed");
+                return;
+            }
+        };
+
+    let test_result = common::aws_ota::catch_unwind_future(run_ota_multi_file()).await;
+
+    let cloud_status = ctx.describe_job_execution().await;
+
+    ctx.cleanup().await;
+
+    match test_result {
+        Ok(inner) => {
+            inner.unwrap();
+            let (status, details) = cloud_status.expect("Failed to describe job execution");
+            assert_eq!(
+                status,
+                aws_sdk_iot::types::JobExecutionStatus::Succeeded,
+                "Expected cloud job status SUCCEEDED, got {:?} with details: {:?}",
+                status,
+                details
+            );
+        }
+        Err(panic) => {
+            if let Ok((status, details)) = &cloud_status {
+                log::error!(
+                    "Test panicked! Cloud job status at panic: {:?}, details: {:?}",
+                    status,
+                    details
+                );
+            }
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
+async fn run_ota_multi_file() -> Result<(), transfer::error::TransferError> {
+    let (thing_name, identity) = credentials::identity();
+
+    let hostname = credentials::HOSTNAME.unwrap();
+
+    static NETWORK: StaticCell<TlsNetwork> = StaticCell::new();
+    let network = NETWORK.init(TlsNetwork::new(hostname.to_owned(), identity));
+
+    let broker = DomainBroker::<_, 128>::new_with_port(hostname, 8883, network).unwrap();
+    let config = Config::builder()
+        .client_id(thing_name.try_into().unwrap())
+        .keepalive_interval(embassy_time::Duration::from_secs(50))
+        .build();
+
+    static STATE: StaticCell<State<NoopRawMutex, 4096, { 4096 * 20 }>> = StaticCell::new();
+    let state = STATE.init(State::new());
+    let (mut stack, client) = mqttrust::new(state, config);
+
+    let mut file_handler = FileHandler::new("tests/assets/ota_file".to_owned());
+
+    let ota_fut = async {
+        let mqtt = Mqtt(&client);
+        let job_agent = JobAgent::new(&mqtt);
+
+        let mut sub = job_agent.subscribe().await?;
+        let message = sub.next_message().await.unwrap();
+        let owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
+        drop(message);
+        sub.unsubscribe().await.unwrap();
+
+        let execution = parse_job_message::<common::OtaJobs<2>>(&owned)
+            .expect("Invalid OTA job document")
+            .expect("Failed to parse OTA job document");
+
+        let job_ctx = common::ota_context_from_execution::<
+            common::file_handler::TestStatusDetails,
+            2,
+        >(execution)?;
+
+        assert_eq!(job_ctx.files.len(), 2);
+        assert_ne!(job_ctx.files[0].fileid, job_ctx.files[1].fileid);
+
+        let ota_config = transfer::config::Config {
+            block_size: 4096,
+            ..Default::default()
+        };
+
+        Transfer::perform_ota(&mqtt, &mqtt, &job_ctx, &mut file_handler, &ota_config).await?;
+
+        assert_eq!(file_handler.closed_files, 2);
+        assert_eq!(file_handler.plateform_state, FileHandlerState::Swap);
+
+        log::info!("Running OTA handler second time to verify state match...");
+
         let mut status = rustot::transfer::StatusDetails::new();
         status.set_self_test("active");
         let job_ctx2 = rustot::transfer::encoding::JobContext {
@@ -307,16 +449,18 @@ async fn run_ota_cancel(
 
         let mut sub = job_agent.subscribe().await?;
         let message = sub.next_message().await.unwrap();
-        let mut owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
+        let owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
         drop(message);
         sub.unsubscribe().await.unwrap();
 
-        let execution = parse_job_message::<common::OtaJobs>(&mut owned)
+        let execution = parse_job_message::<common::OtaJobs>(&owned)
+            .expect("Invalid OTA job document")
             .expect("Failed to parse OTA job document");
 
-        let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
-            execution,
-        )?;
+        let job_ctx = common::ota_context_from_execution::<
+            common::file_handler::TestStatusDetails,
+            1,
+        >(execution)?;
 
         // Use small block_size + max_blocks_per_request=1 to slow down the
         // download, giving us a comfortable window to cancel the job
@@ -480,12 +624,13 @@ async fn run_job_reject() -> Result<(), transfer::error::TransferError> {
 
         let mut sub = job_agent.subscribe().await?;
         let message = sub.next_message().await.unwrap();
-        let mut owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
+        let owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
         drop(message);
         sub.unsubscribe().await.unwrap();
 
-        let execution =
-            parse_job_message::<common::OtaJobs>(&mut owned).expect("Failed to parse job document");
+        let execution = parse_job_message::<common::OtaJobs>(&owned)
+            .expect("Invalid OTA job document")
+            .expect("Failed to parse job document");
 
         job_agent
             .reject_job(execution.job_id, "unsupported job type")
@@ -542,16 +687,18 @@ async fn run_ota_signature_failure() -> Result<(), transfer::error::TransferErro
 
         let mut sub = job_agent.subscribe().await?;
         let message = sub.next_message().await.unwrap();
-        let mut owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
+        let owned = OwnedMessage::<256, 4096>::from_ref(&message).unwrap();
         drop(message);
         sub.unsubscribe().await.unwrap();
 
-        let execution = parse_job_message::<common::OtaJobs>(&mut owned)
+        let execution = parse_job_message::<common::OtaJobs>(&owned)
+            .expect("Invalid OTA job document")
             .expect("Failed to parse OTA job document");
 
-        let job_ctx = common::ota_context_from_execution::<common::file_handler::TestStatusDetails>(
-            execution,
-        )?;
+        let job_ctx = common::ota_context_from_execution::<
+            common::file_handler::TestStatusDetails,
+            1,
+        >(execution)?;
 
         let ota_config = transfer::config::Config {
             block_size: 4096,

@@ -17,10 +17,10 @@ use rustot::{
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
-pub enum OtaJobs<'a> {
+pub enum OtaJobs<'a, const N: usize = 1> {
     #[serde(rename = "afr_ota")]
     #[serde(borrow)]
-    Ota(OtaJob<'a>),
+    Ota(OtaJob<'a, N>),
 }
 
 /// Convert a parsed [`JobExecution`] into a [`JobContext`].
@@ -28,9 +28,9 @@ pub enum OtaJobs<'a> {
 /// Extracts the OTA document from the job execution and constructs the
 /// context needed by [`Transfer::perform_ota`].
 #[allow(dead_code)]
-pub fn ota_context_from_execution<'a, E: StatusDetailsExt>(
-    execution: JobExecution<'a, OtaJobs<'a>>,
-) -> Result<JobContext<'a, E>, TransferError> {
+pub fn ota_context_from_execution<'a, E: StatusDetailsExt, const N: usize>(
+    execution: JobExecution<'a, OtaJobs<'a, N>>,
+) -> Result<JobContext<'a, E, N>, TransferError> {
     let ota_doc = match execution.job_document {
         Some(OtaJobs::Ota(doc)) => doc,
         None => return Err(TransferError::NoActiveJob),
@@ -39,7 +39,6 @@ pub fn ota_context_from_execution<'a, E: StatusDetailsExt>(
     JobContext::new(
         &ota_doc,
         execution.job_id,
-        0,
         execution.status_details.as_ref(),
     )
 }

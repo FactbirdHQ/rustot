@@ -54,7 +54,7 @@ impl Serialize for Bitmap {
 ///
 /// Returned by [`JobDocument::file`]. Contains the raw values from the
 /// wire format — conversion to typed fields (e.g. [`FileType`]) happens
-/// in [`JobContext::new`].
+/// when it is converted into a [`FileContext`].
 pub struct FileInfo<'a> {
     pub filepath: &'a str,
     pub filesize: usize,
@@ -71,7 +71,9 @@ pub struct FileInfo<'a> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FileType {
     /// Firmware update (`file_type == 0` in AWS IoT).
-    /// Triggers self-test, image activation, and device reset via [`OtaPal`](super::pal::OtaPal).
+    ///
+    /// By default the only file type that requires activation, see
+    /// [`TransferPal::requires_activation`](super::pal::TransferPal::requires_activation).
     Firmware,
     /// Non-firmware file.
     Other(u32),
@@ -89,20 +91,17 @@ pub trait JobDocument<'a> {
     fn stream_name(&self) -> Option<&'a str>;
     /// File metadata for the given index. Returns `None` if out of bounds.
     fn file(&self, idx: usize) -> Option<FileInfo<'a>>;
+    /// Number of files described by this document.
+    fn file_count(&self) -> usize {
+        (0..).take_while(|&idx| self.file(idx).is_some()).count()
+    }
 }
 
-/// Context for an active transfer job. Borrows all string data from the
-/// caller's payload buffer — zero string copies.
+/// A single file within a transfer job.
 ///
-/// Constructed from any [`JobDocument`] via [`JobContext::new`].
-///
-/// `E` is the user's [`StatusDetailsExt`] type, the same type used by the PAL
-/// for outgoing status serialization. During construction, incoming status
-/// details are routed: known keys → [`StatusDetails`], unknown keys →
-/// `E::accept_entry()`.
-#[derive(Clone)]
-pub struct JobContext<'a, E: StatusDetailsExt = ()> {
-    pub job_name: &'a str,
+/// Borrows all string data from the job document payload.
+#[derive(Debug, Clone)]
+pub struct FileContext<'a> {
     pub filepath: &'a str,
     pub filesize: usize,
     pub fileid: u8,
@@ -111,43 +110,17 @@ pub struct JobContext<'a, E: StatusDetailsExt = ()> {
     pub auth_scheme: Option<&'a str>,
     pub signature: Option<Signature<'a>>,
     pub file_type: Option<FileType>,
-    pub protocols: heapless::Vec<Protocol, 2>,
-    pub stream_name: Option<&'a str>,
-    pub status: StatusDetails,
-    pub extra_status: E,
 }
 
-impl<'a, E: StatusDetailsExt> JobContext<'a, E> {
-    /// Construct a [`JobContext`] from any [`JobDocument`].
-    pub fn new<D: JobDocument<'a>>(
-        doc: &D,
-        job_name: &'a str,
-        file_idx: usize,
-        status_details: Option<&crate::jobs::StatusDetails<'a>>,
-    ) -> Result<Self, TransferError> {
-        let file = doc.file(file_idx).ok_or(TransferError::InvalidFile)?;
+impl<'a> TryFrom<FileInfo<'a>> for FileContext<'a> {
+    type Error = TransferError;
 
+    fn try_from(file: FileInfo<'a>) -> Result<Self, Self::Error> {
         if file.filesize == 0 {
             return Err(TransferError::ZeroFileSize);
         }
 
-        let mut extra_status = E::default();
-        let mut status = StatusDetails::new();
-        if let Some(details) = status_details {
-            for (&key, &value) in details.iter() {
-                match key {
-                    "self_test" => status.set_self_test(value),
-                    // progress, reason, error_code are recomputed during transfer
-                    "progress" | "reason" | "error_code" => {}
-                    _ => {
-                        extra_status.accept_entry(key, value);
-                    }
-                }
-            }
-        }
-
-        Ok(JobContext {
-            job_name,
+        Ok(FileContext {
             filepath: file.filepath,
             filesize: file.filesize,
             fileid: file.fileid,
@@ -159,12 +132,90 @@ impl<'a, E: StatusDetailsExt> JobContext<'a, E> {
                 0 => FileType::Firmware,
                 n => FileType::Other(n),
             }),
+        })
+    }
+}
+
+/// Context for an active transfer job. Borrows all string data from the
+/// caller's payload buffer — zero string copies.
+///
+/// Constructed from any [`JobDocument`] via [`JobContext::new`].
+///
+/// `E` is the user's [`StatusDetailsExt`] type, the same type used by the PAL
+/// for outgoing status serialization. During construction, incoming status
+/// details are routed: known keys → [`StatusDetails`], unknown keys →
+/// `E::accept_entry()`.
+///
+/// `N` is the maximum number of files per job. The default of 1 matches the
+/// common single-image OTA case; raise it to accept multi-file jobs.
+#[derive(Clone)]
+pub struct JobContext<'a, E: StatusDetailsExt = (), const N: usize = 1> {
+    pub job_name: &'a str,
+    pub files: heapless::Vec<FileContext<'a>, N>,
+    pub protocols: heapless::Vec<Protocol, 2>,
+    pub stream_name: Option<&'a str>,
+    pub status: StatusDetails,
+    pub extra_status: E,
+}
+
+impl<'a, E: StatusDetailsExt, const N: usize> JobContext<'a, E, N> {
+    /// Construct a [`JobContext`] from any [`JobDocument`], taking every file
+    /// it describes.
+    ///
+    /// Fails with [`TransferError::Overflow`] if the document describes more
+    /// than `N` files, and with [`TransferError::InvalidFile`] if it describes
+    /// none.
+    pub fn new<D: JobDocument<'a>>(
+        doc: &D,
+        job_name: &'a str,
+        status_details: Option<&crate::jobs::StatusDetails<'a>>,
+    ) -> Result<Self, TransferError> {
+        const { super::status_details::assert_files_fit::<N>() };
+
+        let file_count = doc.file_count();
+        if file_count == 0 {
+            return Err(TransferError::InvalidFile);
+        }
+        if file_count > N {
+            return Err(TransferError::Overflow);
+        }
+
+        let mut files = heapless::Vec::new();
+        for idx in 0..file_count {
+            let file = doc.file(idx).ok_or(TransferError::InvalidFile)?;
+            // Capacity checked above.
+            let _ = files.push(FileContext::try_from(file)?);
+        }
+
+        let mut extra_status = E::default();
+        let mut status = StatusDetails::new();
+        if let Some(details) = status_details {
+            for (&key, &value) in details.iter() {
+                match key {
+                    "self_test" => status.set_self_test(value),
+                    // Recomputed during transfer
+                    "progress" | "reason" | "error_code" | "files" => {}
+                    _ => {
+                        extra_status.accept_entry(key, value);
+                    }
+                }
+            }
+        }
+
+        Ok(JobContext {
+            job_name,
+            files,
             protocols: heapless::Vec::from_slice(doc.protocols())
                 .map_err(|_| TransferError::Overflow)?,
             stream_name: doc.stream_name(),
             status,
             extra_status,
         })
+    }
+
+    /// Total size in bytes of all files in the job.
+    pub fn total_size(&self) -> usize {
+        self.files.iter().map(|f| f.filesize).sum()
     }
 
     pub fn self_test(&self) -> bool {
