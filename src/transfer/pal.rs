@@ -12,6 +12,8 @@ pub enum ImageStateReason {
     InvalidDataProtocol,
     UserAbort,
     VersionCheck,
+    /// The self-test did not finish within `Config::self_test_timeout`.
+    SelfTestTimeout,
     Pal(PalError),
 }
 
@@ -29,6 +31,7 @@ impl ImageStateReason {
             ImageStateReason::InvalidDataProtocol => 2005,
             ImageStateReason::UserAbort => 2006,
             ImageStateReason::VersionCheck => 2007,
+            ImageStateReason::SelfTestTimeout => 2008,
             ImageStateReason::SignatureCheckPassed => 0, // Not an error
             ImageStateReason::Pal(e) => e.error_code(),
         }
@@ -44,6 +47,7 @@ impl ImageStateReason {
             ImageStateReason::InvalidDataProtocol => "invalid_protocol",
             ImageStateReason::UserAbort => "user_abort",
             ImageStateReason::VersionCheck => "version_check",
+            ImageStateReason::SelfTestTimeout => "self_test_timeout",
             ImageStateReason::SignatureCheckPassed => "sig_check_passed",
             ImageStateReason::Pal(e) => e.as_reason_str(),
         }
@@ -131,7 +135,8 @@ pub enum OtaEvent {
     Fail,
     /// OTA job is now ready for optional user self tests.
     StartTest,
-
+    /// The self-test failed or timed out. The update has been rejected and
+    /// [`OtaPal::reset_device`] is called next to roll it back.
     SelfTestFailed,
 
     UpdateComplete,
@@ -312,7 +317,9 @@ pub trait OtaPal: TransferPal {
     /// Called with:
     /// - `Activate`: update is authenticated and ready to activate
     /// - `Fail`: update failed
-    /// - `StartTest`: job is ready for optional self tests
+    /// - `StartTest`: job is ready for optional self tests. Returning an
+    ///   error, or exceeding `Config::self_test_timeout`, fails the self-test
+    /// - `SelfTestFailed`: self-test failed, the update was rejected
     /// - `UpdateComplete`: transfer completed and no file requires activation
     async fn complete_callback(&mut self, event: OtaEvent) -> Result<(), PalError> {
         match event {
@@ -323,7 +330,7 @@ pub trait OtaPal: TransferPal {
                 Ok(())
             }
             OtaEvent::SelfTestFailed => {
-                error!("Self-test failed, shutting down OTA Agent.");
+                error!("Self-test failed, the update was rejected.");
                 Ok(())
             }
         }

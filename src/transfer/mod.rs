@@ -496,30 +496,22 @@ impl Transfer {
 
         match (job_self_test, platform_self_test) {
             (true, true) => {
-                // Run self-test!
-                Self::set_image_state_with_reason(
-                    pal,
-                    job_updater,
-                    ImageState::Testing(ImageStateReason::VersionCheck),
-                )
-                .await?;
+                let Err(reason) = Self::run_self_test(pal, job_updater).await? else {
+                    job_updater
+                        .update_job_status(JobStatus::Succeeded, JobStatusReason::Accepted)
+                        .await?;
+                    return Ok(None);
+                };
 
-                info!("Beginning self-test");
-
-                let test_fut = pal.complete_callback(pal::OtaEvent::StartTest);
-
-                match job_updater.config.self_test_timeout {
-                    Some(timeout) => embassy_time::with_timeout(timeout, test_fut)
-                        .await
-                        .map_err(|_| error::TransferError::Timeout)?,
-                    None => test_fut.await,
-                }?;
-
-                job_updater
-                    .update_job_status(JobStatus::Succeeded, JobStatusReason::Accepted)
+                // Left unreported, the job would stay IN_PROGRESS and block
+                // every later job. Rejecting before the reset matches the
+                // mismatch branch below: the reset is what rolls back.
+                error!("Self-test failed ({:?}), rejecting the update", reason);
+                Self::set_image_state_with_reason(pal, job_updater, ImageState::Rejected(reason))
                     .await?;
-
-                Ok(None)
+                pal.complete_callback(pal::OtaEvent::SelfTestFailed).await?;
+                pal.reset_device().await?;
+                Err(error::TransferError::ResetFailed)
             }
             (false, false) => Ok(Some(())),
             (false, true) => {
@@ -544,6 +536,36 @@ impl Transfer {
                 Err(error::TransferError::ResetFailed)
             }
         }
+    }
+
+    /// Enter self-test and run it. The outer error is a failure to report
+    /// status; the inner one is why the update must be rejected.
+    async fn run_self_test<C: ControlInterface, P: pal::OtaPal, const N: usize>(
+        pal: &mut P,
+        job_updater: &JobUpdater<'_, C, P::StatusDetails, N>,
+    ) -> Result<Result<(), ImageStateReason>, error::TransferError> {
+        // Not via `set_image_state_with_reason`: on failure it reports the
+        // job FAILED itself, and the caller must reject only once.
+        if let Err(e) = pal
+            .set_platform_image_state(ImageState::Testing(ImageStateReason::VersionCheck))
+            .await
+        {
+            return Ok(Err(ImageStateReason::Pal(e)));
+        }
+        job_updater
+            .update_job_status(JobStatus::InProgress, JobStatusReason::SelfTestActive)
+            .await?;
+
+        info!("Beginning self-test");
+
+        let test_fut = pal.complete_callback(pal::OtaEvent::StartTest);
+        Ok(match job_updater.config.self_test_timeout {
+            Some(timeout) => match embassy_time::with_timeout(timeout, test_fut).await {
+                Ok(result) => result.map_err(ImageStateReason::Pal),
+                Err(_) => Err(ImageStateReason::SelfTestTimeout),
+            },
+            None => test_fut.await.map_err(ImageStateReason::Pal),
+        })
     }
 
     /// Set the OTA image state and report it to the cloud.
@@ -980,6 +1002,9 @@ mod tests {
         closed: BTreeMap<u8, Vec<u8>>,
         fail_close: Option<u8>,
         pending_commit: bool,
+        fail_self_test: Option<PalError>,
+        hang_self_test: bool,
+        fail_testing_state: bool,
         events: Vec<String>,
     }
 
@@ -1025,6 +1050,9 @@ mod tests {
 
         async fn set_platform_image_state(&mut self, state: ImageState) -> Result<(), PalError> {
             self.events.push(format!("image_state:{:?}", state));
+            if self.fail_testing_state && matches!(state, ImageState::Testing(_)) {
+                return Err(PalError::BadImageState);
+            }
             Ok(())
         }
 
@@ -1035,6 +1063,14 @@ mod tests {
 
         async fn complete_callback(&mut self, event: OtaEvent) -> Result<(), PalError> {
             self.events.push(format!("callback:{:?}", event));
+            if event == OtaEvent::StartTest {
+                if self.hang_self_test {
+                    core::future::pending::<()>().await;
+                }
+                if let Some(e) = self.fail_self_test {
+                    return Err(e);
+                }
+            }
             Ok(())
         }
     }
@@ -1364,6 +1400,156 @@ mod tests {
         assert_eq!(
             pal.events,
             ["image_state:Testing(VersionCheck)", "callback:StartTest"]
+        );
+    }
+
+    fn self_test_job() -> JobContext<'static, (), 2> {
+        let mut job = job::<2>(&[
+            file(0, 8, Some(FileType::Firmware)),
+            file(1, 3, Some(FileType::Other(1))),
+        ]);
+        job.status.set_self_test("ready");
+        job
+    }
+
+    #[test]
+    fn failed_self_test_rejects_and_resets() {
+        let job = self_test_job();
+        let data = data(&[]);
+        let control = MockControl::default();
+        let mut pal = MockPal {
+            pending_commit: true,
+            fail_self_test: Some(PalError::CommitFailed),
+            ..Default::default()
+        };
+
+        let result = embassy_futures::block_on(Transfer::perform_ota(
+            &control,
+            &data,
+            &job,
+            &mut pal,
+            &config(),
+        ));
+
+        assert_eq!(result, Err(TransferError::ResetFailed));
+        // The downloads themselves succeeded; only the job is rejected.
+        let files = r#""files":"[{\"id\":0,\"status\":\"succeeded\",\"progress\":\"2/2\"},{\"id\":1,\"status\":\"succeeded\",\"progress\":\"1/1\"}]""#;
+        assert_eq!(
+            *control.updates.borrow(),
+            [
+                (
+                    JobStatus::InProgress,
+                    format!(r#"{{"self_test":"active","progress":"3/3",{files}}}"#)
+                ),
+                (
+                    JobStatus::Failed,
+                    format!(
+                        r#"{{"self_test":"rejected","progress":"3/3","reason":"commit_failed","error_code":1008,{files}}}"#
+                    )
+                ),
+            ]
+        );
+        assert_eq!(
+            pal.events,
+            [
+                "image_state:Testing(VersionCheck)",
+                "callback:StartTest",
+                "image_state:Rejected(Pal(CommitFailed))",
+                "callback:SelfTestFailed",
+                "reset"
+            ]
+        );
+    }
+
+    #[test]
+    fn self_test_timeout_rejects_and_resets() {
+        let job = self_test_job();
+        let data = data(&[]);
+        let control = MockControl::default();
+        let mut pal = MockPal {
+            pending_commit: true,
+            hang_self_test: true,
+            ..Default::default()
+        };
+        let config = config::Config {
+            self_test_timeout: Some(embassy_time::Duration::from_millis(10)),
+            ..config()
+        };
+
+        let result = embassy_futures::block_on(Transfer::perform_ota(
+            &control, &data, &job, &mut pal, &config,
+        ));
+
+        assert_eq!(result, Err(TransferError::ResetFailed));
+        // The downloads themselves succeeded; only the job is rejected.
+        let files = r#""files":"[{\"id\":0,\"status\":\"succeeded\",\"progress\":\"2/2\"},{\"id\":1,\"status\":\"succeeded\",\"progress\":\"1/1\"}]""#;
+        assert_eq!(
+            *control.updates.borrow(),
+            [
+                (
+                    JobStatus::InProgress,
+                    format!(r#"{{"self_test":"active","progress":"3/3",{files}}}"#)
+                ),
+                (
+                    JobStatus::Failed,
+                    format!(
+                        r#"{{"self_test":"rejected","progress":"3/3","reason":"self_test_timeout","error_code":2008,{files}}}"#
+                    )
+                ),
+            ]
+        );
+        assert_eq!(
+            pal.events,
+            [
+                "image_state:Testing(VersionCheck)",
+                "callback:StartTest",
+                "image_state:Rejected(SelfTestTimeout)",
+                "callback:SelfTestFailed",
+                "reset"
+            ]
+        );
+    }
+
+    /// A self-test that cannot start must reject the update once, not report
+    /// FAILED and then run the test and report SUCCEEDED.
+    #[test]
+    fn self_test_that_cannot_start_rejects_once() {
+        let job = self_test_job();
+        let data = data(&[]);
+        let control = MockControl::default();
+        let mut pal = MockPal {
+            pending_commit: true,
+            fail_testing_state: true,
+            ..Default::default()
+        };
+
+        let result = embassy_futures::block_on(Transfer::perform_ota(
+            &control,
+            &data,
+            &job,
+            &mut pal,
+            &config(),
+        ));
+
+        assert_eq!(result, Err(TransferError::ResetFailed));
+        let files = r#""files":"[{\"id\":0,\"status\":\"succeeded\",\"progress\":\"2/2\"},{\"id\":1,\"status\":\"succeeded\",\"progress\":\"1/1\"}]""#;
+        assert_eq!(
+            *control.updates.borrow(),
+            [(
+                JobStatus::Failed,
+                format!(
+                    r#"{{"self_test":"rejected","progress":"3/3","reason":"bad_image_state","error_code":1007,{files}}}"#
+                )
+            )]
+        );
+        assert_eq!(
+            pal.events,
+            [
+                "image_state:Testing(VersionCheck)",
+                "image_state:Rejected(Pal(BadImageState))",
+                "callback:SelfTestFailed",
+                "reset"
+            ]
         );
     }
 
