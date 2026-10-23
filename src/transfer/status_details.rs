@@ -478,6 +478,7 @@ mod tests {
             ImageStateReason::InvalidDataProtocol,
             ImageStateReason::UserAbort,
             ImageStateReason::VersionCheck,
+            ImageStateReason::SelfTestTimeout,
         ];
         let pal = [
             PalError::SignatureCheckFailed,
