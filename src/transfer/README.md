@@ -44,14 +44,16 @@ control-plane API.
    file requires activation the job is `SUCCEEDED`; otherwise it stays
    `IN_PROGRESS` (self-test `ready`). On any failure it calls `abort` once
    and marks the job `FAILED`.
-5. (OTA only) `perform_ota` fires `OtaEvent::Activate`. After activation
-   (typically a reset), the device re-enters self-test; your `OtaPal`
-   accepts or rejects the update and reports the outcome. If the PAL
-   can't enter the `Testing` state, or the `StartTest` callback returns an
-   error or exceeds `Config::self_test_timeout`, the engine rejects the
-   update, marks the job `FAILED`, fires `OtaEvent::SelfTestFailed` and
-   calls `reset_device` to roll back. With plain `perform`, finishing an
-   activated job is up to the caller (e.g. `JobAgent::succeed_job`).
+5. (OTA only) `perform_ota` fires `OtaEvent::Activate`. If the callback
+   returns an error, the engine rejects the update, marks the job `FAILED`
+   and fires `OtaEvent::Fail`. After activation (typically a reset), the
+   device re-enters self-test; your `OtaPal` accepts or rejects the update
+   and reports the outcome. If the PAL can't enter the `Testing` state, or
+   the `StartTest` callback returns an error or exceeds
+   `Config::self_test_timeout`, the engine rejects the update, marks the job
+   `FAILED`, fires `OtaEvent::SelfTestFailed` and calls `reset_device` to
+   roll back. With plain `perform`, finishing an activated job is up to the
+   caller (e.g. `JobAgent::succeed_job`).
 
 ## Data interfaces
 

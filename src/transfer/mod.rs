@@ -225,8 +225,12 @@ impl Transfer {
                     event
                 );
 
-                pal.complete_callback(event).await?;
-                Ok(())
+                match pal.complete_callback(event).await {
+                    Err(e) if event == pal::OtaEvent::Activate => {
+                        Self::reject_failed_activation(pal, &job_updater, e).await
+                    }
+                    result => Ok(result?),
+                }
             }
             Err(error::TransferError::MomentumAbort) => {
                 warn!("[OTA] Momentum abort triggered");
@@ -267,6 +271,24 @@ impl Transfer {
                 Err(e)
             }
         }
+    }
+
+    /// Left unreported, a failed activation would leave the job IN_PROGRESS
+    /// (`self_test: ready`) until the next delivery.
+    async fn reject_failed_activation<C: ControlInterface, P: pal::OtaPal, const N: usize>(
+        pal: &mut P,
+        job_updater: &JobUpdater<'_, C, P::StatusDetails, N>,
+        e: pal::PalError,
+    ) -> Result<(), error::TransferError> {
+        error!("Activation failed ({:?}), rejecting the update", e);
+        Self::set_image_state_with_reason(
+            pal,
+            job_updater,
+            ImageState::Rejected(ImageStateReason::Pal(e)),
+        )
+        .await?;
+        pal.complete_callback(pal::OtaEvent::Fail).await?;
+        Err(error::TransferError::Pal(e))
     }
 
     fn requires_activation<P: pal::TransferPal, const N: usize>(
@@ -1005,6 +1027,7 @@ mod tests {
         fail_self_test: Option<PalError>,
         hang_self_test: bool,
         fail_testing_state: bool,
+        fail_activate: Option<PalError>,
         events: Vec<String>,
     }
 
@@ -1063,6 +1086,11 @@ mod tests {
 
         async fn complete_callback(&mut self, event: OtaEvent) -> Result<(), PalError> {
             self.events.push(format!("callback:{:?}", event));
+            if event == OtaEvent::Activate {
+                if let Some(e) = self.fail_activate {
+                    return Err(e);
+                }
+            }
             if event == OtaEvent::StartTest {
                 if self.hang_self_test {
                     core::future::pending::<()>().await;
@@ -1189,6 +1217,58 @@ mod tests {
                 JobStatus::InProgress,
                 r#"{"self_test":"ready","progress":"3/3","files":"[{\"id\":0,\"status\":\"succeeded\",\"progress\":\"2/2\"},{\"id\":1,\"status\":\"succeeded\",\"progress\":\"1/1\"}]"}"#.to_string()
             )]
+        );
+    }
+
+    #[test]
+    fn failed_activation_rejects_the_update() {
+        let job = job::<2>(&[
+            file(0, 8, Some(FileType::Firmware)),
+            file(1, 3, Some(FileType::Other(1))),
+        ]);
+        let data = data(&[(0, 8), (1, 3)]);
+        let control = MockControl::default();
+        let mut pal = MockPal {
+            fail_activate: Some(PalError::Other),
+            ..Default::default()
+        };
+
+        let result = embassy_futures::block_on(Transfer::perform_ota(
+            &control,
+            &data,
+            &job,
+            &mut pal,
+            &config(),
+        ));
+
+        assert_eq!(result, Err(TransferError::Pal(PalError::Other)));
+        assert_eq!(
+            pal.events,
+            [
+                "create:0",
+                "close:0",
+                "create:1",
+                "close:1",
+                "callback:Activate",
+                "image_state:Rejected(Pal(Other))",
+                "callback:Fail"
+            ]
+        );
+        let files = r#""files":"[{\"id\":0,\"status\":\"succeeded\",\"progress\":\"2/2\"},{\"id\":1,\"status\":\"succeeded\",\"progress\":\"1/1\"}]""#;
+        assert_eq!(
+            *control.updates.borrow(),
+            [
+                (
+                    JobStatus::InProgress,
+                    format!(r#"{{"self_test":"ready","progress":"3/3",{files}}}"#)
+                ),
+                (
+                    JobStatus::Failed,
+                    format!(
+                        r#"{{"self_test":"rejected","progress":"3/3","reason":"other","error_code":1099,{files}}}"#
+                    )
+                ),
+            ]
         );
     }
 
