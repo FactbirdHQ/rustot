@@ -135,6 +135,11 @@ pub struct JobExecution<'a, J> {
     // execution.
     #[serde(rename = "statusDetails")]
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        borrow,
+        default,
+        deserialize_with = "lenient_status_details::deserialize"
+    )]
     pub status_details: Option<StatusDetails<'a>>,
     // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
@@ -156,8 +161,12 @@ pub struct JobExecutionState<'a> {
     /// A collection of name/value pairs that describe the status of the job
     /// execution.
     #[serde(rename = "statusDetails")]
-    #[serde(borrow)]
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        borrow,
+        default,
+        deserialize_with = "lenient_status_details::deserialize"
+    )]
     pub status_details: Option<StatusDetails<'a>>,
     // The version of the job execution. Job execution versions are incremented
     // each time they are updated by a device.
@@ -307,6 +316,78 @@ pub struct ErrorResponse<'a> {
     pub execution_state: Option<JobExecutionState<'a>>,
 }
 
+/// Skips the `statusDetails` entries a [`StatusDetails`] can't hold, rather than
+/// failing the whole message: a multi-file job's `files` is escaped JSON, which
+/// can't be borrowed, and a full map can't take more.
+mod lenient_status_details {
+    use core::fmt;
+
+    use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
+
+    use super::StatusDetails;
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<StatusDetails<'de>>, D::Error> {
+        Ok(Option::<Lenient>::deserialize(deserializer)?.map(|l| l.0))
+    }
+
+    struct Lenient<'a>(StatusDetails<'a>);
+
+    impl<'de> Deserialize<'de> for Lenient<'de> {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_map(LenientVisitor)
+        }
+    }
+
+    struct LenientVisitor;
+
+    impl<'de> Visitor<'de> for LenientVisitor {
+        type Value = Lenient<'de>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a map of strings")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut details = StatusDetails::new();
+            while let Some((key, value)) = map.next_entry::<Borrowed, Borrowed>()? {
+                if let (Some(key), Some(value)) = (key.0, value.0) {
+                    let _ = details.insert(key, value);
+                }
+            }
+            Ok(Lenient(details))
+        }
+    }
+
+    /// `None` for a string that had to be unescaped into a temporary.
+    struct Borrowed<'a>(Option<&'a str>);
+
+    impl<'de> Deserialize<'de> for Borrowed<'de> {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_str(BorrowedVisitor)
+        }
+    }
+
+    struct BorrowedVisitor;
+
+    impl<'de> Visitor<'de> for BorrowedVisitor {
+        type Value = Borrowed<'de>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a string")
+        }
+
+        fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E> {
+            Ok(Borrowed(Some(v)))
+        }
+
+        fn visit_str<E>(self, _v: &str) -> Result<Self::Value, E> {
+            Ok(Borrowed(None))
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -329,6 +410,55 @@ mod test {
 
         #[serde(other)]
         Unknown,
+    }
+
+    const MULTI_FILE_EXECUTION: &str = r#"{
+        "timestamp": 1587471560,
+        "execution": {
+            "jobId": "mini",
+            "status": "IN_PROGRESS",
+            "statusDetails": {
+                "self_test": "active",
+                "progress": "3/3",
+                "files": "[{\"id\":0,\"status\":\"succeeded\",\"progress\":\"2/2\"}]"
+            },
+            "queuedAt": 1587471559,
+            "lastUpdatedAt": 1587471559,
+            "versionNumber": 3
+        }
+    }"#;
+
+    #[test]
+    fn escaped_status_details_are_skipped_not_fatal() {
+        let response: DescribeJobExecutionResponse<JobDetails> =
+            serde_json::from_str(MULTI_FILE_EXECUTION).unwrap();
+        let details = response.execution.unwrap().status_details.unwrap();
+
+        assert_eq!(details.get("self_test"), Some(&"active"));
+        assert_eq!(details.get("progress"), Some(&"3/3"));
+        assert_eq!(details.get("files"), None);
+    }
+
+    #[test]
+    fn escaped_status_details_parse_without_an_unescape_buffer() {
+        let (response, _) =
+            from_slice::<DescribeJobExecutionResponse<JobDetails>>(MULTI_FILE_EXECUTION.as_bytes())
+                .unwrap();
+        let details = response.execution.unwrap().status_details.unwrap();
+
+        assert_eq!(details.get("self_test"), Some(&"active"));
+    }
+
+    #[test]
+    fn status_details_beyond_capacity_are_skipped() {
+        let entries: std::vec::Vec<_> = (0..10).map(|i| format!(r#""k{i}":"v""#)).collect();
+        let payload = format!(
+            r#"{{"status":"IN_PROGRESS","statusDetails":{{{}}},"versionNumber":1}}"#,
+            entries.join(",")
+        );
+        let state: JobExecutionState = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(state.status_details.unwrap().len(), 8);
     }
 
     #[test]

@@ -54,7 +54,8 @@ The full [`JobTopic`] enum covers every variant.
 
 `statusDetails` is a free-form `LinearMap<&str, &str, 8>` ([`StatusDetails`]);
 both the device and the cloud may carry arbitrary key/value pairs across
-updates.
+updates. Entries it can't hold are skipped on receipt: values that had to be
+unescaped (such as a multi-file job's `files`) and entries past the eighth.
 
 ## Example
 
