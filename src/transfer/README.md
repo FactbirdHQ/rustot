@@ -98,7 +98,10 @@ rollback.
 ## Status details
 
 Every job update carries a flat `statusDetails` map (AWS IoT Jobs only
-accepts string values):
+accepts string values). [`StatusDetails<E, N>`] is that map as one type: it
+serializes into each update and deserializes from the job execution AWS sends
+back, with the PAL's `E: StatusDetailsExt` contributing (and reading back) its
+own keys:
 
 | Key | Content |
 |---|---|
@@ -114,6 +117,11 @@ where `id` is the job document's `fileid` and `status` is `pending`,
 appear on the failed file. AWS limits each value to 1024 characters, which
 caps `N` at 10 files on 64-bit targets and 14 on 32-bit targets; a larger
 `N` fails to compile.
+
+Read the execution with `S = StatusDetails<E, N>` and pass its
+`status_details` to [`JobContext::new`]. Incoming values it can't parse are
+logged and left unset rather than failing the message, so a stray value can't
+leave the job stuck.
 
 Use [`JobAgent::parse_or_reject`] to receive jobs: a document that doesn't
 deserialize is rejected instead of staying queued and blocking every later
@@ -133,7 +141,12 @@ numeric error codes:
 ```rust
 use rustot::jobs::stream::JobAgent;
 use rustot::mqtt::{Mqtt, OwnedMessage};
-use rustot::transfer::{Transfer, config::Config, encoding::afr_ota::OtaJob, error::TransferError};
+use rustot::transfer::{
+    StatusDetails, Transfer,
+    config::Config,
+    encoding::{JobContext, afr_ota::OtaJob},
+    error::TransferError,
+};
 
 #[derive(serde::Deserialize)]
 enum Jobs<'a> {
@@ -156,12 +169,15 @@ async fn run_ota<C: rustot::mqtt::MqttClient, P: rustot::transfer::pal::OtaPal>(
     // Rejects the job in the cloud if its document doesn't parse into `Jobs`,
     // so it can't stay queued and block later jobs.
     let execution = agent
-        .parse_or_reject::<Jobs>(&owned)
+        .parse_or_reject::<Jobs, StatusDetails<P::StatusDetails>>(&owned)
         .await
         .map_err(|_| TransferError::Mqtt)?
         .ok_or(TransferError::NoActiveJob)?;
 
-    let ctx = build_job_context(execution)?; // user code, see tests/common
+    let Some(Jobs::Ota(doc)) = execution.job_document else {
+        return Err(TransferError::NoActiveJob);
+    };
+    let ctx = JobContext::new(&doc, execution.job_id, execution.status_details)?;
     let cfg = Config { block_size: 4096, ..Default::default() };
 
     Transfer::perform_ota(&mqtt, &mqtt, &ctx, pal, &cfg).await
@@ -222,4 +238,5 @@ RUST_LOG=trace \
 [`PalError`]: https://docs.rs/rustot/latest/rustot/transfer/pal/enum.PalError.html
 [`crate::jobs`]: ../jobs
 [`JobAgent::parse_or_reject`]: https://docs.rs/rustot/latest/rustot/jobs/stream/struct.JobAgent.html#method.parse_or_reject
+[`StatusDetails<E, N>`]: https://docs.rs/rustot/latest/rustot/transfer/status_details/struct.StatusDetails.html
 [`JobContext::new`]: https://docs.rs/rustot/latest/rustot/transfer/encoding/struct.JobContext.html#method.new

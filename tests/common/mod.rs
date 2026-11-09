@@ -9,7 +9,7 @@ pub mod network;
 use rustot::{
     jobs::data_types::JobExecution,
     transfer::{
-        StatusDetailsExt,
+        StatusDetails, StatusDetailsExt,
         encoding::{JobContext, afr_ota::OtaJob},
         error::TransferError,
     },
@@ -29,16 +29,12 @@ pub enum OtaJobs<'a, const N: usize = 1> {
 /// context needed by [`Transfer::perform_ota`].
 #[allow(dead_code)]
 pub fn ota_context_from_execution<'a, E: StatusDetailsExt, const N: usize>(
-    execution: JobExecution<'a, OtaJobs<'a, N>>,
+    execution: JobExecution<'a, OtaJobs<'a, N>, StatusDetails<E, N>>,
 ) -> Result<JobContext<'a, E, N>, TransferError> {
     let ota_doc = match execution.job_document {
         Some(OtaJobs::Ota(doc)) => doc,
         None => return Err(TransferError::NoActiveJob),
     };
 
-    JobContext::new(
-        &ota_doc,
-        execution.job_id,
-        execution.status_details.as_ref(),
-    )
+    JobContext::new(&ota_doc, execution.job_id, execution.status_details)
 }

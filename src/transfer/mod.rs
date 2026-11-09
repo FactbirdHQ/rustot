@@ -37,7 +37,7 @@ use core::future::Future;
 #[cfg(feature = "transfer_mqtt")]
 pub use data_interface::mqtt::{Encoding, Topic};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex, signal::Signal};
-pub use status_details::{FileState, FileStatus, StatusDetails, StatusDetailsExt};
+pub use status_details::{FileState, FileStatus, Progress, StatusDetails, StatusDetailsExt};
 
 use crate::{jobs::data_types::JobStatus, transfer::encoding::json::JobStatusReason};
 
@@ -337,9 +337,9 @@ impl Transfer {
 
             let mut progress = progress_state.lock().await;
             match result {
-                Ok(()) => progress.files[idx].state = FileState::Succeeded,
+                Ok(()) => progress.status.files[idx].state = FileState::Succeeded,
                 Err(e) => {
-                    progress.files[idx].state = FileState::Failed(file_failure_reason(&e));
+                    progress.status.files[idx].state = FileState::Failed(file_failure_reason(&e));
                     return Err(e);
                 }
             }
@@ -677,7 +677,7 @@ impl Transfer {
             progress.blocks_remaining -= 1;
             progress.file_blocks_remaining -= 1;
             let current = progress.current_file;
-            progress.files[current].received_blocks += 1;
+            progress.status.files[current].received_blocks += 1;
 
             if progress.file_blocks_remaining == 0 {
                 info!("Received final expected block of file.");
@@ -708,28 +708,27 @@ impl Transfer {
 /// Download progress for a job.
 ///
 /// `total_blocks` and `blocks_remaining` span every file in the job and drive
-/// the reported `progress`; `files` drives the per-file `files` status detail
-/// of multi-file jobs. The remaining fields track the file currently being
-/// downloaded and are reset at each file boundary.
+/// the reported `progress`. `status` is what the next job update reports;
+/// its `files` track each file of the job. The remaining fields track the
+/// file currently being downloaded and are reset at each file boundary.
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ProgressState<E: StatusDetailsExt = (), const N: usize = 1> {
     pub total_blocks: usize,
     pub blocks_remaining: usize,
-    pub files: heapless::Vec<FileStatus, N>,
     pub current_file: usize,
     pub file_size: usize,
     pub file_blocks_remaining: usize,
     pub block_offset: u32,
     #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
     pub bitmap: Bitmap,
-    #[cfg_attr(feature = "defmt", defmt(Debug2Format))]
-    pub status_details: StatusDetails,
-    pub extra_status: E,
+    pub status: StatusDetails<E, N>,
 }
 
 impl<E: StatusDetailsExt, const N: usize> ProgressState<E, N> {
-    fn new(job: &JobContext<'_, E, N>, block_size: usize, extra_status: E) -> Self {
+    /// `extra` comes from the PAL; of the job's incoming status details only
+    /// `self_test` carries over.
+    fn new(job: &JobContext<'_, E, N>, block_size: usize, extra: E) -> Self {
         const { status_details::assert_files_fit::<N>() };
 
         let files: heapless::Vec<FileStatus, N> = job
@@ -747,20 +746,23 @@ impl<E: StatusDetailsExt, const N: usize> ProgressState<E, N> {
         Self {
             total_blocks,
             blocks_remaining: total_blocks,
-            files,
             current_file: 0,
             file_size: 0,
             file_blocks_remaining: 0,
             block_offset: 0,
             bitmap: Bitmap::new(0, block_size, 0),
-            status_details: job.status.clone(),
-            extra_status,
+            status: StatusDetails {
+                self_test: job.status.self_test,
+                progress: None,
+                files,
+                extra,
+            },
         }
     }
 
     fn begin_file(&mut self, idx: usize, file_size: usize, block_size: usize) {
         self.current_file = idx;
-        self.files[idx].state = FileState::InProgress;
+        self.status.files[idx].state = FileState::InProgress;
         self.file_size = file_size;
         self.file_blocks_remaining = file_size.div_ceil(block_size);
         self.block_offset = 0;
@@ -770,7 +772,7 @@ impl<E: StatusDetailsExt, const N: usize> ProgressState<E, N> {
     /// Mark every file as fully received.
     fn mark_complete(&mut self) {
         self.blocks_remaining = 0;
-        for file in &mut self.files {
+        for file in &mut self.status.files {
             file.state = FileState::Succeeded;
             file.received_blocks = file.total_blocks;
         }
@@ -778,18 +780,13 @@ impl<E: StatusDetailsExt, const N: usize> ProgressState<E, N> {
 
     /// Fill in the status details for an update with `status` and `reason`.
     fn apply_status(&mut self, status: JobStatus, reason: JobStatusReason) {
-        self.status_details.set_self_test(reason.as_str());
+        self.status.self_test = Some(reason);
 
         if let JobStatus::InProgress | JobStatus::Succeeded | JobStatus::Failed = status {
-            self.status_details
-                .set_progress(self.total_blocks - self.blocks_remaining, self.total_blocks);
-        }
-
-        if let Some(detail) = reason.detail() {
-            self.status_details
-                .set_failure(detail.as_reason_str(), detail.error_code());
-        } else {
-            self.status_details.clear_failure();
+            self.status.progress = Some(Progress {
+                received: self.total_blocks - self.blocks_remaining,
+                total: self.total_blocks,
+            });
         }
     }
 }
@@ -901,11 +898,7 @@ mod tests {
             status: JobStatus,
             _reason: JobStatusReason,
         ) -> Result<(), TransferError> {
-            let details = progress
-                .status_details
-                .with_extra(&progress.extra_status)
-                .with_files(&progress.files);
-            let json = serde_json_core::to_string::<_, 2048>(&details).unwrap();
+            let json = serde_json_core::to_string::<_, 2048>(&progress.status).unwrap();
             self.updates.borrow_mut().push((status, json.to_string()));
             Ok(())
         }
@@ -1122,8 +1115,7 @@ mod tests {
             files: heapless::Vec::from_slice(files).unwrap(),
             protocols: heapless::Vec::from_slice(&[Protocol::Mqtt]).unwrap(),
             stream_name: Some("stream"),
-            status: StatusDetails::new(),
-            extra_status: (),
+            status: StatusDetails::default(),
         }
     }
 
@@ -1446,7 +1438,7 @@ mod tests {
             file(0, 8, Some(FileType::Firmware)),
             file(1, 3, Some(FileType::Other(1))),
         ]);
-        job.status.set_self_test("ready");
+        job.status.self_test = Some(JobStatusReason::SigCheckPassed);
         let data = data(&[]);
         let control = MockControl::default();
         let mut pal = MockPal {
@@ -1488,7 +1480,7 @@ mod tests {
             file(0, 8, Some(FileType::Firmware)),
             file(1, 3, Some(FileType::Other(1))),
         ]);
-        job.status.set_self_test("ready");
+        job.status.self_test = Some(JobStatusReason::SigCheckPassed);
         job
     }
 
@@ -1634,10 +1626,10 @@ mod tests {
     }
 
     #[test]
-    fn incoming_files_key_is_not_passed_to_extension() {
+    fn base_keys_are_not_passed_to_extension() {
         use crate::transfer::encoding::afr_ota::OtaJob;
 
-        #[derive(Default)]
+        #[derive(Debug, Default, PartialEq)]
         struct Ext(Vec<String>);
 
         impl StatusDetailsExt for Ext {
@@ -1660,11 +1652,13 @@ mod tests {
             r#"{"protocols":["MQTT"],"files":[{"filepath":"a","filesize":1,"fileid":0},{"filepath":"b","filesize":1,"fileid":1}]}"#,
         )
         .unwrap();
-        let mut details = crate::jobs::StatusDetails::new();
-        details.insert("files", "[]").unwrap();
-        details.insert("custom", "x").unwrap();
+        let details: StatusDetails<Ext, 2> = serde_json::from_str(
+            r#"{"self_test":"ready","progress":"1/2","reason":"x","error_code":"1001","files":"[]","custom":"x"}"#,
+        )
+        .unwrap();
 
-        let ctx = JobContext::<Ext, 2>::new(&doc, "job", Some(&details)).unwrap();
-        assert_eq!(ctx.extra_status.0, ["custom"]);
+        let ctx = JobContext::<Ext, 2>::new(&doc, "job", Some(details)).unwrap();
+        assert_eq!(ctx.status.extra.0, ["custom"]);
+        assert!(ctx.self_test());
     }
 }

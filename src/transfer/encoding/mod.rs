@@ -142,9 +142,7 @@ impl<'a> TryFrom<FileInfo<'a>> for FileContext<'a> {
 /// Constructed from any [`JobDocument`] via [`JobContext::new`].
 ///
 /// `E` is the user's [`StatusDetailsExt`] type, the same type used by the PAL
-/// for outgoing status serialization. During construction, incoming status
-/// details are routed: known keys → [`StatusDetails`], unknown keys →
-/// `E::accept_entry()`.
+/// for outgoing status serialization.
 ///
 /// `N` is the maximum number of files per job. The default of 1 matches the
 /// common single-image OTA case; raise it to accept multi-file jobs.
@@ -154,8 +152,9 @@ pub struct JobContext<'a, E: StatusDetailsExt = (), const N: usize = 1> {
     pub files: heapless::Vec<FileContext<'a>, N>,
     pub protocols: heapless::Vec<Protocol, 2>,
     pub stream_name: Option<&'a str>,
-    pub status: StatusDetails,
-    pub extra_status: E,
+    /// The `statusDetails` the job execution arrived with. Only `self_test`
+    /// carries into the transfer; the rest is recomputed.
+    pub status: StatusDetails<E, N>,
 }
 
 impl<'a, E: StatusDetailsExt, const N: usize> JobContext<'a, E, N> {
@@ -168,7 +167,7 @@ impl<'a, E: StatusDetailsExt, const N: usize> JobContext<'a, E, N> {
     pub fn new<D: JobDocument<'a>>(
         doc: &D,
         job_name: &'a str,
-        status_details: Option<&crate::jobs::StatusDetails<'a>>,
+        status: Option<StatusDetails<E, N>>,
     ) -> Result<Self, TransferError> {
         const { super::status_details::assert_files_fit::<N>() };
 
@@ -187,29 +186,13 @@ impl<'a, E: StatusDetailsExt, const N: usize> JobContext<'a, E, N> {
             let _ = files.push(FileContext::try_from(file)?);
         }
 
-        let mut extra_status = E::default();
-        let mut status = StatusDetails::new();
-        if let Some(details) = status_details {
-            for (&key, &value) in details.iter() {
-                match key {
-                    "self_test" => status.set_self_test(value),
-                    // Recomputed during transfer
-                    "progress" | "reason" | "error_code" | "files" => {}
-                    _ => {
-                        extra_status.accept_entry(key, value);
-                    }
-                }
-            }
-        }
-
         Ok(JobContext {
             job_name,
             files,
             protocols: heapless::Vec::from_slice(doc.protocols())
                 .map_err(|_| TransferError::Overflow)?,
             stream_name: doc.stream_name(),
-            status,
-            extra_status,
+            status: status.unwrap_or_default(),
         })
     }
 
@@ -219,15 +202,10 @@ impl<'a, E: StatusDetailsExt, const N: usize> JobContext<'a, E, N> {
     }
 
     pub fn self_test(&self) -> bool {
-        self.status
-            .self_test
-            .as_ref()
-            .and_then(|f| f.parse().ok())
-            .map(|reason: JobStatusReason| {
-                reason == JobStatusReason::SigCheckPassed
-                    || reason == JobStatusReason::SelfTestActive
-            })
-            .unwrap_or(false)
+        matches!(
+            self.status.self_test,
+            Some(JobStatusReason::SigCheckPassed | JobStatusReason::SelfTestActive)
+        )
     }
 }
 

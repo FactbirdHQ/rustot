@@ -103,7 +103,7 @@ async fn run_ota_happy_path() -> Result<(), transfer::error::TransferError> {
         drop(message);
         sub.unsubscribe().await.unwrap();
 
-        let execution = parse_job_message::<common::OtaJobs>(&owned)
+        let execution = parse_job_message::<common::OtaJobs, _>(&owned)
             .expect("Invalid OTA job document")
             .expect("Failed to parse OTA job document");
 
@@ -127,8 +127,10 @@ async fn run_ota_happy_path() -> Result<(), transfer::error::TransferError> {
         // Run it twice in this particular integration test, in order to
         // simulate image commit after bootloader swap.
         // Construct a new context with self_test set to "active".
-        let mut status = rustot::transfer::StatusDetails::new();
-        status.set_self_test("active");
+        let status = rustot::transfer::StatusDetails {
+            self_test: Some(rustot::transfer::encoding::json::JobStatusReason::SelfTestActive),
+            ..Default::default()
+        };
         let job_ctx2 = rustot::transfer::encoding::JobContext {
             status,
             ..job_ctx.clone()
@@ -243,7 +245,7 @@ async fn run_ota_multi_file() -> Result<(), transfer::error::TransferError> {
         drop(message);
         sub.unsubscribe().await.unwrap();
 
-        let execution = parse_job_message::<common::OtaJobs<2>>(&owned)
+        let execution = parse_job_message::<common::OtaJobs<2>, _>(&owned)
             .expect("Invalid OTA job document")
             .expect("Failed to parse OTA job document");
 
@@ -267,8 +269,10 @@ async fn run_ota_multi_file() -> Result<(), transfer::error::TransferError> {
 
         log::info!("Running OTA handler second time to verify state match...");
 
-        let mut status = rustot::transfer::StatusDetails::new();
-        status.set_self_test("active");
+        let status = rustot::transfer::StatusDetails {
+            self_test: Some(rustot::transfer::encoding::json::JobStatusReason::SelfTestActive),
+            ..Default::default()
+        };
         let job_ctx2 = rustot::transfer::encoding::JobContext {
             status,
             ..job_ctx.clone()
@@ -453,7 +457,7 @@ async fn run_ota_cancel(
         drop(message);
         sub.unsubscribe().await.unwrap();
 
-        let execution = parse_job_message::<common::OtaJobs>(&owned)
+        let execution = parse_job_message::<common::OtaJobs, _>(&owned)
             .expect("Invalid OTA job document")
             .expect("Failed to parse OTA job document");
 
@@ -628,7 +632,7 @@ async fn run_job_reject() -> Result<(), transfer::error::TransferError> {
         drop(message);
         sub.unsubscribe().await.unwrap();
 
-        let execution = parse_job_message::<common::OtaJobs>(&owned)
+        let execution = parse_job_message::<common::OtaJobs, serde::de::IgnoredAny>(&owned)
             .expect("Invalid OTA job document")
             .expect("Failed to parse job document");
 
@@ -691,7 +695,7 @@ async fn run_ota_signature_failure() -> Result<(), transfer::error::TransferErro
         drop(message);
         sub.unsubscribe().await.unwrap();
 
-        let execution = parse_job_message::<common::OtaJobs>(&owned)
+        let execution = parse_job_message::<common::OtaJobs, _>(&owned)
             .expect("Invalid OTA job document")
             .expect("Failed to parse OTA job document");
 
