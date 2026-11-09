@@ -94,7 +94,7 @@ async fn run_ota_http() -> Result<(), transfer::error::TransferError> {
     let mut sub = job_agent.subscribe().await?;
     let message = sub.next_message().await.unwrap();
 
-    let execution = parse_job_message::<common::OtaJobs>(&message)
+    let execution = parse_job_message::<common::OtaJobs, _>(&message)
         .expect("Invalid OTA job document")
         .expect("Failed to parse OTA job document — check logs for details");
 
@@ -135,8 +135,10 @@ async fn run_ota_http() -> Result<(), transfer::error::TransferError> {
 
     // Simulate image commit after bootloader swap — construct new context
     // with self_test set to "active"
-    let mut status = rustot::transfer::StatusDetails::new();
-    status.set_self_test("active");
+    let status = rustot::transfer::StatusDetails {
+        self_test: Some(rustot::transfer::encoding::json::JobStatusReason::SelfTestActive),
+        ..Default::default()
+    };
     let job_ctx2 = rustot::transfer::encoding::JobContext {
         status,
         ..job_ctx.clone()

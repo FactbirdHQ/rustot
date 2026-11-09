@@ -37,6 +37,26 @@ impl ImageStateReason {
         }
     }
 
+    /// Inverse of [`error_code`](Self::error_code), for the codes that
+    /// identify a reason.
+    ///
+    /// The code, not [`as_reason_str`](Self::as_reason_str), is the key:
+    /// `"version_check"` names both [`ImageStateReason::VersionCheck`] and
+    /// [`PalError::VersionCheck`]. `0` is not an error and yields `None`.
+    pub fn from_error_code(code: u16) -> Option<Self> {
+        Some(match code {
+            2001 => ImageStateReason::NewerJob,
+            2002 => ImageStateReason::FailedIngest,
+            2003 => ImageStateReason::MomentumAbort,
+            2004 => ImageStateReason::ImageStateMismatch,
+            2005 => ImageStateReason::InvalidDataProtocol,
+            2006 => ImageStateReason::UserAbort,
+            2007 => ImageStateReason::VersionCheck,
+            2008 => ImageStateReason::SelfTestTimeout,
+            code => ImageStateReason::Pal(PalError::from_error_code(code)?),
+        })
+    }
+
     /// Returns a short string identifier for this reason suitable for status reporting.
     pub fn as_reason_str(&self) -> &'static str {
         match self {
@@ -96,6 +116,23 @@ impl PalError {
             PalError::VersionCheck => 1009,
             PalError::Other => 1099,
         }
+    }
+
+    /// Inverse of [`error_code`](Self::error_code).
+    pub fn from_error_code(code: u16) -> Option<Self> {
+        Some(match code {
+            1001 => PalError::SignatureCheckFailed,
+            1002 => PalError::FileWriteFailed,
+            1003 => PalError::FileTooLarge,
+            1004 => PalError::FileCloseFailed,
+            1005 => PalError::BadFileHandle,
+            1006 => PalError::Unsupported,
+            1007 => PalError::BadImageState,
+            1008 => PalError::CommitFailed,
+            1009 => PalError::VersionCheck,
+            1099 => PalError::Other,
+            _ => return None,
+        })
     }
 
     /// Returns a short string identifier for this error suitable for status reporting.

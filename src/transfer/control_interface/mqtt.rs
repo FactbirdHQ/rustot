@@ -1,3 +1,5 @@
+use serde::de::IgnoredAny;
+
 use super::ControlInterface;
 use crate::jobs::data_types::{ErrorResponse, JobStatus};
 use crate::jobs::{self, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
@@ -69,13 +71,9 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
         let topic = JobTopic::Update(job_name)
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
 
-        let combined = progress_state
-            .status_details
-            .with_extra(&progress_state.extra_status)
-            .with_files(&progress_state.files);
         let payload = Jobs::update(status)
             .client_token(self.0.client_id())
-            .status_details(&combined);
+            .status_details(&progress_state.status);
 
         debug!("Updating job status! {:?}", status);
 
@@ -106,9 +104,10 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
                         break Ok(());
                     }
                     Some(jobs::Topic::UpdateRejected(_)) => {
-                        let (error_response, _) =
-                            serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                                .map_err(|_| TransferError::Mqtt)?;
+                        let (error_response, _) = serde_json_core::from_slice::<
+                            ErrorResponse<IgnoredAny>,
+                        >(message.payload())
+                        .map_err(|_| TransferError::Mqtt)?;
 
                         error!("Job update rejected: {:?}", error_response.message);
                         break Err(TransferError::UpdateRejected(error_response.code));

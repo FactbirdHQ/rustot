@@ -15,9 +15,8 @@ pub trait ControlInterface {
 
     /// Publish a job execution update.
     ///
-    /// `progress.status_details` is already filled in for `status` and
-    /// `reason`; implementations only transport it, combined with
-    /// `progress.files` and `progress.extra_status`.
+    /// `progress.status` is already filled in for `status` and `reason`;
+    /// implementations only transport it.
     async fn update_job_status<E: StatusDetailsExt, const N: usize>(
         &self,
         job: &JobContext<'_, E, N>,
