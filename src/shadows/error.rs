@@ -11,6 +11,10 @@ pub enum Error {
     DaoRead,
     DaoWrite,
     InvalidPayload,
+    /// The cloud document was received but its state does not parse (e.g. a
+    /// `desired` value of the wrong type). The doc exists and the delta stays
+    /// pending until the cloud value is fixed.
+    InvalidState,
     WrongShadowName,
     Mqtt,
     /// A request/response round-trip to the cloud (`Get`, `Update`) exceeded
@@ -160,6 +164,7 @@ impl core::fmt::Display for Error {
             Error::DaoRead => write!(f, "DAO read error"),
             Error::DaoWrite => write!(f, "DAO write error"),
             Error::InvalidPayload => write!(f, "invalid payload"),
+            Error::InvalidState => write!(f, "cloud state does not parse"),
             Error::WrongShadowName => write!(f, "wrong shadow name"),
             Error::Mqtt => write!(f, "MQTT error"),
             Error::Timeout => write!(f, "cloud request timed out"),
