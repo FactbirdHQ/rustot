@@ -139,7 +139,7 @@ where
         // and its version: the delta was not applied. An unparseable state
         // still proves the doc exists, and must not block reporting.
         match self.get_shadow_from_cloud().await {
-            Ok(_) | Err(Error::InvalidState) => {}
+            Ok(_) | Err(Error::InvalidPayload) => {}
             Err(e) => return Err(e),
         }
 
@@ -241,9 +241,9 @@ where
                     // The GET completed, so keep the subscription and wait for
                     // the live delta that fixes the cloud value; re-GETting
                     // would only fail the same way.
-                    Err(Error::InvalidState) => {
+                    Err(Error::InvalidPayload) => {
                         reset_guard.disarm();
-                        return Err(Error::InvalidState);
+                        return Err(Error::InvalidPayload);
                     }
                     r => r?,
                 };
@@ -271,7 +271,7 @@ where
                         let parsed =
                             DeltaResponse::parse::<S, _>(delta_message.payload(), &resolver)
                                 .await
-                                .map_err(|_| Error::InvalidState)?;
+                                .map_err(|_| Error::InvalidPayload)?;
 
                         if parsed.client_token == Some(self.mqtt.client_id()) {
                             Ok(None)
@@ -403,7 +403,7 @@ where
             let message =
                 match embassy_time::with_timeout(REQUEST_TIMEOUT, sub.next_message()).await {
                     Ok(Some(message)) => message,
-                    Ok(None) => return Err(Error::InvalidPayload),
+                    Ok(None) => return Err(Error::SubscriptionClosed),
                     Err(_elapsed) => {
                         warn!(
                             "[{:?}] update response timed out after {}s",
@@ -470,7 +470,7 @@ where
             let get_message =
                 match embassy_time::with_timeout(REQUEST_TIMEOUT, sub.next_message()).await {
                     Ok(Some(get_message)) => get_message,
-                    Ok(None) => return Err(Error::InvalidPayload),
+                    Ok(None) => return Err(Error::SubscriptionClosed),
                     Err(_elapsed) => {
                         warn!(
                             "[{:?}] get response timed out after {}s",
@@ -488,7 +488,7 @@ where
                     AcceptedResponse::parse::<S, _>(get_message.payload(), &resolver)
                         .await
                         .map(|response| Some((response.state, response.version)))
-                        .map_err(|_| Error::InvalidState)
+                        .map_err(|_| Error::InvalidPayload)
                 }
                 Some((Topic::GetRejected, _, _)) => {
                     let mut buf = [0u8; 64];
@@ -734,7 +734,7 @@ where
         let result = self.get_shadow_from_cloud().await;
         // A completed GET (or 404→create) confirms the cloud doc exists,
         // so the gate flips, even if its state does not parse.
-        if matches!(result, Ok(_) | Err(Error::InvalidState)) {
+        if matches!(result, Ok(_) | Err(Error::InvalidPayload)) {
             *self.initialized.lock().await = true;
         }
         let (delta_state, version) = result?;
@@ -828,7 +828,7 @@ where
             let message =
                 match embassy_time::with_timeout(REQUEST_TIMEOUT, sub.next_message()).await {
                     Ok(Some(message)) => message,
-                    Ok(None) => return Err(Error::InvalidPayload),
+                    Ok(None) => return Err(Error::SubscriptionClosed),
                     Err(_elapsed) => {
                         warn!(
                             "[{:?}] delete response timed out after {}s",
