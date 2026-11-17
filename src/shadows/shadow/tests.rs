@@ -1293,6 +1293,37 @@ mod adjacently_tagged {
         IoLink(IoLinkConfig),
     }
 
+    #[shadow_node]
+    #[shadow_attr(reject_unknown_variant)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    #[serde(tag = "mode", content = "config", rename_all = "lowercase")]
+    pub enum StrictPortMode {
+        #[default]
+        Inactive,
+        Sio(SioConfig),
+    }
+
+    #[tokio::test]
+    async fn test_reject_unknown_variant_fails_parse() {
+        use crate::shadows::{ParseError, ShadowNode};
+
+        let store = InMemory::<StrictPortMode>::new();
+        store
+            .set_state("/test", &StrictPortMode::Inactive)
+            .await
+            .unwrap();
+        let resolver = store.resolver("/test");
+
+        let result =
+            StrictPortMode::parse_delta(br#"{"mode": "future_mode"}"#, "", &resolver).await;
+        assert!(matches!(result, Err(ParseError::UnknownVariant)));
+
+        let delta = StrictPortMode::parse_delta(br#"{"mode": "sio"}"#, "", &resolver)
+            .await
+            .unwrap();
+        assert_eq!(delta.mode, DeltaMode::Known(StrictPortModeVariant::Sio));
+    }
+
     #[test]
     fn test_adjacently_tagged_delta_is_struct() {
         // Verify DeltaPortMode is a struct with mode and config fields

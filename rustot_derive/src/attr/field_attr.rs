@@ -237,6 +237,23 @@ pub fn has_default_attr(attrs: &[Attribute]) -> bool {
     get_attr(attrs, DEFAULT_ATTR).is_some()
 }
 
+/// Type-level `#[shadow_attr(reject_unknown_variant)]`: fail the parse on an
+/// unknown tag instead of falling back to the stored variant, for enums where
+/// a silent fallback is unsafe (e.g. WiFi security downgrading to open).
+pub fn has_reject_unknown_variant(attrs: &[Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|a| a.path().is_ident(SHADOW_ATTR))
+        .any(|a| {
+            a.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                .is_ok_and(|nested| {
+                    nested
+                        .iter()
+                        .any(|m| m.path().is_ident("reject_unknown_variant"))
+                })
+        })
+}
+
 /// Extract a string value from a serde attribute by key name.
 fn get_serde_str_value(attrs: &[Attribute], key: &str) -> Option<String> {
     for attr in attrs {
