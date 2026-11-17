@@ -57,7 +57,7 @@ use syn::{Data, DeriveInput, Fields, Ident};
 
 use crate::attr::{
     get_serde_rename_all, get_serde_tag_content, get_variant_serde_name, has_default_attr,
-    has_reject_unknown_variant,
+    has_fallback_unknown_variant,
 };
 
 #[cfg(feature = "kv_persist")]
@@ -103,9 +103,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
     // Type names for generated types
     let variant_enum_name = format_ident!("{}Variant", name);
 
-    let unknown_tag_arm = if has_reject_unknown_variant(&input.attrs) {
-        quote! { Err(_) => return Err(#krate::shadows::ParseError::UnknownVariant), }
-    } else {
+    let unknown_tag_arm = if has_fallback_unknown_variant(&input.attrs) {
         quote! {
             Err(_) => {
                 // Unknown variant — resolve from KV state
@@ -114,6 +112,8 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 (resolved, resolved.is_some())
             }
         }
+    } else {
+        quote! { Err(_) => return Err(#krate::shadows::ParseError::UnknownVariant), }
     };
     let delta_config_name = format_ident!("{}Config", delta_name);
     let desired_name = format_ident!("Desired{}", name);
