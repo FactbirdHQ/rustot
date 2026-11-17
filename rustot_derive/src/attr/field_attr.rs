@@ -237,10 +237,10 @@ pub fn has_default_attr(attrs: &[Attribute]) -> bool {
     get_attr(attrs, DEFAULT_ATTR).is_some()
 }
 
-/// Type-level `#[shadow_attr(fallback_unknown_variant)]`: keep the stored
+/// Type-level `#[shadow_attr(default_unknown_variant)]`: keep the stored
 /// variant on an unknown tag instead of failing the parse, for enums where
 /// newer cloud values should not block the rest of the delta.
-pub fn has_fallback_unknown_variant(attrs: &[Attribute]) -> bool {
+pub fn has_default_unknown_variant(attrs: &[Attribute]) -> bool {
     attrs
         .iter()
         .filter(|a| a.path().is_ident(SHADOW_ATTR))
@@ -249,7 +249,7 @@ pub fn has_fallback_unknown_variant(attrs: &[Attribute]) -> bool {
                 .is_ok_and(|nested| {
                     nested
                         .iter()
-                        .any(|m| m.path().is_ident("fallback_unknown_variant"))
+                        .any(|m| m.path().is_ident("default_unknown_variant"))
                 })
         })
 }

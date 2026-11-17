@@ -1294,7 +1294,7 @@ mod adjacently_tagged {
     }
 
     #[shadow_node]
-    #[shadow_attr(fallback_unknown_variant)]
+    #[shadow_attr(default_unknown_variant)]
     #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
     #[serde(tag = "mode", content = "config", rename_all = "lowercase")]
     pub enum LenientPortMode {
