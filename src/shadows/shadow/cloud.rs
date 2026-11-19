@@ -341,7 +341,14 @@ where
                     version,
                     self.delta_version.get(),
                 );
-                let (state, delta) = self.sync_shadow().await?;
+                let (state, delta) = match self.sync_shadow().await {
+                    // As in the drain GET: keep waiting on this subscription.
+                    Err(Error::InvalidPayload) => {
+                        reset_guard.disarm();
+                        return Err(Error::InvalidPayload);
+                    }
+                    r => r?,
+                };
                 reset_guard.disarm();
                 return Ok(delta.is_some().then_some((state, delta)));
             }
