@@ -46,7 +46,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --doc --features "std,log"
+          args: --doc --features "std,log,shadows_multi,mqtt_greengrass"
 
       - name: Macro Tests
         uses: actions-rs/cargo@v1
@@ -54,11 +54,13 @@ jobs:
           command: test
           args: -p rustot-derive
 
+      # shadows_multi and mqtt_greengrass carry their own tests (multi-shadow
+      # delta handling); without them those tests never run in CI.
       - name: Unit Tests
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib --features "std,log"
+          args: --lib --features "std,log,shadows_multi,mqtt_greengrass"
 
   rustfmt:
     name: rustfmt

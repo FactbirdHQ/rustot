@@ -2,7 +2,7 @@
 //!
 //! This module provides the [`OtaJob`] type for deserializing OTA job
 //! documents in the AWS FreeRTOS format. It implements [`JobDocument`]
-//! so it can be used directly with [`JobContext::new`].
+//! so it can be used directly with [`JobContext::new`](super::JobContext::new).
 
 use serde::Deserialize;
 
@@ -13,13 +13,17 @@ use crate::transfer::data_interface::Protocol;
 /// OTA job document, compatible with the FreeRTOS OTA process.
 ///
 /// Deserialized from the `afr_ota` key in an AWS IoT Job document.
+///
+/// `N` is the maximum number of files accepted. Documents with more files
+/// fail to deserialize.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename = "afr_ota")]
-pub struct OtaJob<'a> {
+pub struct OtaJob<'a, const N: usize = 1> {
     pub protocols: heapless::Vec<Protocol, 2>,
     #[serde(default)]
     pub streamname: Option<&'a str>,
-    pub files: heapless::Vec<FileDescription<'a>, 1>,
+    #[serde(borrow)]
+    pub files: heapless::Vec<FileDescription<'a>, N>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
@@ -76,7 +80,7 @@ impl<'a> FileDescription<'a> {
     }
 }
 
-impl<'a> JobDocument<'a> for OtaJob<'a> {
+impl<'a, const N: usize> JobDocument<'a> for OtaJob<'a, N> {
     fn protocols(&self) -> &[Protocol] {
         &self.protocols
     }
@@ -97,6 +101,10 @@ impl<'a> JobDocument<'a> for OtaJob<'a> {
             signature: f.signature(),
             file_type: f.file_type,
         })
+    }
+
+    fn file_count(&self) -> usize {
+        self.files.len()
     }
 }
 
@@ -126,5 +134,64 @@ mod tests {
         }"#;
 
         serde_json_core::from_str::<OtaJob>(data).unwrap();
+    }
+
+    const TWO_FILES: &str = r#"{
+        "protocols": ["MQTT", "HTTP"],
+        "streamname": "AFR_OTA-stream",
+        "files": [
+            {
+                "filepath": "model.onnx",
+                "filesize": 1024,
+                "fileid": 0,
+                "fileType": 7,
+                "sig-sha256-ecdsa": "c2ln"
+            },
+            {
+                "filepath": "labels.json",
+                "filesize": 12,
+                "fileid": 1,
+                "fileType": 8
+            }
+        ]
+    }"#;
+
+    #[test]
+    fn deserialize_multi_file_document() {
+        let (job, _) = serde_json_core::from_str::<OtaJob<2>>(TWO_FILES).unwrap();
+
+        assert_eq!(job.file_count(), 2);
+        assert_eq!(job.file(0).unwrap().filepath, "model.onnx");
+        assert_eq!(
+            job.file(0).unwrap().signature,
+            Some(Signature::Sha256Ecdsa("c2ln"))
+        );
+        assert_eq!(job.file(1).unwrap().filepath, "labels.json");
+        assert_eq!(job.file(1).unwrap().file_type, Some(8));
+        assert!(job.file(2).is_none());
+    }
+
+    #[test]
+    fn too_many_files_fail_to_deserialize() {
+        assert!(serde_json_core::from_str::<OtaJob>(TWO_FILES).is_err());
+    }
+
+    #[test]
+    fn job_context_takes_every_file() {
+        use crate::transfer::encoding::{FileType, JobContext};
+        use crate::transfer::error::TransferError;
+
+        let (doc, _) = serde_json_core::from_str::<OtaJob<2>>(TWO_FILES).unwrap();
+
+        let ctx = JobContext::<(), 2>::new(&doc, "job", None).unwrap();
+        assert_eq!(ctx.files.len(), 2);
+        assert_eq!(ctx.files[0].file_type, Some(FileType::Other(7)));
+        assert_eq!(ctx.files[1].fileid, 1);
+        assert_eq!(ctx.total_size(), 1036);
+
+        assert!(matches!(
+            JobContext::<(), 1>::new(&doc, "job", None),
+            Err(TransferError::Overflow)
+        ));
     }
 }

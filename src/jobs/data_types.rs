@@ -1,7 +1,7 @@
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 
-use super::{MAX_JOB_ID_LEN, MAX_PENDING_JOBS, MAX_RUNNING_JOBS, StatusDetails};
+use super::{MAX_JOB_ID_LEN, MAX_PENDING_JOBS, MAX_RUNNING_JOBS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -59,10 +59,10 @@ pub enum ErrorCode {
 /// Topic (accepted): $aws/things/{thingName}/jobs/{jobId}/get/accepted \
 /// Topic (rejected): $aws/things/{thingName}/jobs/{jobId}/get/rejected
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct DescribeJobExecutionResponse<'a, J> {
+pub struct DescribeJobExecutionResponse<'a, J, S> {
     /// Contains data about a job execution.
     #[serde(rename = "execution")]
-    pub execution: Option<JobExecution<'a, J>>,
+    pub execution: Option<JobExecution<'a, J, S>>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
     pub timestamp: i64,
@@ -94,8 +94,14 @@ pub struct GetPendingJobExecutionsResponse<'a> {
 }
 
 /// Contains data about a job execution.
+///
+/// `S` is the type `statusDetails` is read into, e.g.
+/// [`transfer::StatusDetails`](crate::transfer::StatusDetails), or
+/// [`IgnoredAny`](serde::de::IgnoredAny) to skip it. Its values may be escaped
+/// strings (such as JSON encoded into a value), so `S` should copy rather than
+/// borrow them.
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct JobExecution<'a, J> {
+pub struct JobExecution<'a, J, S> {
     /// The estimated number of seconds that remain before the job execution
     /// status will be changed to <code>TIMED_OUT</code>.
     #[serde(rename = "approximateSecondsBeforeTimedOut")]
@@ -131,11 +137,10 @@ pub struct JobExecution<'a, J> {
     /// "FAILED", "SUCCESS", "CANCELED", "REJECTED", or "REMOVED".
     #[serde(rename = "status")]
     pub status: JobStatus,
-    // / A collection of name/value pairs that describe the status of the job
-    // execution.
+    /// A collection of name/value pairs that describe the status of the job
+    /// execution.
     #[serde(rename = "statusDetails")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<StatusDetails<'a>>,
+    pub status_details: Option<S>,
     // The name of the thing that is executing the job.
     #[serde(rename = "thingName")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,8 +152,10 @@ pub struct JobExecution<'a, J> {
 }
 
 /// Contains data about the state of a job execution.
+///
+/// `S` is the type `statusDetails` is read into, as for [`JobExecution`].
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct JobExecutionState<'a> {
+pub struct JobExecutionState<S> {
     /// The status of the job execution. Can be one of: "QUEUED", "IN_PROGRESS",
     /// "FAILED", "SUCCESS", "CANCELED", "REJECTED", or "REMOVED".
     #[serde(rename = "status")]
@@ -156,9 +163,7 @@ pub struct JobExecutionState<'a> {
     /// A collection of name/value pairs that describe the status of the job
     /// execution.
     #[serde(rename = "statusDetails")]
-    #[serde(borrow)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_details: Option<StatusDetails<'a>>,
+    pub status_details: Option<S>,
     // The version of the job execution. Job execution versions are incremented
     // each time they are updated by a device.
     #[serde(rename = "versionNumber")]
@@ -201,11 +206,11 @@ pub struct JobExecutionSummary {
 /// Topic (accepted): $aws/things/{thingName}/jobs/start-next/accepted \
 /// Topic (rejected): $aws/things/{thingName}/jobs/start-next/rejected
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct StartNextPendingJobExecutionResponse<'a, J> {
+pub struct StartNextPendingJobExecutionResponse<'a, J, S> {
     /// A JobExecution object.
     #[serde(rename = "execution")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution: Option<JobExecution<'a, J>>,
+    pub execution: Option<JobExecution<'a, J, S>>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
     pub timestamp: i64,
@@ -218,11 +223,11 @@ pub struct StartNextPendingJobExecutionResponse<'a, J> {
 /// Topic (accepted): $aws/things/{thingName}/jobs/{jobId}/update/accepted \
 /// Topic (rejected): $aws/things/{thingName}/jobs/{jobId}/update/rejected
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct UpdateJobExecutionResponse<'a, J> {
+pub struct UpdateJobExecutionResponse<'a, J, S> {
     /// A JobExecutionState object.
     #[serde(rename = "executionState")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_state: Option<JobExecutionState<'a>>,
+    pub execution_state: Option<JobExecutionState<S>>,
     /// The contents of the Job Documents.
     #[serde(rename = "jobDocument")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,12 +268,12 @@ pub struct JobExecutionsChanged {
 ///
 /// Topic: $aws/things/{thingName}/jobs/notify-next
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct NextJobExecutionChanged<'a, J> {
+pub struct NextJobExecutionChanged<'a, J, S> {
     /// Contains data about a job execution.
     #[serde(rename = "execution")]
     #[serde(borrow)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution: Option<JobExecution<'a, J>>,
+    pub execution: Option<JobExecution<'a, J, S>>,
     /// The time, in seconds since the epoch, when the message was sent.
     #[serde(rename = "timestamp")]
     pub timestamp: i64,
@@ -288,8 +293,10 @@ pub struct Jobs {
 
 /// Contains information about an error that occurred during an AWS IoT Jobs
 /// service operation.
+///
+/// `S` is the type `statusDetails` is read into, as for [`JobExecution`].
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct ErrorResponse<'a> {
+pub struct ErrorResponse<'a, S> {
     pub code: ErrorCode,
     /// An error message string.
     pub message: &'a str,
@@ -304,13 +311,14 @@ pub struct ErrorResponse<'a> {
     /// A JobExecutionState object.
     #[serde(rename = "executionState")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_state: Option<JobExecutionState<'a>>,
+    pub execution_state: Option<JobExecutionState<S>>,
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use heapless::Vec;
+    use serde::de::IgnoredAny;
     use serde_json_core::from_slice;
 
     /// Job document used while developing the module
@@ -329,6 +337,49 @@ mod test {
 
         #[serde(other)]
         Unknown,
+    }
+
+    /// A multi-file job reports `files` as JSON escaped into a string value.
+    const MULTI_FILE_EXECUTION: &str = r#"{
+        "timestamp": 1587471560,
+        "execution": {
+            "jobId": "mini",
+            "status": "IN_PROGRESS",
+            "statusDetails": {
+                "self_test": "active",
+                "progress": "3/3",
+                "files": "[{\"id\":0,\"status\":\"succeeded\",\"progress\":\"2/2\"},{\"id\":1,\"status\":\"succeeded\",\"progress\":\"1/1\"}]"
+            },
+            "queuedAt": 1587471559,
+            "lastUpdatedAt": 1587471559,
+            "versionNumber": 3
+        }
+    }"#;
+
+    #[test]
+    fn escaped_status_details_parse_with_std_and_core() {
+        use crate::transfer::{FileState, StatusDetails, encoding::json::JobStatusReason};
+
+        type Response<'a> = DescribeJobExecutionResponse<'a, JobDetails<'a>, StatusDetails<(), 2>>;
+
+        let std: Response = serde_json::from_str(MULTI_FILE_EXECUTION).unwrap();
+        let mut buf = [0; crate::jobs::MAX_STATUS_DETAILS_VALUE_LEN];
+        let (core, _) = serde_json_core::from_slice_escaped::<Response>(
+            MULTI_FILE_EXECUTION.as_bytes(),
+            &mut buf,
+        )
+        .unwrap();
+        assert_eq!(std, core);
+
+        let details = std.execution.unwrap().status_details.unwrap();
+        assert_eq!(details.self_test, Some(JobStatusReason::SelfTestActive));
+        assert_eq!(details.files.len(), 2);
+        assert!(
+            details
+                .files
+                .iter()
+                .all(|f| f.state == FileState::Succeeded)
+        );
     }
 
     #[test]
@@ -353,7 +404,8 @@ mod test {
         }
         "#;
 
-        let (response, _) = from_slice::<NextJobExecutionChanged<JobDetails>>(payload).unwrap();
+        let (response, _) =
+            from_slice::<NextJobExecutionChanged<JobDetails, IgnoredAny>>(payload).unwrap();
 
         assert_eq!(
             response,
@@ -461,7 +513,7 @@ mod test {
             }"#;
 
         let (response, _) =
-            from_slice::<DescribeJobExecutionResponse<JobDetails>>(payload).unwrap();
+            from_slice::<DescribeJobExecutionResponse<JobDetails, IgnoredAny>>(payload).unwrap();
 
         assert_eq!(
             response,

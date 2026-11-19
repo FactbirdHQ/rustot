@@ -40,7 +40,7 @@ sequential-storage = { version = "8.0", features = [
     "heapless-09",
 ], optional = true }
 
-serde-json-core = { version = "0.6" }
+serde-json-core = { version = "0.7" }
 rustot-derive = { path = "rustot_derive", version = "0.2.1" }
 embedded-storage-async = { version = "0.4", optional = true }
 mqttrust = { version = "1.0.0", optional = true }
@@ -60,7 +60,7 @@ base64 = { version = "0.22", optional = true }
 
 # MQTT client implementations (optional, feature-gated)
 rumqttc = { version = "0.24", optional = true }
-greengrass-ipc-rust = { version = "0.1", optional = true }
+greengrass-ipc-rust = { version = "0.2", optional = true }
 bytes = { version = "1", optional = true }
 futures = { version = "0.3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = [
@@ -187,6 +187,3 @@ shadows_multi = [
 mqtt_mqttrust = ["dep:mqttrust"]
 mqtt_rumqttc = ["std", "dep:rumqttc", "tokio/time"]
 mqtt_greengrass = ["std", "dep:greengrass-ipc-rust", "dep:bytes", "dep:futures", "tokio/time"]
-
-[patch.crates-io]
-serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core", rev = "a435f78" }

@@ -121,7 +121,12 @@ pub const MAX_STREAM_ID_LEN: usize = MAX_JOB_ID_LEN;
 pub const MAX_PENDING_JOBS: usize = 1;
 pub const MAX_RUNNING_JOBS: usize = 1;
 
-pub type StatusDetails<'a> = heapless::LinearMap<&'a str, &'a str, 8>;
+/// AWS IoT Jobs limits on `statusDetails`: keys match `[a-zA-Z0-9:_-]+`, and
+/// every value is a string.
+///
+/// <https://docs.aws.amazon.com/iot/latest/apireference/API_iot-jobs-data_UpdateJobExecution.html>
+pub const MAX_STATUS_DETAILS_KEY_LEN: usize = 128;
+pub const MAX_STATUS_DETAILS_VALUE_LEN: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobError {

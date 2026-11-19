@@ -177,7 +177,7 @@ impl<'a, M: RawMutex> crate::mqtt::MqttClient for mqttrust::MqttClient<'a, M> {
 /// drop(message); // release the ring buffer grant
 ///
 /// // owned implements MqttMessage — use it anywhere a message is expected
-/// let execution = parse_job_message::<MyJobs>(&mut owned);
+/// let execution = parse_job_message::<MyJobs>(&owned);
 /// ```
 pub struct OwnedMessage<const TOPIC: usize = 256, const PAYLOAD: usize = 2048> {
     topic: heapless::String<TOPIC>,

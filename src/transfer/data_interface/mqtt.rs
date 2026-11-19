@@ -13,7 +13,7 @@ use crate::{
     transfer::{
         config::Config,
         data_interface::{BlockProgress, DataInterface, FileBlock, Protocol, RawBlock},
-        encoding::{Bitmap, JobContext, cbor},
+        encoding::{Bitmap, FileContext, JobContext, cbor},
     },
 };
 
@@ -364,9 +364,10 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
     /// Begin a file transfer by subscribing to the OTA data stream topic
     /// and the jobs notify-next topic (to detect cancellation), then publishing
     /// the initial block request.
-    async fn begin_transfer(
+    async fn begin_transfer<const N: usize>(
         &self,
-        job: &JobContext<'_, impl StatusDetailsExt>,
+        job: &JobContext<'_, impl StatusDetailsExt, N>,
+        file: &FileContext<'_>,
         config: &Config,
         progress: &BlockProgress,
     ) -> Result<Self::Transfer<'_>, TransferError> {
@@ -400,7 +401,7 @@ impl<C: MqttClient> DataInterface for Mqtt<&'_ C> {
                 .map_err(|_| TransferError::Overflow)?,
             stream_name: heapless::String::try_from(stream_name)
                 .map_err(|_| TransferError::Overflow)?,
-            file_id: job.fileid,
+            file_id: file.fileid,
             block_size: config.block_size,
             batch_remaining: 0,
             max_blocks_per_request: config.max_blocks_per_request,

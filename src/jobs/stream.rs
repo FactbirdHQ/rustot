@@ -1,11 +1,12 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 
 use crate::mqtt::{
     MaxJsonSize, Mqtt, MqttClient, MqttMessage, MqttSubscription, PublishOptions, QoS,
 };
 
 use super::{
-    JobError, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN, Topic,
+    JobError, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_STATUS_DETAILS_VALUE_LEN, MAX_THING_NAME_LEN,
+    Topic,
     data_types::{DescribeJobExecutionResponse, JobExecution, JobStatus, NextJobExecutionChanged},
     update::Update,
 };
@@ -29,7 +30,11 @@ use super::{
 ///             break; // clean session — resubscribe
 ///         };
 ///
-///         if let Some(execution) = parse_job_message::<MyJobs>(&mut message) {
+///         // Rejects jobs whose document doesn't deserialize into `MyJobs`.
+///         // `IgnoredAny` skips `statusDetails`.
+///         if let Ok(Some(execution)) =
+///             jobs.parse_or_reject::<MyJobs, IgnoredAny>(&message).await
+///         {
 ///             match execution.job_document {
 ///                 Some(MyJobs::Ota(doc)) => { /* handle OTA */ }
 ///                 Some(MyJobs::Reset(info)) => { /* handle reset */ }
@@ -177,6 +182,31 @@ impl<'a, C: MqttClient> JobAgent<'a, C> {
         self.publish_and_wait(job_id, payload).await
     }
 
+    /// Parse a job execution from `message`, rejecting it if its document
+    /// cannot be deserialized into `J`.
+    ///
+    /// A job whose document the device cannot understand would otherwise
+    /// stay queued and block every later job. Returns `Ok(None)` for messages
+    /// without a job execution and after rejecting an invalid one.
+    ///
+    /// `message` stays borrowed while the rejection is published. With
+    /// clients that hold a receive-buffer grant per message (e.g.
+    /// `mqttrust`), pass an [`OwnedMessage`](crate::mqtt::OwnedMessage) copy.
+    pub async fn parse_or_reject<'m, J: Deserialize<'m>, S: Deserialize<'m>>(
+        &self,
+        message: &'m impl MqttMessage,
+    ) -> Result<Option<JobExecution<'m, J, S>>, JobError> {
+        match parse_job_message(message) {
+            Ok(execution) => Ok(execution),
+            Err(invalid) => {
+                warn!("Rejecting job {}: invalid job document", invalid.job_id);
+                self.reject_job(invalid.job_id, "invalid job document")
+                    .await?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Publish a job update with QoS 1 and wait for the cloud to acknowledge.
     async fn publish_and_wait<S: MaxJsonSize>(
         &self,
@@ -245,30 +275,174 @@ impl MaxJsonSize for RejectDetails<'_> {
     const MAX_JSON_SIZE: usize = 1024;
 }
 
+/// A job execution whose document could not be deserialized.
+///
+/// The execution exists in the cloud and stays queued, blocking every later
+/// job, until it is rejected (see [`JobAgent::parse_or_reject`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidJobDocument<'a> {
+    pub job_id: &'a str,
+}
+
 /// Parse a job execution from an MQTT message (from `notify-next` or
 /// `$next/get/accepted`).
 ///
-/// Returns `None` if the message topic is unrecognized, the payload fails to
-/// deserialize, or the execution is absent.
-pub fn parse_job_message<'a, J: Deserialize<'a>>(
-    message: &'a mut impl MqttMessage,
-) -> Option<JobExecution<'a, J>> {
-    let topic = Topic::from_str(message.topic_name())?;
+/// `statusDetails` is read into `S` (see [`JobExecution`]).
+///
+/// Escaped strings are unescaped, into a stack buffer of
+/// [`MAX_STATUS_DETAILS_VALUE_LEN`] bytes, so `J` and `S` see the same values
+/// as with std `serde_json`. A borrowed `&str` field therefore fails to parse
+/// if its value contains an escape, instead of silently holding the escaped
+/// text.
+///
+/// Returns `Ok(None)` if the topic is not a jobs topic, the execution is
+/// absent, or the message is not a job execution at all. Returns
+/// `Err(InvalidJobDocument)` if there is an execution but it does not
+/// deserialize into `J` and `S`.
+pub fn parse_job_message<'a, J: Deserialize<'a>, S: Deserialize<'a>>(
+    message: &'a impl MqttMessage,
+) -> Result<Option<JobExecution<'a, J, S>>, InvalidJobDocument<'a>> {
+    let notify = match Topic::from_str(message.topic_name()) {
+        Some(Topic::NotifyNext) => true,
+        Some(Topic::DescribeAccepted(_)) => false,
+        _ => return Ok(None),
+    };
 
-    match topic {
-        Topic::NotifyNext => {
-            let (changed, _) =
-                serde_json_core::from_slice::<NextJobExecutionChanged<J>>(message.payload_mut())
-                    .ok()?;
-            changed.execution
+    if let Some(execution) = parse_execution::<J, S>(notify, message.payload()) {
+        return Ok(execution);
+    }
+
+    // Parse again ignoring the document and status details, to tell an invalid
+    // execution (which must be rejected) apart from a malformed message.
+    match parse_execution::<IgnoredAny, IgnoredAny>(notify, message.payload()) {
+        Some(Some(execution)) => Err(InvalidJobDocument {
+            job_id: execution.job_id,
+        }),
+        _ => {
+            warn!("Ignoring malformed job message on {}", message.topic_name());
+            Ok(None)
         }
-        Topic::DescribeAccepted(_) => {
-            let (response, _) = serde_json_core::from_slice::<DescribeJobExecutionResponse<J>>(
-                message.payload_mut(),
-            )
-            .ok()?;
-            response.execution
+    }
+}
+
+fn parse_execution<'a, J: Deserialize<'a>, S: Deserialize<'a>>(
+    notify: bool,
+    payload: &'a [u8],
+) -> Option<Option<JobExecution<'a, J, S>>> {
+    let mut unescape = [0; MAX_STATUS_DETAILS_VALUE_LEN];
+    if notify {
+        serde_json_core::from_slice_escaped::<NextJobExecutionChanged<J, S>>(payload, &mut unescape)
+            .ok()
+            .map(|(changed, _)| changed.execution)
+    } else {
+        serde_json_core::from_slice_escaped::<DescribeJobExecutionResponse<J, S>>(
+            payload,
+            &mut unescape,
+        )
+        .ok()
+        .map(|(response, _)| response.execution)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mqtt::mock::MockMessage;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    enum TestJobs {
+        #[serde(rename = "known")]
+        Known(u32),
+    }
+
+    const NOTIFY_NEXT: &str = "$aws/things/thing/jobs/notify-next";
+    const DESCRIBE_ACCEPTED: &str = "$aws/things/thing/jobs/$next/get/accepted";
+
+    fn execution(document: &str) -> String {
+        format!(
+            r#"{{"timestamp":1,"execution":{{"jobId":"job-1","status":"QUEUED","queuedAt":1,"lastUpdatedAt":1,"versionNumber":1,"executionNumber":1,"jobDocument":{document}}}}}"#
+        )
+    }
+
+    #[test]
+    fn escaped_status_details_parse() {
+        use crate::transfer::{FileState, StatusDetails};
+
+        let message = MockMessage::new(
+            NOTIFY_NEXT,
+            r#"{"timestamp":1,"execution":{"jobId":"job-1","status":"IN_PROGRESS","queuedAt":1,"lastUpdatedAt":1,"versionNumber":2,"jobDocument":{"known":7},"statusDetails":{"files":"[{\"id\":0,\"status\":\"succeeded\",\"progress\":\"1/1\"},{\"id\":1,\"status\":\"pending\",\"progress\":\"0/4\"}]"}}}"#,
+        );
+        let execution = parse_job_message::<TestJobs, StatusDetails<(), 2>>(&message)
+            .unwrap()
+            .unwrap();
+        let files = execution.status_details.unwrap().files;
+        assert_eq!(files[0].state, FileState::Succeeded);
+        assert_eq!(files[1].state, FileState::Pending);
+        assert_eq!(files[1].total_blocks, 4);
+    }
+
+    #[test]
+    fn escaped_borrowed_string_is_an_invalid_document() {
+        #[derive(Debug, Deserialize)]
+        struct Borrowed<'a> {
+            #[allow(dead_code)]
+            url: &'a str,
         }
-        _ => None,
+
+        let message = MockMessage::new(NOTIFY_NEXT, execution(r#"{"url":"a\u0026b"}"#));
+        assert_eq!(
+            parse_job_message::<Borrowed, IgnoredAny>(&message).unwrap_err(),
+            InvalidJobDocument { job_id: "job-1" }
+        );
+
+        let message = MockMessage::new(NOTIFY_NEXT, execution(r#"{"url":"a&b"}"#));
+        assert!(parse_job_message::<Borrowed, IgnoredAny>(&message).is_ok());
+    }
+
+    #[test]
+    fn valid_document_parses() {
+        for topic in [NOTIFY_NEXT, DESCRIBE_ACCEPTED] {
+            let message = MockMessage::new(topic, execution(r#"{"known":7}"#));
+            let execution = parse_job_message::<TestJobs, IgnoredAny>(&message)
+                .unwrap()
+                .unwrap();
+            assert_eq!(execution.job_id, "job-1");
+            assert_eq!(execution.job_document, Some(TestJobs::Known(7)));
+        }
+    }
+
+    #[test]
+    fn invalid_document_reports_job_id() {
+        for document in [r#"{"unknown":{"a":1}}"#, r#"{"known":"not a number"}"#] {
+            let message = MockMessage::new(NOTIFY_NEXT, execution(document));
+            assert_eq!(
+                parse_job_message::<TestJobs, IgnoredAny>(&message).unwrap_err(),
+                InvalidJobDocument { job_id: "job-1" }
+            );
+        }
+    }
+
+    #[test]
+    fn no_execution_is_not_an_error() {
+        let message = MockMessage::new(NOTIFY_NEXT, r#"{"timestamp":1}"#);
+        assert_eq!(
+            parse_job_message::<TestJobs, IgnoredAny>(&message),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn malformed_message_is_ignored() {
+        let message = MockMessage::new(NOTIFY_NEXT, "not json");
+        assert_eq!(
+            parse_job_message::<TestJobs, IgnoredAny>(&message),
+            Ok(None)
+        );
+
+        let message = MockMessage::new("$aws/things/thing/shadow/update", execution("{}"));
+        assert_eq!(
+            parse_job_message::<TestJobs, IgnoredAny>(&message),
+            Ok(None)
+        );
     }
 }

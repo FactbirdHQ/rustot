@@ -14,6 +14,10 @@ mod cloud;
 #[cfg(all(test, feature = "std", feature = "shadows_kv_persist"))]
 mod tests;
 
+#[cfg(all(test, feature = "std", feature = "shadows_kv_persist"))]
+mod cloud_tests;
+
+use core::cell::Cell;
 use core::marker::PhantomData;
 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
@@ -87,6 +91,10 @@ pub struct Shadow<'a, 'm, S: ShadowRoot, C: MqttClient, K: StateStore<S>> {
     /// One-shot gate: `true` once the initial cloud sync has run.
     /// Reset by `delete_shadow`. See `ensure_initialized`.
     pub(crate) initialized: Mutex<NoopRawMutex, bool>,
+    /// Shadow document version of the newest delta applied, or of the last
+    /// GET drain. Live deltas at or below it are copies already applied.
+    /// Reset by `delete_shadow`. See [`crate::shadows::delta_order`].
+    pub(crate) delta_version: Cell<Option<i64>>,
     /// Marker for the shadow state type.
     _marker: PhantomData<S>,
 }
@@ -122,6 +130,7 @@ where
             mqtt,
             subscription: Mutex::new(None),
             initialized: Mutex::new(false),
+            delta_version: Cell::new(None),
             _marker: PhantomData,
         }
     }

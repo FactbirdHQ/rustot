@@ -160,6 +160,15 @@ pub async fn setup() -> Option<OtaTestContext> {
 pub async fn setup_with_protocols(
     protocols: &[aws_sdk_iot::types::Protocol],
 ) -> Option<OtaTestContext> {
+    setup_with_files(protocols, &[0]).await
+}
+
+/// Set up AWS OTA test resources with one OTA file per entry in
+/// `file_types`, all backed by `tests/assets/ota_file`.
+pub async fn setup_with_files(
+    protocols: &[aws_sdk_iot::types::Protocol],
+    file_types: &[i32],
+) -> Option<OtaTestContext> {
     let region = aws_config::Region::new(REGION);
 
     // Load default MGMT credentials from environment
@@ -334,12 +343,18 @@ pub async fn setup_with_protocols(
         )
         .build();
 
-    let ota_file = aws_sdk_iot::types::OtaUpdateFile::builder()
-        .file_name("ota_file_OTA")
-        .file_location(file_location)
-        .code_signing(code_signing)
-        .set_file_type(Some(0))
-        .build();
+    let ota_files = file_types
+        .iter()
+        .enumerate()
+        .map(|(idx, &file_type)| {
+            aws_sdk_iot::types::OtaUpdateFile::builder()
+                .file_name(format!("ota_file_OTA_{idx}"))
+                .file_location(file_location.clone())
+                .code_signing(code_signing.clone())
+                .file_type(file_type)
+                .build()
+        })
+        .collect();
 
     let create_result = iot_client
         .create_ota_update()
@@ -349,7 +364,7 @@ pub async fn setup_with_protocols(
         .set_protocols(Some(protocols.to_vec()))
         .target_selection(aws_sdk_iot::types::TargetSelection::Snapshot)
         .role_arn(&ota_update_role_arn)
-        .files(ota_file)
+        .set_files(Some(ota_files))
         .send()
         .await
         .expect("Failed to create OTA update");

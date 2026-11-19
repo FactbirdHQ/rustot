@@ -1,6 +1,5 @@
 //! Platform abstraction traits for file transfers and OTA updates.
-use super::StatusDetailsExt;
-use super::encoding::JobContext;
+use super::encoding::{FileContext, FileType};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -13,6 +12,8 @@ pub enum ImageStateReason {
     InvalidDataProtocol,
     UserAbort,
     VersionCheck,
+    /// The self-test did not finish within `Config::self_test_timeout`.
+    SelfTestTimeout,
     Pal(PalError),
 }
 
@@ -30,9 +31,30 @@ impl ImageStateReason {
             ImageStateReason::InvalidDataProtocol => 2005,
             ImageStateReason::UserAbort => 2006,
             ImageStateReason::VersionCheck => 2007,
+            ImageStateReason::SelfTestTimeout => 2008,
             ImageStateReason::SignatureCheckPassed => 0, // Not an error
             ImageStateReason::Pal(e) => e.error_code(),
         }
+    }
+
+    /// Inverse of [`error_code`](Self::error_code), for the codes that
+    /// identify a reason.
+    ///
+    /// The code, not [`as_reason_str`](Self::as_reason_str), is the key:
+    /// `"version_check"` names both [`ImageStateReason::VersionCheck`] and
+    /// [`PalError::VersionCheck`]. `0` is not an error and yields `None`.
+    pub fn from_error_code(code: u16) -> Option<Self> {
+        Some(match code {
+            2001 => ImageStateReason::NewerJob,
+            2002 => ImageStateReason::FailedIngest,
+            2003 => ImageStateReason::MomentumAbort,
+            2004 => ImageStateReason::ImageStateMismatch,
+            2005 => ImageStateReason::InvalidDataProtocol,
+            2006 => ImageStateReason::UserAbort,
+            2007 => ImageStateReason::VersionCheck,
+            2008 => ImageStateReason::SelfTestTimeout,
+            code => ImageStateReason::Pal(PalError::from_error_code(code)?),
+        })
     }
 
     /// Returns a short string identifier for this reason suitable for status reporting.
@@ -45,6 +67,7 @@ impl ImageStateReason {
             ImageStateReason::InvalidDataProtocol => "invalid_protocol",
             ImageStateReason::UserAbort => "user_abort",
             ImageStateReason::VersionCheck => "version_check",
+            ImageStateReason::SelfTestTimeout => "self_test_timeout",
             ImageStateReason::SignatureCheckPassed => "sig_check_passed",
             ImageStateReason::Pal(e) => e.as_reason_str(),
         }
@@ -95,6 +118,23 @@ impl PalError {
         }
     }
 
+    /// Inverse of [`error_code`](Self::error_code).
+    pub fn from_error_code(code: u16) -> Option<Self> {
+        Some(match code {
+            1001 => PalError::SignatureCheckFailed,
+            1002 => PalError::FileWriteFailed,
+            1003 => PalError::FileTooLarge,
+            1004 => PalError::FileCloseFailed,
+            1005 => PalError::BadFileHandle,
+            1006 => PalError::Unsupported,
+            1007 => PalError::BadImageState,
+            1008 => PalError::CommitFailed,
+            1009 => PalError::VersionCheck,
+            1099 => PalError::Other,
+            _ => return None,
+        })
+    }
+
     /// Returns a short string identifier for this error suitable for status reporting.
     pub fn as_reason_str(&self) -> &'static str {
         match self {
@@ -132,7 +172,8 @@ pub enum OtaEvent {
     Fail,
     /// OTA job is now ready for optional user self tests.
     StartTest,
-
+    /// The self-test failed or timed out. The update has been rejected and
+    /// [`OtaPal::reset_device`] is called next to roll it back.
     SelfTestFailed,
 
     UpdateComplete,
@@ -213,16 +254,23 @@ impl BlockWriter for FileWriter {
 /// This covers storage creation, finalization, cleanup on abort, and
 /// optional extra status details for job status reporting.
 ///
-/// For OTA firmware updates that also need image state management and
+/// A job may contain several files. The engine downloads them in document
+/// order, calling [`create_file_for_rx`](Self::create_file_for_rx) and
+/// [`close_file`](Self::close_file) once per file. Nothing should be applied
+/// until the whole job has completed: if any file fails, the engine calls
+/// [`abort`](Self::abort) once and every file staged for the job must be
+/// discarded.
+///
+/// For OTA updates that also need image state management, self-test and
 /// device reset, implement [`OtaPal`] (which extends this trait).
 pub trait TransferPal {
     type BlockWriter: BlockWriter;
 
     /// Extra status details to include in job status updates.
     ///
-    /// Implement [`StatusDetailsExt`] on a custom struct to add
-    /// platform-specific fields (e.g. device temperature, battery level)
-    /// to every job status update sent to AWS IoT.
+    /// Implement [`StatusDetailsExt`](super::StatusDetailsExt) on a custom
+    /// struct to add platform-specific fields (e.g. device temperature,
+    /// battery level) to every job status update sent to AWS IoT.
     ///
     /// Use `()` if no extra fields are needed.
     type StatusDetails: super::StatusDetailsExt + Clone;
@@ -230,33 +278,50 @@ pub trait TransferPal {
     /// Returns the extra status details.
     fn status_details(&self) -> Self::StatusDetails;
 
+    /// Whether a completed job containing `file` must be activated before it
+    /// can succeed.
+    ///
+    /// If any file in the job requires activation, the job is left
+    /// `IN_PROGRESS` with self-test `ready` once all files are downloaded,
+    /// instead of being marked `SUCCEEDED`. [`Transfer::perform_ota`] then
+    /// fires [`OtaEvent::Activate`]; with [`Transfer::perform`] the caller
+    /// finishes the job itself (e.g. via
+    /// [`JobAgent::succeed_job`](crate::jobs::stream::JobAgent::succeed_job)).
+    ///
+    /// Defaults to `true` for [`FileType::Firmware`] (`fileType == 0`).
+    ///
+    /// [`Transfer::perform`]: super::Transfer::perform
+    /// [`Transfer::perform_ota`]: super::Transfer::perform_ota
+    fn requires_activation(&self, file: &FileContext<'_>) -> bool {
+        file.file_type == Some(FileType::Firmware)
+    }
+
     /// Create or open the file to store received data.
     async fn create_file_for_rx(
         &mut self,
-        file: &JobContext<'_, impl StatusDetailsExt>,
+        file: &FileContext<'_>,
     ) -> Result<&mut Self::BlockWriter, PalError>;
 
     /// Authenticate and close the received file.
     ///
     /// If signature verification fails, file close should still be attempted.
-    async fn close_file(
-        &mut self,
-        file: &JobContext<'_, impl StatusDetailsExt>,
-    ) -> Result<(), PalError>;
+    async fn close_file(&mut self, file: &FileContext<'_>) -> Result<(), PalError>;
 
-    /// Abort the current transfer and clean up resources.
+    /// Abort the job and discard everything staged for it.
     ///
-    /// Called when a transfer fails or is cancelled. Use this to delete
-    /// partially written files, release file handles, etc.
-    async fn abort(&mut self, file: &JobContext<'_, impl StatusDetailsExt>)
-    -> Result<(), PalError>;
+    /// Called once when a transfer fails or is cancelled, regardless of how
+    /// many files were already closed. Delete partially written and completed
+    /// files from this job, release file handles, etc.
+    async fn abort(&mut self, job_name: &str) -> Result<(), PalError>;
 }
 
-/// Platform abstraction for OTA firmware updates.
+/// Platform abstraction for OTA updates.
 ///
-/// Extends [`TransferPal`] with firmware image state management, device
-/// reset, and OTA lifecycle callbacks. Only implement this if your target
-/// performs actual firmware updates (file_type == 0).
+/// Extends [`TransferPal`] with image state management, self-test, device
+/// reset, and OTA lifecycle callbacks. Activation applies to the job as a
+/// whole: it happens once, after every file has been downloaded and
+/// verified. Which files require it is decided by
+/// [`TransferPal::requires_activation`].
 pub trait OtaPal: TransferPal {
     /// Get the state of the OTA update image.
     ///
@@ -289,8 +354,10 @@ pub trait OtaPal: TransferPal {
     /// Called with:
     /// - `Activate`: update is authenticated and ready to activate
     /// - `Fail`: update failed
-    /// - `StartTest`: job is ready for optional self tests
-    /// - `UpdateComplete`: non-firmware file transfer completed
+    /// - `StartTest`: job is ready for optional self tests. Returning an
+    ///   error, or exceeding `Config::self_test_timeout`, fails the self-test
+    /// - `SelfTestFailed`: self-test failed, the update was rejected
+    /// - `UpdateComplete`: transfer completed and no file requires activation
     async fn complete_callback(&mut self, event: OtaEvent) -> Result<(), PalError> {
         match event {
             OtaEvent::Activate => self.activate_new_image().await,
@@ -300,7 +367,7 @@ pub trait OtaPal: TransferPal {
                 Ok(())
             }
             OtaEvent::SelfTestFailed => {
-                error!("Self-test failed, shutting down OTA Agent.");
+                error!("Self-test failed, the update was rejected.");
                 Ok(())
             }
         }

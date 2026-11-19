@@ -10,6 +10,7 @@ pub enum Signature<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum JobStatusReason {
     Receiving,                          /* Update progress status. */
     SigCheckPassed,                     /* Set status details to Self Test Ready. */
@@ -59,7 +60,7 @@ impl FromStr for JobStatusReason {
 
 #[cfg(test)]
 mod tests {
-    use crate::jobs::StatusDetails;
+    use crate::transfer::StatusDetails;
 
     use super::*;
 
@@ -75,9 +76,10 @@ mod tests {
         ];
 
         for (reason, exp) in reasons {
-            let mut status_details = StatusDetails::new();
-
-            status_details.insert("self_test", reason.as_str()).unwrap();
+            let status_details = StatusDetails::<(), 1> {
+                self_test: Some(*reason),
+                ..Default::default()
+            };
 
             assert_eq!(
                 serde_json_core::to_string::<_, 128>(&status_details)

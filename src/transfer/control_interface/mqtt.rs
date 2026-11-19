@@ -1,3 +1,5 @@
+use serde::de::IgnoredAny;
+
 use super::ControlInterface;
 use crate::jobs::data_types::{ErrorResponse, JobStatus};
 use crate::jobs::{self, JobTopic, Jobs, MAX_JOB_ID_LEN, MAX_THING_NAME_LEN};
@@ -22,39 +24,13 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
     }
 
     /// Update the job status on the service side.
-    async fn update_job_status<E: StatusDetailsExt>(
+    async fn update_job_status<E: StatusDetailsExt, const N: usize>(
         &self,
-        job: &JobContext<'_, E>,
-        progress_state: &mut ProgressState<E>,
+        job: &JobContext<'_, E, N>,
+        progress_state: &ProgressState<E, N>,
         status: JobStatus,
-        reason: JobStatusReason,
+        _reason: JobStatusReason,
     ) -> Result<(), TransferError> {
-        // Set the self_test status field
-        progress_state.status_details.set_self_test(reason.as_str());
-
-        // Add progress tracking for in-progress and failed updates
-        if let JobStatus::InProgress | JobStatus::Succeeded | JobStatus::Failed = status {
-            // Don't override the progress on succeeded, nor on self-test
-            // active. (Cases where progress counter is lost due to device
-            // restarts)
-            if status != JobStatus::Succeeded && reason != JobStatusReason::SelfTestActive {
-                let received_blocks = progress_state.total_blocks - progress_state.blocks_remaining;
-                progress_state
-                    .status_details
-                    .set_progress(received_blocks, progress_state.total_blocks);
-            }
-        }
-
-        // Add failure detail if present (for Rejected/Aborted reasons)
-        if let Some(detail) = reason.detail() {
-            progress_state
-                .status_details
-                .set_failure(detail.as_reason_str(), detail.error_code());
-        } else {
-            // Clear any previous failure details for non-failure reasons
-            progress_state.status_details.clear_failure();
-        }
-
         // Downgrade progress updates to QoS 0 to avoid overloading MQTT
         // buffers during active streaming. First and last updates remain QoS 1.
         let qos = if status == JobStatus::InProgress
@@ -95,12 +71,9 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
         let topic = JobTopic::Update(job_name)
             .format::<{ MAX_THING_NAME_LEN + MAX_JOB_ID_LEN + 25 }>(self.0.client_id())?;
 
-        let combined = progress_state
-            .status_details
-            .with_extra(&progress_state.extra_status);
         let payload = Jobs::update(status)
             .client_token(self.0.client_id())
-            .status_details(&combined);
+            .status_details(&progress_state.status);
 
         debug!("Updating job status! {:?}", status);
 
@@ -131,9 +104,10 @@ impl<C: MqttClient> ControlInterface for Mqtt<&'_ C> {
                         break Ok(());
                     }
                     Some(jobs::Topic::UpdateRejected(_)) => {
-                        let (error_response, _) =
-                            serde_json_core::from_slice::<ErrorResponse>(message.payload())
-                                .map_err(|_| TransferError::Mqtt)?;
+                        let (error_response, _) = serde_json_core::from_slice::<
+                            ErrorResponse<IgnoredAny>,
+                        >(message.payload())
+                        .map_err(|_| TransferError::Mqtt)?;
 
                         error!("Job update rejected: {:?}", error_response.message);
                         break Err(TransferError::UpdateRejected(error_response.code));

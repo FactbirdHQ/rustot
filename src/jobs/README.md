@@ -52,15 +52,23 @@ The full [`JobTopic`] enum covers every variant.
 | `CANCELED`    | yes | — | yes |
 | `REMOVED`     | yes | — | yes |
 
-`statusDetails` is a free-form `LinearMap<&str, &str, 8>` ([`StatusDetails`]);
-both the device and the cloud may carry arbitrary key/value pairs across
-updates.
+`statusDetails` is a map of string values; both the device and the cloud may
+carry arbitrary key/value pairs across updates. [`JobExecution`] reads it into
+a type of your choice, `S`: [`transfer::StatusDetails`] for transfer jobs, or
+[`IgnoredAny`] to skip it. A value may be escaped (a multi-file transfer
+encodes JSON into one), so `S` should copy values rather than borrow them.
+
+[`parse_job_message`] unescapes strings into a stack buffer of
+`MAX_STATUS_DETAILS_VALUE_LEN` (1024) bytes. A borrowed `&str` in a job
+document therefore fails to parse if its value contains an escape, and the
+job is reported as invalid, rather than holding the escaped text.
 
 ## Example
 
 ```rust
-use rustot::jobs::stream::{JobAgent, parse_job_message};
+use rustot::jobs::stream::JobAgent;
 use rustot::mqtt::{Mqtt, MqttClient, MqttSubscription};
+use serde::de::IgnoredAny;
 
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
@@ -76,8 +84,11 @@ async fn run<C: MqttClient>(mqtt: Mqtt<&C>) {
     loop {
         let mut sub = agent.subscribe().await.unwrap();
 
-        while let Some(mut msg) = sub.next_message().await {
-            let Some(execution) = parse_job_message::<MyJob>(&mut msg) else { continue };
+        while let Some(msg) = sub.next_message().await {
+            let Ok(Some(execution)) = agent.parse_or_reject::<MyJob, IgnoredAny>(&msg).await
+            else {
+                continue;
+            };
             let job_id = execution.job_id;
 
             match execution.job_document {
@@ -147,6 +158,8 @@ drive a real `CreateOTAUpdate`-issued job through to completion.
 [`reject_job`]: https://docs.rs/rustot/latest/rustot/jobs/stream/struct.JobAgent.html#method.reject_job
 [`parse_job_message`]: https://docs.rs/rustot/latest/rustot/jobs/stream/fn.parse_job_message.html
 [`JobTopic`]: https://docs.rs/rustot/latest/rustot/jobs/enum.JobTopic.html
-[`StatusDetails`]: https://docs.rs/rustot/latest/rustot/jobs/type.StatusDetails.html
+[`JobExecution`]: https://docs.rs/rustot/latest/rustot/jobs/data_types/struct.JobExecution.html
+[`transfer::StatusDetails`]: https://docs.rs/rustot/latest/rustot/transfer/status_details/struct.StatusDetails.html
+[`IgnoredAny`]: https://docs.rs/serde/latest/serde/de/struct.IgnoredAny.html
 [`MAX_PENDING_JOBS`]: https://docs.rs/rustot/latest/rustot/jobs/constant.MAX_PENDING_JOBS.html
 [`MAX_RUNNING_JOBS`]: https://docs.rs/rustot/latest/rustot/jobs/constant.MAX_RUNNING_JOBS.html

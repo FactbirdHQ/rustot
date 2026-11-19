@@ -1,7 +1,7 @@
 use core::ops::Deref;
 use rustot::transfer::{
     StatusDetailsExt,
-    encoding::json,
+    encoding::{FileContext, json},
     pal::{BlockWriter, OtaPal, PalError, PalImageState, TransferPal},
 };
 use serde::ser::SerializeMap;
@@ -63,6 +63,8 @@ pub struct FileHandler {
     /// If set, `close_file` will return this error instead of succeeding
     pub fail_close_with: Option<PalError>,
     pub extra_status: TestStatusDetails,
+    /// Number of files successfully closed (verified) so far
+    pub closed_files: usize,
 }
 
 impl FileHandler {
@@ -76,6 +78,7 @@ impl FileHandler {
             extra_status: TestStatusDetails {
                 firmware_version: "0.1.0-test",
             },
+            closed_files: 0,
         }
     }
 
@@ -95,31 +98,25 @@ impl TransferPal for FileHandler {
         self.extra_status.clone()
     }
 
-    async fn abort(
-        &mut self,
-        _file: &rustot::transfer::encoding::JobContext<'_, impl rustot::transfer::StatusDetailsExt>,
-    ) -> Result<(), PalError> {
+    async fn abort(&mut self, _job_name: &str) -> Result<(), PalError> {
         Ok(())
     }
 
     async fn create_file_for_rx(
         &mut self,
-        file: &rustot::transfer::encoding::JobContext<'_, impl rustot::transfer::StatusDetailsExt>,
+        file: &FileContext<'_>,
     ) -> Result<&mut Self::BlockWriter, PalError> {
-        Ok(self.writer.get_or_insert(MemWriter::new(file.filesize)))
+        Ok(self.writer.insert(MemWriter::new(file.filesize)))
     }
 
-    async fn close_file(
-        &mut self,
-        file: &rustot::transfer::encoding::JobContext<'_, impl rustot::transfer::StatusDetailsExt>,
-    ) -> Result<(), PalError> {
+    async fn close_file(&mut self, file: &FileContext<'_>) -> Result<(), PalError> {
         // Check for configured failure
         if let Some(error) = self.fail_close_with {
             log::info!("Simulating close_file failure: {:?}", error);
             return Err(error);
         }
 
-        if let Some(ref writer) = self.writer {
+        if let Some(writer) = self.writer.take() {
             log::debug!(
                 "Closing completed file. Len: {}/{} -> {}",
                 writer.data().len(),
@@ -152,6 +149,7 @@ impl TransferPal for FileHandler {
             assert_eq!(signature, "This is my custom signature");
 
             self.plateform_state = State::Swap;
+            self.closed_files += 1;
 
             Ok(())
         } else {
