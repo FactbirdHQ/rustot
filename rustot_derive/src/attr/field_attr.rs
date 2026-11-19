@@ -237,6 +237,23 @@ pub fn has_default_attr(attrs: &[Attribute]) -> bool {
     get_attr(attrs, DEFAULT_ATTR).is_some()
 }
 
+/// Type-level `#[shadow_attr(default_unknown_variant)]`: keep the stored
+/// variant on an unknown tag instead of failing the parse, for enums where
+/// newer cloud values should not block the rest of the delta.
+pub fn has_default_unknown_variant(attrs: &[Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|a| a.path().is_ident(SHADOW_ATTR))
+        .any(|a| {
+            a.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                .is_ok_and(|nested| {
+                    nested
+                        .iter()
+                        .any(|m| m.path().is_ident("default_unknown_variant"))
+                })
+        })
+}
+
 /// Extract a string value from a serde attribute by key name.
 fn get_serde_str_value(attrs: &[Attribute], key: &str) -> Option<String> {
     for attr in attrs {

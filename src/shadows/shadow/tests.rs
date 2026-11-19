@@ -1293,6 +1293,33 @@ mod adjacently_tagged {
         IoLink(IoLinkConfig),
     }
 
+    #[shadow_node]
+    #[shadow_attr(default_unknown_variant)]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    #[serde(tag = "mode", content = "config", rename_all = "lowercase")]
+    pub enum LenientPortMode {
+        #[default]
+        Inactive,
+        Sio(SioConfig),
+    }
+
+    #[tokio::test]
+    async fn test_unknown_variant_fails_parse_by_default() {
+        use crate::shadows::{ParseError, ShadowNode};
+
+        let store = InMemory::<PortMode>::new();
+        store.set_state("/test", &PortMode::Inactive).await.unwrap();
+        let resolver = store.resolver("/test");
+
+        let result = PortMode::parse_delta(br#"{"mode": "future_mode"}"#, "", &resolver).await;
+        assert!(matches!(result, Err(ParseError::UnknownVariant)));
+
+        let delta = PortMode::parse_delta(br#"{"mode": "sio"}"#, "", &resolver)
+            .await
+            .unwrap();
+        assert_eq!(delta.mode, DeltaMode::Known(PortModeVariant::Sio));
+    }
+
     #[test]
     fn test_adjacently_tagged_delta_is_struct() {
         // Verify DeltaPortMode is a struct with mode and config fields
@@ -1971,14 +1998,22 @@ mod adjacently_tagged {
         let json = br#"{"mode": "future_mode"}"#;
 
         // With resolver: falls back to current variant
-        let store = InMemory::<PortMode>::new();
-        store.set_state("/test", &PortMode::Inactive).await.unwrap();
+        let store = InMemory::<LenientPortMode>::new();
+        store
+            .set_state("/test", &LenientPortMode::Inactive)
+            .await
+            .unwrap();
         let resolver = store.resolver("/test");
-        let delta = PortMode::parse_delta(json, "", &resolver).await.unwrap();
-        assert_eq!(delta.mode, DeltaMode::Fallback(PortModeVariant::Inactive));
+        let delta = LenientPortMode::parse_delta(json, "", &resolver)
+            .await
+            .unwrap();
+        assert_eq!(
+            delta.mode,
+            DeltaMode::Fallback(LenientPortModeVariant::Inactive)
+        );
 
         // Without resolver: mode is absent
-        let delta = PortMode::parse_delta(json, "", &NullResolver)
+        let delta = LenientPortMode::parse_delta(json, "", &NullResolver)
             .await
             .unwrap();
         assert!(delta.mode.is_absent());

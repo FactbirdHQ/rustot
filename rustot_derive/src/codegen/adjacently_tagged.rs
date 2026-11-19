@@ -57,6 +57,7 @@ use syn::{Data, DeriveInput, Fields, Ident};
 
 use crate::attr::{
     get_serde_rename_all, get_serde_tag_content, get_variant_serde_name, has_default_attr,
+    has_default_unknown_variant,
 };
 
 #[cfg(feature = "kv_persist")]
@@ -101,6 +102,19 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
 
     // Type names for generated types
     let variant_enum_name = format_ident!("{}Variant", name);
+
+    let unknown_tag_arm = if has_default_unknown_variant(&input.attrs) {
+        quote! {
+            Err(_) => {
+                // Unknown variant — resolve from KV state
+                let resolved = resolver.resolve(path).await
+                    .and_then(|s| s.parse::<#variant_enum_name>().ok());
+                (resolved, resolved.is_some())
+            }
+        }
+    } else {
+        quote! { Err(_) => return Err(#krate::shadows::ParseError::UnknownVariant), }
+    };
     let delta_config_name = format_ident!("{}Config", delta_name);
     let desired_name = format_ident!("Desired{}", name);
 
@@ -834,12 +848,7 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                     let (mode, is_fallback) = match scan.tag_str() {
                         Some(s) => match s.parse::<#variant_enum_name>() {
                             Ok(v) => (Some(v), false),
-                            Err(_) => {
-                                // Unknown variant — resolve from KV state
-                                let resolved = resolver.resolve(path).await
-                                    .and_then(|s| s.parse::<#variant_enum_name>().ok());
-                                (resolved, resolved.is_some())
-                            }
+                            #unknown_tag_arm
                         },
                         None => {
                             // Missing tag — normal resolver fallback (not unknown)
