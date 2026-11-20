@@ -10,7 +10,12 @@ pub enum Error {
     NoPersistence,
     DaoRead,
     DaoWrite,
+    /// A cloud reply was received but does not parse (e.g. a `desired` value
+    /// of the wrong type). The doc exists and the subscription is still live.
     InvalidPayload,
+    /// The response subscription ended before a reply arrived, e.g. after a
+    /// clean-session reconnect. Resubscribe before waiting again.
+    SubscriptionClosed,
     WrongShadowName,
     Mqtt,
     /// A request/response round-trip to the cloud (`Get`, `Update`) exceeded
@@ -160,6 +165,7 @@ impl core::fmt::Display for Error {
             Error::DaoRead => write!(f, "DAO read error"),
             Error::DaoWrite => write!(f, "DAO write error"),
             Error::InvalidPayload => write!(f, "invalid payload"),
+            Error::SubscriptionClosed => write!(f, "subscription closed"),
             Error::WrongShadowName => write!(f, "wrong shadow name"),
             Error::Mqtt => write!(f, "MQTT error"),
             Error::Timeout => write!(f, "cloud request timed out"),

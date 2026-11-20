@@ -136,8 +136,12 @@ where
         );
 
         // GET (404 falls back to `create_shadow_inner`). Discard the delta,
-        // and its version: the delta was not applied.
-        let _ = self.get_shadow_from_cloud().await?;
+        // and its version: the delta was not applied. An unparseable state
+        // still proves the doc exists, and must not block reporting.
+        match self.get_shadow_from_cloud().await {
+            Ok(_) | Err(Error::InvalidPayload) => {}
+            Err(e) => return Err(e),
+        }
 
         *init_guard = true;
         Ok(())
@@ -233,7 +237,16 @@ where
 
                 // Drain pending state via GET. If a delta came through,
                 // return it. Otherwise loop back and await a live one.
-                let (state, delta) = self.sync_shadow().await?;
+                let (state, delta) = match self.sync_shadow().await {
+                    // The GET completed, so keep the subscription and wait for
+                    // the live delta that fixes the cloud value; re-GETting
+                    // would only fail the same way.
+                    Err(Error::InvalidPayload) => {
+                        reset_guard.disarm();
+                        return Err(Error::InvalidPayload);
+                    }
+                    r => r?,
+                };
                 reset_guard.disarm();
 
                 if delta.is_some() {
@@ -328,7 +341,14 @@ where
                     version,
                     self.delta_version.get(),
                 );
-                let (state, delta) = self.sync_shadow().await?;
+                let (state, delta) = match self.sync_shadow().await {
+                    // As in the drain GET: keep waiting on this subscription.
+                    Err(Error::InvalidPayload) => {
+                        reset_guard.disarm();
+                        return Err(Error::InvalidPayload);
+                    }
+                    r => r?,
+                };
                 reset_guard.disarm();
                 return Ok(delta.is_some().then_some((state, delta)));
             }
@@ -390,7 +410,7 @@ where
             let message =
                 match embassy_time::with_timeout(REQUEST_TIMEOUT, sub.next_message()).await {
                     Ok(Some(message)) => message,
-                    Ok(None) => return Err(Error::InvalidPayload),
+                    Ok(None) => return Err(Error::SubscriptionClosed),
                     Err(_elapsed) => {
                         warn!(
                             "[{:?}] update response timed out after {}s",
@@ -457,7 +477,7 @@ where
             let get_message =
                 match embassy_time::with_timeout(REQUEST_TIMEOUT, sub.next_message()).await {
                     Ok(Some(get_message)) => get_message,
-                    Ok(None) => return Err(Error::InvalidPayload),
+                    Ok(None) => return Err(Error::SubscriptionClosed),
                     Err(_elapsed) => {
                         warn!(
                             "[{:?}] get response timed out after {}s",
@@ -471,12 +491,11 @@ where
             match Topic::from_str(S::PREFIX, get_message.topic_name()) {
                 Some((Topic::GetAccepted, _, _)) => {
                     let resolver = self.store.resolver(Self::prefix());
-                    let response =
-                        AcceptedResponse::parse::<S, _>(get_message.payload(), &resolver)
-                            .await
-                            .map_err(|_| Error::InvalidPayload)?;
-
-                    Ok(Some((response.state, response.version)))
+                    // No early return, so the unsubscribe below still runs.
+                    AcceptedResponse::parse::<S, _>(get_message.payload(), &resolver)
+                        .await
+                        .map(|response| Some((response.state, response.version)))
+                        .map_err(|_| Error::InvalidPayload)
                 }
                 Some((Topic::GetRejected, _, _)) => {
                     let mut buf = [0u8; 64];
@@ -719,10 +738,13 @@ where
     /// let (state, _) = shadow.sync_shadow().await?;
     /// ```
     pub async fn sync_shadow(&self) -> Result<(S, Option<S::Delta>), Error> {
-        let (delta_state, version) = self.get_shadow_from_cloud().await?;
-        // A successful GET (or 404→create) confirms the cloud doc exists,
-        // so the gate flips.
-        *self.initialized.lock().await = true;
+        let result = self.get_shadow_from_cloud().await;
+        // A completed GET (or 404→create) confirms the cloud doc exists,
+        // so the gate flips, even if its state does not parse.
+        if matches!(result, Ok(_) | Err(Error::InvalidPayload)) {
+            *self.initialized.lock().await = true;
+        }
+        let (delta_state, version) = result?;
         let delta = delta_state.delta;
 
         // The GET reflects every delta up to its version, so live copies of
@@ -813,7 +835,7 @@ where
             let message =
                 match embassy_time::with_timeout(REQUEST_TIMEOUT, sub.next_message()).await {
                     Ok(Some(message)) => message,
-                    Ok(None) => return Err(Error::InvalidPayload),
+                    Ok(None) => return Err(Error::SubscriptionClosed),
                     Err(_elapsed) => {
                         warn!(
                             "[{:?}] delete response timed out after {}s",
