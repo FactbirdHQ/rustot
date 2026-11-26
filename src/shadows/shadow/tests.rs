@@ -2180,6 +2180,50 @@ mod adjacently_tagged {
         assert!(unit_json.contains(r#""enabled":null"#));
     }
 
+    #[shadow_node]
+    #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize, MaxSize)]
+    pub struct LimitConfig {
+        pub enabled: bool,
+        pub limit: u32,
+    }
+
+    #[shadow_node]
+    #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+    #[serde(tag = "kind", content = "data", rename_all = "lowercase")]
+    pub enum SharedFieldEnum {
+        Toggle(ToggleConfig),
+        Limit(LimitConfig),
+        #[default]
+        None,
+    }
+
+    #[test]
+    fn test_sibling_field_sharing_a_name_with_the_active_variant_is_not_nulled() {
+        let limit = ReportedSharedFieldEnum::Limit(ReportedLimitConfig {
+            enabled: Some(true),
+            limit: Some(3),
+        });
+        assert_eq!(
+            serde_json::to_string(&limit).unwrap(),
+            r#"{"kind":"limit","data":{"enabled":true,"limit":3}}"#
+        );
+
+        let toggle = ReportedSharedFieldEnum::Toggle(ReportedToggleConfig {
+            enabled: Some(false),
+        });
+        assert_eq!(
+            serde_json::to_string(&toggle).unwrap(),
+            r#"{"kind":"toggle","data":{"enabled":false,"limit":null}}"#
+        );
+
+        // Left out by the active variant, a shared field is still not nulled.
+        let unreported = ReportedSharedFieldEnum::Toggle(ReportedToggleConfig { enabled: None });
+        assert_eq!(
+            serde_json::to_string(&unreported).unwrap(),
+            r#"{"kind":"toggle","data":{"limit":null}}"#
+        );
+    }
+
     #[tokio::test]
     async fn test_mixed_parse_delta_opaque_then_struct() {
         use crate::shadows::{NullResolver, ShadowNode};
