@@ -578,21 +578,34 @@ pub(crate) fn generate_adjacently_tagged_enum_code(
                 .map(|(_, ty)| ty)
                 .collect();
 
+            let variant_data = variants_with_data
+                .iter()
+                .find(|(v, _, _)| v.ident == *variant_ident);
+
+            // A sibling field sharing a name with one of the active variant's
+            // fields is the active variant's, so it is not nulled.
+            let active_fields = variant_data
+                .and_then(|(v, _, _)| match &v.fields {
+                    Fields::Unnamed(f) if f.unnamed.len() == 1 => Some(&f.unnamed[0].ty),
+                    _ => None,
+                })
+                .map(|ty| quote! {
+                    <<#ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedFields>::FIELD_NAMES
+                })
+                .unwrap_or_else(|| quote! { &[] });
+
             let nulls: Vec<TokenStream> = sibling_inner_tys
                 .iter()
                 .map(|inner_ty| {
                     quote! {
-                        #krate::shadows::serialize_null_fields(
+                        #krate::shadows::serialize_null_fields_except(
                             <<#inner_ty as #krate::shadows::ShadowNode>::Reported as #krate::shadows::ReportedFields>::FIELD_NAMES,
+                            #active_fields,
                             &mut content_map
                         )?;
                     }
                 })
                 .collect();
-
-            let variant_data = variants_with_data
-                .iter()
-                .find(|(v, _, _)| v.ident == *variant_ident);
 
             if let Some((_, _, is_opaque)) = variant_data {
                 if *is_opaque {

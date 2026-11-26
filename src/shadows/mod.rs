@@ -345,6 +345,19 @@ pub fn serialize_null_fields<S: serde::ser::SerializeMap>(
     Ok(())
 }
 
+/// [`serialize_null_fields`], skipping the names in `keep`: those belong to the
+/// active variant, and a duplicate `null` entry would clear its value.
+pub fn serialize_null_fields_except<S: serde::ser::SerializeMap>(
+    field_names: &[&str],
+    keep: &[&str],
+    map: &mut S,
+) -> Result<(), S::Error> {
+    for name in field_names.iter().filter(|name| !keep.contains(name)) {
+        map.serialize_entry(*name, &None::<()>)?;
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Variant Resolution for Delta Parsing
 // =============================================================================
